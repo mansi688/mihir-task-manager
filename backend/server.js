@@ -1116,6 +1116,7 @@ app.post('/api/projects', auth(ALL_ROLES), (req, res) => {
   res.json({ ok: true, name });
 });
 app.get('/api/drawing-sections', auth(ALL_ROLES), (req, res) => res.json(db.listSections()));
+app.get('/api/task-phases', auth(ALL_ROLES), (req, res) => res.json(db.listPhases()));
 app.get('/api/drawings', auth(ALL_ROLES), (req, res) => {
   const project = str(req.query.project).trim();
   if (!project) return res.status(400).json({ error: 'A project name is required.' });
@@ -1195,6 +1196,8 @@ app.post('/api/tasks', auth(ALL_ROLES), (req, res) => {
   const deadline = str((req.body || {}).deadline).trim();
   const dependsOnTaskId = str((req.body || {}).dependsOnTaskId).trim();
   const parentTaskId = str((req.body || {}).parentTaskId).trim();
+  const project = str((req.body || {}).project).trim();
+  const phase = str((req.body || {}).phase).trim();
   const { attachment } = req.body || {};
   const attachmentName = str((req.body || {}).attachmentName).trim();
   // "Ask for Drawing" tasks allow a much larger attachment — CAD/drawing files routinely exceed
@@ -1275,7 +1278,7 @@ app.post('/api/tasks', auth(ALL_ROLES), (req, res) => {
     db.createTask({
       id, title, description, priority, deadline, created_by: req.user.name, created_by_username: req.user.username,
       depends_on_task_id: dependsOnTaskId || null, attachment, attachment_name: attachmentName, is_drawing_request: isDrawingRequest,
-      parent_task_id: parentTaskId || null,
+      parent_task_id: parentTaskId || null, project: project || null, phase: phase || null,
     });
     if (stageGroups.length > 1) db.setAutoReleaseStages(id, autoReleaseStages);
     stageGroups.forEach((group, idx) => {

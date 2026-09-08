@@ -7,6 +7,7 @@ let userDirectory = [];
 let teamsList = [];
 let projectsList = [];
 let sectionsList = [];
+let phasesList = [];
 let currentProjectDrawings = []; // results of the last "Fetch Drawings" click
 let openTaskTitles = []; // {id,title} for every open task company-wide — powers the Depends On picker
 let completionStats = []; // admin-only: weekly/monthly/yearly/all-time approved-task counts per employee
@@ -42,7 +43,7 @@ function defaultUiState() {
     subtaskFormTaskId: null, subtaskFormTags: [],
     cancelFormTaskId: null,
     addAssigneeFormTaskId: null, addAssigneeTags: [],
-    taskSearchQuery: '',
+    taskSearchQuery: '', taskFilterProject: '', taskFilterPhase: '',
     myHistoryShown: 20, allHistoryShown: 20,
     calendarYear: new Date().getFullYear(), calendarMonth: new Date().getMonth(),
     calendarSelectedDate: null, calendarScope: 'mine',
@@ -71,7 +72,7 @@ if (token) {
   if (savedTab) ui.adminTab = savedTab;
 }
 function resetAllAppState() {
-  myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0;
+  myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0;
   ui = defaultUiState();
 }
 
@@ -524,7 +525,7 @@ function renderNotifDrawer() {
 }
 function renderTopbarSlim() {
   const title = PAGE_TITLES[ui.adminTab] || 'Task Manager';
-  const eyebrow = (ROLE_LABEL[session.role] || session.role).toUpperCase();
+  const eyebrow = (ROLE_LABEL[session.role] || session.role || 'Team Member').toUpperCase();
   return `
   <header class="topbar-slim">
     <div style="display:flex;align-items:center;gap:12px;">
@@ -765,6 +766,7 @@ async function refreshData(opts) {
     teamsList = await api('/api/teams');
     projectsList = await api('/api/projects');
     sectionsList = await api('/api/drawing-sections');
+    phasesList = await api('/api/task-phases');
     openTaskTitles = await api('/api/tasks/open-titles');
     const me = await api('/api/auth/me');
     session = { ...session, email: me.email, phone: me.phone, team: me.team, designation: me.designation, isTeamLead: !!me.isTeamLead };
@@ -933,7 +935,7 @@ function renderTaskItem(t) {
   return `
   <div class="card" id="task-card-${esc(t.id)}" style="background:var(--panel-2);">
     <div class="flex-between">
-      <div><b>${esc(t.title)}</b><span class="mono small muted">${esc(t.id)}</span> ${priorityBadgeHTML(t)}</div>
+      <div><b>${esc(t.title)}</b><span class="mono small muted">${esc(t.id)}</span> ${priorityBadgeHTML(t)}${t.project ? `<span class="badge" style="margin-left:4px;" title="Project">📁 ${esc(t.project)}</span>` : ''}${t.phase ? `<span class="badge" style="margin-left:4px;" title="Phase">${esc(t.phase)}</span>` : ''}</div>
       <span class="badge po_pending">OPEN</span>
     </div>
     ${t.description ? `<div class="doc-note">${esc(t.description)}</div>` : ''}
@@ -1072,16 +1074,45 @@ function renderTaskItem(t) {
 // in both places.
 function applyTaskSearch(tasks) {
   const q = (ui.taskSearchQuery || '').trim().toLowerCase();
-  if (!q) return tasks;
-  return tasks.filter(t =>
-    (t.title || '').toLowerCase().includes(q) ||
-    (t.description || '').toLowerCase().includes(q) ||
-    (t.id || '').toLowerCase().includes(q) ||
-    (t.assignees || []).some(a => (a.username || '').toLowerCase().includes(q))
-  );
+  let filtered = tasks;
+  if (q) {
+    filtered = filtered.filter(t =>
+      (t.title || '').toLowerCase().includes(q) ||
+      (t.description || '').toLowerCase().includes(q) ||
+      (t.id || '').toLowerCase().includes(q) ||
+      (t.assignees || []).some(a => (a.username || '').toLowerCase().includes(q))
+    );
+  }
+  if (ui.taskFilterProject) filtered = filtered.filter(t => t.project === ui.taskFilterProject);
+  if (ui.taskFilterPhase) filtered = filtered.filter(t => t.phase === ui.taskFilterPhase);
+  return filtered;
 }
 function searchBoxHTML() {
-  return `<input type="text" id="task-search-input" placeholder="Search by title, description, task ID, or tagged person..." value="${esc(ui.taskSearchQuery)}" style="margin-bottom:12px;">`;
+  // Project/Phase filters list only the values genuinely used by the tasks currently in view
+  // (not the full company-wide list) — picking "Foundation" should never show as an option if
+  // nothing in this list is actually tagged with it.
+  const usedProjects = Array.from(new Set(myTasks.concat(session.role === 'admin' ? allTasks : []).map(t => t.project).filter(Boolean))).sort();
+  const usedPhases = Array.from(new Set(myTasks.concat(session.role === 'admin' ? allTasks : []).map(t => t.phase).filter(Boolean))).sort();
+  return `
+    <input type="text" id="task-search-input" placeholder="Search by title, description, task ID, or tagged person..." value="${esc(ui.taskSearchQuery)}" style="margin-bottom:8px;">
+    ${(usedProjects.length > 0 || usedPhases.length > 0) ? `
+    <div class="row" style="margin-bottom:12px;">
+      ${usedProjects.length > 0 ? `
+      <div class="col">
+        <select id="task-filter-project">
+          <option value="">All Projects</option>
+          ${usedProjects.map(p => `<option value="${esc(p)}" ${ui.taskFilterProject === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+        </select>
+      </div>` : ''}
+      ${usedPhases.length > 0 ? `
+      <div class="col">
+        <select id="task-filter-phase">
+          <option value="">All Phases</option>
+          ${usedPhases.map(p => `<option value="${esc(p)}" ${ui.taskFilterPhase === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}
+        </select>
+      </div>` : ''}
+    </div>` : ''}
+  `;
 }
 // History (closed/cancelled) lists are shown a page at a time — with hundreds of tasks
 // accumulating over months, rendering every single one always would slow the page down for no
@@ -1258,6 +1289,18 @@ function taskFormHTML() {
       <label>Description</label>
       <textarea id="new-task-desc" placeholder="${isDrawingRequest ? 'Which drawing, which project, and by when' : 'Details, context, what\'s needed'}"></textarea>
       <div class="row">
+        <div class="col">
+          <label>Project (optional)</label>
+          <input type="text" id="new-task-project" list="task-projects-datalist" placeholder="Type or pick a project">
+          <datalist id="task-projects-datalist">${projectsList.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+        </div>
+        <div class="col">
+          <label>Phase (optional)</label>
+          <input type="text" id="new-task-phase" list="task-phases-datalist" placeholder="e.g. Foundation, Structure, Finishing">
+          <datalist id="task-phases-datalist">${phasesList.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+        </div>
+      </div>
+      <div class="row">
         <div class="col"><label>Priority</label><select id="new-task-priority"><option value="medium" selected>Medium</option><option value="high">High</option><option value="low">Low</option></select></div>
         <div class="col"><label>Deadline</label><input type="date" id="new-task-deadline" required></div>
         <div class="col"><label>Time (optional)</label><input type="time" id="new-task-deadline-time"></div>
@@ -1353,6 +1396,8 @@ function bindTaskForm() {
     const deadlineEl = document.getElementById('new-task-deadline');
     const title = titleEl.value.trim();
     const description = document.getElementById('new-task-desc').value.trim();
+    const project = document.getElementById('new-task-project').value.trim();
+    const phase = document.getElementById('new-task-phase').value.trim();
     const priority = document.getElementById('new-task-priority').value;
     const deadline = deadlineEl.value.trim();
     const deadlineTime = document.getElementById('new-task-deadline-time').value.trim();
@@ -1378,6 +1423,7 @@ function bindTaskForm() {
     try {
       await api('/api/tasks', { method: 'POST', body: JSON.stringify({
         title, description, priority, deadline: fullDeadline, assignedToList,
+        project: project || null, phase: phase || null,
         stages: stagesPayload ? stagesPayload.map(usernames => ({ usernames })) : null,
         autoReleaseStages: !!ui.taskFormAutoRelease,
         dependsOnTaskId, attachment: ui.pendingTaskFile, attachmentName: ui.pendingTaskFileName, isDrawingRequest,
@@ -2261,7 +2307,7 @@ function renderReportsView() {
     ${reportsTaskList.length === 0 ? `<div class="empty">No closed or cancelled tasks yet.</div>` : reportsTaskList.map(t => `
       <div class="level-box" style="cursor:pointer;${ui.reportsSelectedTaskId === t.id ? 'border-left-color:var(--rust);' : ''}" data-select-report-task="${t.id}">
         <div class="flex-between">
-          <div><b>${esc(t.title)}</b> <span class="badge ${t.status === 'cancelled' ? 'flag' : 'received'}">${t.status.toUpperCase()}</span></div>
+          <div><b>${esc(t.title)}</b> <span class="badge ${t.status === 'cancelled' ? 'flag' : 'received'}">${(t.status || 'closed').toUpperCase()}</span></div>
           <span class="small muted">${fmtTime(t.closed_at || t.cancelled_at)}</span>
         </div>
         <div class="small muted" style="margin-top:4px;">${t.report_generated_at ? `Report generated ${fmtTime(t.report_generated_at)}` : 'No report generated yet'}</div>
@@ -3073,6 +3119,10 @@ function bindMyTasks() {
   });
   const searchInput = document.getElementById('task-search-input');
   if (searchInput) searchInput.oninput = () => { ui.taskSearchQuery = searchInput.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; render(); };
+  const filterProjectSelect = document.getElementById('task-filter-project');
+  if (filterProjectSelect) filterProjectSelect.onchange = () => { ui.taskFilterProject = filterProjectSelect.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; render(); };
+  const filterPhaseSelect = document.getElementById('task-filter-phase');
+  if (filterPhaseSelect) filterPhaseSelect.onchange = () => { ui.taskFilterPhase = filterPhaseSelect.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; render(); };
   const showMoreMy = document.querySelector('[data-act="show-more-my-history"]');
   if (showMoreMy) showMoreMy.onclick = () => { ui.myHistoryShown = (ui.myHistoryShown || 20) + HISTORY_PAGE_SIZE; render(); };
   const showMoreAll = document.querySelector('[data-act="show-more-all-history"]');

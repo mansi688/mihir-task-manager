@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS drawing_sections(
   name TEXT PRIMARY KEY,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS task_phases(
+  name TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS drawings(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project TEXT NOT NULL,
@@ -203,6 +207,8 @@ ensureColumn('users', 'visible_departments', 'TEXT');
 ensureColumn('task_assignees', 'individual_deadline', 'TEXT');
 ensureColumn('users', 'phone', 'TEXT');
 ensureColumn('tasks', 'parent_task_id', 'TEXT');
+ensureColumn('tasks', 'project', 'TEXT');
+ensureColumn('tasks', 'phase', 'TEXT');
 ensureColumn('task_assignees', 'deadline_reminder_sent_at', 'TEXT');
 ensureColumn('task_assignees', 'deadline_overdue_notified_at', 'TEXT');
 
@@ -327,10 +333,12 @@ module.exports = {
   revokeSession(id) { db.prepare('UPDATE sessions SET revoked=1 WHERE id=?').run(id); },
 
   // ---- tasks ----
-  createTask({ id, title, description, priority, deadline, created_by, created_by_username, depends_on_task_id, attachment, attachment_name, is_drawing_request, parent_task_id }) {
-    db.prepare(`INSERT INTO tasks(id,title,description,priority,deadline,status,created_by,created_by_username,depends_on_task_id,attachment,attachment_name,is_drawing_request,parent_task_id,created_at)
-                VALUES(?,?,?,?,?,'open',?,?,?,?,?,?,?,?)`)
-      .run(id, title, description || null, priority, deadline || null, created_by, created_by_username, depends_on_task_id || null, attachment || null, attachment_name || null, is_drawing_request ? 1 : 0, parent_task_id || null, new Date().toISOString());
+  createTask({ id, title, description, priority, deadline, created_by, created_by_username, depends_on_task_id, attachment, attachment_name, is_drawing_request, parent_task_id, project, phase }) {
+    if (project) this.addProject(project);
+    if (phase) this.addPhase(phase);
+    db.prepare(`INSERT INTO tasks(id,title,description,priority,deadline,status,created_by,created_by_username,depends_on_task_id,attachment,attachment_name,is_drawing_request,parent_task_id,project,phase,created_at)
+                VALUES(?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?)`)
+      .run(id, title, description || null, priority, deadline || null, created_by, created_by_username, depends_on_task_id || null, attachment || null, attachment_name || null, is_drawing_request ? 1 : 0, parent_task_id || null, project || null, phase || null, new Date().toISOString());
   },
   getTask(id) { return db.prepare('SELECT * FROM tasks WHERE id=?').get(id); },
   // A generic transaction wrapper — exposes better-sqlite3's synchronous transaction capability
@@ -687,6 +695,17 @@ module.exports = {
     const clean = String(name || '').trim();
     if (!clean) return;
     db.prepare('INSERT OR IGNORE INTO drawing_sections(name, created_at) VALUES(?, ?)').run(clean, new Date().toISOString());
+  },
+  // ---- task phases ----
+  // Same lightweight, reusable-picklist pattern as drawing sections: a shared, growing list of
+  // phase names (e.g. "Foundation", "Structure", "Finishing") usable across every project, not a
+  // separate custom list per project — simpler to maintain and consistent with how sections
+  // already work for drawings.
+  listPhases() { return db.prepare('SELECT name FROM task_phases ORDER BY name').all().map(r => r.name); },
+  addPhase(name) {
+    const clean = String(name || '').trim();
+    if (!clean) return;
+    db.prepare('INSERT OR IGNORE INTO task_phases(name, created_at) VALUES(?, ?)').run(clean, new Date().toISOString());
   },
   addDrawing({ project, section, title, file_name, file_data, uploaded_by_username, uploaded_by_name }) {
     this.addProject(project);
