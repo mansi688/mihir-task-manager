@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MIHIR Task Manager</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#2d5fa8">
+<link rel="icon" type="image/png" href="/logo.png">
+<script>
+  // Set the theme before any CSS paints, so dark-mode users never see a flash of the light
+  // theme first. Must run here, blocking, before the stylesheet — not in app.js at the end of
+  // body, which runs too late to prevent the flash.
+  document.documentElement.setAttribute('data-theme', localStorage.getItem('ks_theme') || 'light');
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=Sora:wght@500;600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div id="app"></div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+node_modules/
+.env
+taskmanager.db
+taskmanager.db-shm
+taskmanager.db-wal
+taskmanager.db.before-restore-*
+backups/
+employees-data.json
