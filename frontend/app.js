@@ -364,13 +364,30 @@ function snapshotFieldValues() {
   if (!app) return null;
   const values = {};
   app.querySelectorAll('textarea[id], input[id]:not([type="file"]):not([type="checkbox"])').forEach(el => { if (el.value) values[el.id] = el.value; });
+  // Select elements were previously excluded entirely here — meaning a background re-render
+  // (the 30-second poll, clicking "Check Deadline Against History", etc.) while a form was open
+  // would silently reset any <select> back to whatever its HTML template hardcodes as default
+  // (e.g. Priority always reverting to "Medium"), without the person noticing until after they'd
+  // already submitted. Selects need their own check: unlike a text input, a <select> always has
+  // *some* value (never empty), so "only restore if truthy" isn't the right guard here — instead
+  // only snapshot ones that differ from their own first (default) option, so a genuinely
+  // untouched select doesn't force a spurious restore.
+  app.querySelectorAll('select[id]').forEach(el => {
+    const firstOptionValue = el.options && el.options.length > 0 ? el.options[0].value : undefined;
+    if (el.value !== firstOptionValue) values[el.id] = el.value;
+  });
   const active = document.activeElement;
   const focusedId = (active && app.contains(active) && active.id) ? active.id : null;
   return { values, focusedId };
 }
 function restoreFieldValues(snapshot) {
   if (!snapshot) return;
-  Object.entries(snapshot.values).forEach(([id, val]) => { const el = document.getElementById(id); if (el && !el.value) el.value = val; });
+  Object.entries(snapshot.values).forEach(([id, val]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (el.tagName === 'SELECT') { if (el.value !== val) el.value = val; }
+    else if (!el.value) el.value = val;
+  });
   if (snapshot.focusedId) {
     const el = document.getElementById(snapshot.focusedId);
     if (el && document.activeElement !== el) { el.focus(); if (el.setSelectionRange && typeof el.value === 'string') { try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) {} } }
@@ -2191,6 +2208,15 @@ function bindDrawingsView() {
 // Each hour gets an invisible wide click-target rect layered under the curve, since a thin SVG
 // path can't itself be "clicked per hour" the way discrete bars could.
 function fmtHourLabel12(h) { const period = h < 12 ? 'AM' : 'PM'; const h12 = h % 12 === 0 ? 12 : h % 12; return `${h12}${period}`; }
+// Scopes any 24-hour activity array down to the working window this company actually cares
+// about — 9am through midnight — rather than showing the full 24 hours including the very
+// early morning stretch (1am-8am) when nobody is working and the line just sits flat at zero,
+// wasting chart space. Preserves each entry's real `hour` value (needed for click-to-select and
+// axis labels), just reorders/filters which ones are shown, left (9am) to right (midnight).
+const WORKING_HOURS_ORDER = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0];
+function filterToWorkingHours(hours) {
+  return WORKING_HOURS_ORDER.map(h => hours.find(x => x.hour === h)).filter(Boolean);
+}
 function renderHourlyCurveChart(hours, opts) {
   opts = opts || {};
   const width = 720, height = 190, padTop = 10, padBottom = 24, padX = 14;
@@ -2227,8 +2253,11 @@ function renderHourlyCurveChart(hours, opts) {
   </svg>`;
 }
 function renderPeakHoursView() {
-  const maxTotal = Math.max(1, ...peakHoursData.map(h => h.total));
-  const peakHour = peakHoursData.reduce((best, h) => (h.total > (best ? best.total : -1) ? h : best), null);
+  // Scoped to the same 9am-midnight working window as the chart itself, so "Busiest Hour" can
+  // never point at an hour that isn't even visible on the graph below it.
+  const workingHoursData = filterToWorkingHours(peakHoursData);
+  const maxTotal = Math.max(1, ...workingHoursData.map(h => h.total));
+  const peakHour = workingHoursData.reduce((best, h) => (h.total > (best ? best.total : -1) ? h : best), null);
   const fmtHourLabel = fmtHourLabel12;
   const selectedName = ui.peakHoursUser === 'all' ? 'the whole company' : (userDirectory.find(u => u.username === ui.peakHoursUser) || {}).name || ui.peakHoursUser;
   const selectedHourData = (ui.peakHoursSelectedHour !== null && ui.peakHoursSelectedHour !== undefined) ? peakHoursData[ui.peakHoursSelectedHour] : null;
@@ -2258,7 +2287,7 @@ function renderPeakHoursView() {
   </div>` : `<div class="card"><div class="empty">No activity recorded yet for ${esc(selectedName)}.</div></div>`}
   <div class="card">
     <div class="card-title">Activity Throughout the Day</div>
-    ${renderHourlyCurveChart(peakHoursData, { selectedHour: ui.peakHoursSelectedHour, gradId: 'peakCurveGrad' })}
+    ${renderHourlyCurveChart(filterToWorkingHours(peakHoursData), { selectedHour: ui.peakHoursSelectedHour, gradId: 'peakCurveGrad' })}
     ${selectedHourData ? `
     <div class="peak-hour-detail">
       <b>${fmtHourLabel(selectedHourData.hour)}–${fmtHourLabel((selectedHourData.hour + 1) % 24)}</b> — ${selectedHourData.total} work ${selectedHourData.total === 1 ? 'activity' : 'activities'}
@@ -2467,7 +2496,7 @@ function renderMyDashboardView() {
   <div class="card">
     <div class="card-title">${pronounCaps} Activity Throughout the Day</div>
     ${myPeakHour && myPeakHour.total > 0 ? `<p class="small muted">${viewingSelf ? 'Your' : 'Their'} busiest hour: ${fmtHourLabel(myPeakHour.hour)}–${fmtHourLabel((myPeakHour.hour + 1) % 24)}.</p>` : `<div class="empty">No activity recorded yet.</div>`}
-    ${renderHourlyCurveChart(d.peakHours, { selectedHour: null, gradId: 'myDashCurveGrad' })}
+    ${renderHourlyCurveChart(filterToWorkingHours(d.peakHours), { selectedHour: null, gradId: 'myDashCurveGrad' })}
   </div>`;
 }
 function bindMyDashboardView() {
@@ -2580,7 +2609,7 @@ function renderHRDashboardDetail() {
   </div>
   <div class="card">
     <div class="card-title">Activity Throughout the Day</div>
-    ${renderHourlyCurveChart(d.peakHours, { selectedHour: null, gradId: 'hrDashCurveGrad' })}
+    ${renderHourlyCurveChart(filterToWorkingHours(d.peakHours), { selectedHour: null, gradId: 'hrDashCurveGrad' })}
   </div>`}`}`;
 }
 function bindHRDashboardView() {
