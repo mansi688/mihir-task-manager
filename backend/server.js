@@ -843,6 +843,106 @@ app.get('/api/reports/ratings', auth(['admin', 'director']), (req, res) => {
   res.json({ ratings, companyAvgQuarterCompletions: Math.round(companyAvgQuarterCompletions * 10) / 10, companyAvgResponseDays: companyAvgResponseDays !== null ? Math.round(companyAvgResponseDays * 10) / 10 : null });
 });
 
+// A THIS-MONTH-scoped leaderboard, using the same rating philosophy as the quarterly ratings
+// above (volume vs. company average + timeliness vs. company average, each worth up to 2.5),
+// just re-scoped to this month's completions specifically rather than this quarter's — meant to
+// be checked continuously through the month, not just at a quarter boundary. Ranked descending
+// by rating; ties broken by raw completion count, then alphabetically, so the order is always
+// well-defined and never flickers between identical-looking refreshes.
+// Shared by the weekly and monthly leaderboards (and reused for quarter/year-end snapshots
+// below) — computes the same rating model (volume vs. company average + timeliness), just
+// scoped to whichever period field is passed in ('week', 'month', 'quarter', 'year').
+function computeLeaderboard(periodKey) {
+  const completionStats = computeUserCounts(db.getApprovedCompletions(), 'submitted_at');
+  const active = completionStats.filter(s => s[periodKey] > 0);
+  const companyAvgCompletions = active.length > 0
+    ? active.reduce((sum, s) => sum + s[periodKey], 0) / active.length : 0;
+  // Timeliness uses each person's ALL-TIME average response duration for every period — the
+  // existing response-duration helper doesn't expose per-completion timestamps for period
+  // filtering, and building that out precisely per-period is a real, undone follow-up, not
+  // silently pretended away here. Volume (the completion count itself) IS genuinely
+  // period-scoped, which is the part that matters most for a leaderboard.
+  const responseTimesByUser = {};
+  db.listUsers().forEach(u => { responseTimesByUser[u.username] = db.getMyResponseDurations(u.username); });
+  const allResponseTimes = active.map(s => responseTimesByUser[s.username] || []).flat();
+  const companyAvgResponseDays = allResponseTimes.length > 0 ? allResponseTimes.reduce((a, b) => a + b, 0) / allResponseTimes.length : null;
+
+  let leaderboard = active.map(s => {
+    const myResponseTimes = responseTimesByUser[s.username] || [];
+    const myAvgResponse = myResponseTimes.length > 0 ? myResponseTimes.reduce((a, b) => a + b, 0) / myResponseTimes.length : null;
+    const volumeScore = companyAvgCompletions > 0 ? Math.min(2.5, 2.5 * (s[periodKey] / companyAvgCompletions)) : 2.5;
+    let timelinessScore = 1.25;
+    if (myAvgResponse !== null && companyAvgResponseDays !== null) {
+      timelinessScore = myAvgResponse <= companyAvgResponseDays ? 2.5 : Math.max(0, 2.5 * (companyAvgResponseDays / myAvgResponse));
+    }
+    const rating = Math.round((volumeScore + timelinessScore) * 10) / 10;
+    return { username: s.username, name: s.name, team: s.team, rating, completions: s[periodKey] };
+  });
+  leaderboard.sort((a, b) => b.rating - a.rating || b.completions - a.completions || a.name.localeCompare(b.name));
+  return leaderboard.map((r, idx) => ({ ...r, rank: idx + 1 }));
+}
+// Calendar-aligned quarter/year boundaries — genuinely fixed periods (Jan-Mar, Apr-Jun, etc.,
+// or a full Jan-Dec year), distinct from the trailing-window "quarter"/"year" used elsewhere.
+function getQuarterInfo(date) {
+  const year = date.getFullYear();
+  const q = Math.floor(date.getMonth() / 3); // 0-3
+  const start = new Date(year, q * 3, 1);
+  const end = new Date(year, q * 3 + 3, 1);
+  return { label: `Q${q + 1} ${year}`, start, end };
+}
+function getYearInfo(date) {
+  const year = date.getFullYear();
+  return { label: String(year), start: new Date(year, 0, 1), end: new Date(year + 1, 0, 1) };
+}
+function computeCalendarLeaderboard(startDate, endDate) {
+  const rows = db.getApprovedCompletionsInRange(startDate.toISOString(), endDate.toISOString());
+  const counts = {};
+  rows.forEach(r => { counts[r.username] = (counts[r.username] || 0) + 1; });
+  const users = db.listUsers();
+  const active = Object.keys(counts).map(username => {
+    const u = users.find(x => x.username === username);
+    return u ? { username, name: u.name, team: u.team, completions: counts[username] } : null;
+  }).filter(Boolean);
+  active.sort((a, b) => b.completions - a.completions || a.name.localeCompare(b.name));
+  return active.map((r, idx) => ({ ...r, rank: idx + 1 }));
+}
+// Checks whether the quarter/year that just ended has already been snapshotted — if not,
+// computes final rankings for THAT completed period specifically (not the current one, which
+// has barely started) and stores them permanently. Safe to call repeatedly — does nothing once
+// a period has already been recorded, so a daily check never double-awards the same period.
+function checkAndSnapshotPeriodAwards() {
+  const now = new Date();
+  [
+    { type: 'quarter', getInfo: getQuarterInfo, prevDate: new Date(now.getFullYear(), now.getMonth() - 3, 1) },
+    { type: 'year', getInfo: getYearInfo, prevDate: new Date(now.getFullYear() - 1, 0, 1) },
+  ].forEach(({ type, getInfo, prevDate }) => {
+    const prevPeriod = getInfo(prevDate);
+    const alreadyProcessed = db.getLastProcessedPeriod(type);
+    if (alreadyProcessed === prevPeriod.label) return; // this period's award already exists
+    const ranked = computeCalendarLeaderboard(prevPeriod.start, prevPeriod.end);
+    ranked.slice(0, 3).forEach(r => {
+      db.savePeriodAward({ period_type: type, period_label: prevPeriod.label, rank: r.rank, username: r.username, name: r.name, team: r.team, rating: null, completions: r.completions });
+    });
+    db.setLastProcessedPeriod(type, prevPeriod.label);
+  });
+}
+// Checked once a day — cheap, and a missed check just means the award appears a day later than
+// the period technically ended, never earlier or duplicated.
+setInterval(checkAndSnapshotPeriodAwards, 24 * 60 * 60 * 1000).unref();
+app.get('/api/reports/period-awards', auth(['admin', 'director', 'member']), (req, res) => {
+  const type = req.query.type === 'year' ? 'year' : 'quarter';
+  res.json({ awards: db.listPeriodAwards(type) });
+});
+app.get('/api/reports/weekly-leaderboard', auth(['admin', 'director', 'member']), (req, res) => {
+  const now = new Date();
+  const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay());
+  res.json({ leaderboard: computeLeaderboard('week'), periodLabel: `Week of ${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` });
+});
+app.get('/api/reports/monthly-leaderboard', auth(['admin', 'director', 'member']), (req, res) => {
+  const now = new Date();
+  res.json({ leaderboard: computeLeaderboard('month'), periodLabel: now.toLocaleString('en-US', { month: 'long', year: 'numeric' }) });
+});
+
 // Self-scoped only — always uses the logged-in person's own username, never an admin-chosen
 // target, so this can be open to every role without leaking anyone else's numbers. Real,
 // computed statistics from this person's own history — not a trained model, just honest counts
@@ -857,14 +957,23 @@ app.get('/api/reports/hr-roster', auth(ALL_ROLES), (req, res) => {
   if (!(req.user.role === 'admin' || isHR)) return res.status(403).json({ error: 'Only HR Department members and Admin can view the roster.' });
   const completionAll = computeUserCounts(db.getApprovedCompletions(), 'submitted_at');
   const warningCounts = db.getWarningCountsByUser();
+  const pendingCounts = db.getPendingTaskCountsByUser();
+  // The threshold requested: 2+ currently pending tasks flags the person red for whoever's
+  // looking at this roster — HR and Admin are the only two audiences who ever see this view.
+  const PENDING_RED_FLAG_THRESHOLD = 2;
   // The roster is a personnel/employee overview, not a leadership dashboard — Admin and
   // Directors are never shown as entries in it, for anyone viewing it, Admin included.
   const roster = db.listUsers().filter(u => u.role !== 'admin' && u.role !== 'director').map(u => {
     const completion = completionAll.find(s => s.username === u.username) || { allTime: 0 };
+    const pendingTaskCount = pendingCounts[u.username] || 0;
     return {
       username: u.username, name: u.name, team: u.team, designation: u.designation,
       role: u.role, isTeamLead: !!u.is_team_lead, tasksCompleted: completion.allTime,
       warningCount: warningCounts[u.username] || 0,
+      // Red-flagged either by raw pending-workload volume, or by the more precise, real signal:
+      // any task where they've actually hit the 5-day incompletion threshold — the exact
+      // mechanism the escalation system itself already uses to notify HR/Admin.
+      pendingTaskCount, isPendingRedFlag: pendingTaskCount >= PENDING_RED_FLAG_THRESHOLD || (warningCounts[u.username] || 0) > 0,
     };
   });
   // Real organizational hierarchy, not alphabetical accident: grouped by department, and within
@@ -1743,6 +1852,7 @@ function sendEscalatingTaskReminders() {
   const rows = db.listIncompleteAssigneesForEscalation().filter(r => !db.isTaskBlocked(r.task_id) && r.is_released);
   const msPerDay = 86400000;
   const adminUsernames = db.listAdminUsernames();
+  const hrUsernames = db.listUsers().filter(u => isHRTeam(u.team)).map(u => u.username);
   let sent = 0;
   rows.forEach(r => {
     const ageDays = (Date.now() - new Date(r.escalation_baseline_at).getTime()) / msPerDay;
@@ -1754,33 +1864,40 @@ function sendEscalatingTaskReminders() {
       db.markEscalationStage(r.task_id, r.username, 3);
       sent++;
     }
-    // Day 5: first flag to Admin specifically — a distinct notification from the creator-facing
-    // warnings below, so Admin sees late people even on tasks they didn't create themselves.
+    // Day 5: flags BOTH Admin and HR — a distinct notification from the creator-facing warnings
+    // below, so both audiences see late people even on tasks they didn't create themselves. The
+    // person themselves is deliberately told only that THEY are flagged for THIS task, not that
+    // HR/Admin specifically were notified — that visibility detail is intentionally not surfaced
+    // to the person being flagged.
     if (ageDays >= 5 && !r.warning_5day_sent_at) {
-      adminUsernames.forEach(a => {
-        if (a !== r.username) db.createNotification({ username: a, type: 'admin_late_flag', message: `${r.username} has not completed their part of "${r.title}" in 5 days.`, task_id: r.task_id });
+      const notifiedAlready = new Set([r.username]);
+      adminUsernames.concat(hrUsernames).forEach(a => {
+        if (notifiedAlready.has(a)) return;
+        notifiedAlready.add(a);
+        db.createNotification({ username: a, type: 'admin_late_flag', message: `${r.username} has not completed their part of "${r.title}" in 5 days.`, task_id: r.task_id });
       });
+      db.createNotification({ username: r.username, type: 'task_flagged', message: `You are flagged for incompletion of "${r.title}".`, task_id: r.task_id });
       db.markEscalationStage(r.task_id, r.username, 5);
       sent++;
     }
-    // Day 7: warn the person, notify the creator (existing), and flag Admin again.
+    // Day 7: warn the person, notify the creator (existing), and flag Admin+HR again.
     if (ageDays >= 7 && !r.warning_7day_sent_at) {
       db.createNotification({ username: r.username, type: 'task_warning', message: `Warning — "${r.title}" has been open 7 days with your part not done.`, task_id: r.task_id });
       if (creatorDiffersFromAssignee) {
         db.createNotification({ username: creatorUsername, type: 'task_warning_creator', message: `${r.username} has not completed their part of "${r.title}" in 7 days.`, task_id: r.task_id });
       }
-      adminUsernames.forEach(a => {
+      adminUsernames.concat(hrUsernames).forEach(a => {
         if (a !== r.username && a !== creatorUsername) db.createNotification({ username: a, type: 'admin_late_flag', message: `Still flagged — ${r.username} has not completed their part of "${r.title}" in 7 days.`, task_id: r.task_id });
       });
       db.markEscalationStage(r.task_id, r.username, 7);
       sent++;
     }
-    // Day 12: notify the creator again (existing), and flag Admin a third time.
+    // Day 12: notify the creator again (existing), and flag Admin+HR a third time.
     if (ageDays >= 12 && !r.warning_12day_sent_at) {
       if (creatorDiffersFromAssignee) {
         db.createNotification({ username: creatorUsername, type: 'task_warning_creator', message: `Still not done — ${r.username} has now not completed their part of "${r.title}" in 12 days.`, task_id: r.task_id });
       }
-      adminUsernames.forEach(a => {
+      adminUsernames.concat(hrUsernames).forEach(a => {
         if (a !== r.username && a !== creatorUsername) db.createNotification({ username: a, type: 'admin_late_flag', message: `Still flagged — ${r.username} has not completed their part of "${r.title}" in 12 days.`, task_id: r.task_id });
       });
       db.markEscalationStage(r.task_id, r.username, 12);
@@ -1854,6 +1971,10 @@ setInterval(sendWeeklyWarningDigestToAdmin, WEEKLY_DIGEST_INTERVAL_HOURS * 60 * 
 // Manual triggers — for testing without waiting for the real interval.
 app.post('/api/tasks/send-reminders-now', auth(['admin']), (req, res) => {
   res.json({ ok: true, remindersSent: sendTaskReminders(), escalationsSent: sendEscalatingTaskReminders(), deadlineRemindersSent: sendDeadlineReminders() });
+});
+app.post('/api/reports/check-period-awards-now', auth(['admin']), (req, res) => {
+  checkAndSnapshotPeriodAwards();
+  res.json({ ok: true });
 });
 app.post('/api/tasks/send-warning-digest-now', auth(['admin']), (req, res) => {
   res.json({ ok: true, adminsNotified: sendWeeklyWarningDigestToAdmin() });

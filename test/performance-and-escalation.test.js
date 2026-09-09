@@ -3,6 +3,49 @@ const assert = require('node:assert/strict');
 const Database = require('better-sqlite3');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
+test('day-5 escalation flags BOTH HR and Admin, and tells the person only that THEY are flagged for that task — never mentioning HR/Admin', async (t) => {
+  const { baseUrl, dbPath, stop } = startTestServer();
+  t.after(() => stop());
+  const adminToken = await login(baseUrl, 'admin', 'admin123');
+  const hrToken = await createMember(baseUrl, adminToken, 'hr_escalation_test', 'HR Escalation Test', 'HR Department');
+  const lateToken = await createMember(baseUrl, adminToken, 'late_person', 'Late Person', 'Site Team');
+
+  const create = await api(baseUrl, '/api/tasks', { method: 'POST', token: adminToken, body: { title: 'Overdue Task', priority: 'medium', deadline: futureDate(), assignedToList: ['late_person'] } });
+  const id = create.data.id;
+
+  // Backdate the task's escalation clock to 6 days ago, so the day-5 threshold has been crossed.
+  const raw = new Database(dbPath);
+  raw.prepare('UPDATE task_assignees SET escalation_baseline_at=? WHERE task_id=?').run(new Date(Date.now() - 6 * 86400000).toISOString(), id);
+  raw.close();
+
+  await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
+
+  await t.test('HR receives the flag notification', async () => {
+    const hrNotifs = await api(baseUrl, '/api/notifications', { token: hrToken });
+    assert.ok(hrNotifs.data.items.some(n => n.type === 'admin_late_flag' && n.message.includes('late_person') && n.message.includes('5 days')), 'HR must be notified when someone hits the 5-day threshold');
+  });
+
+  await t.test('Admin also receives the flag notification', async () => {
+    const adminNotifs = await api(baseUrl, '/api/notifications', { token: adminToken });
+    assert.ok(adminNotifs.data.items.some(n => n.type === 'admin_late_flag' && n.message.includes('late_person')), 'Admin must still be notified too');
+  });
+
+  await t.test('the flagged person is told only that they are flagged for this task, never that HR/Admin specifically were notified', async () => {
+    const lateNotifs = await api(baseUrl, '/api/notifications', { token: lateToken });
+    const flagNotif = lateNotifs.data.items.find(n => n.type === 'task_flagged');
+    assert.ok(flagNotif, 'the person must receive their own notification at the 5-day mark');
+    assert.equal(flagNotif.message, 'You are flagged for incompletion of "Overdue Task".');
+    assert.ok(!flagNotif.message.toLowerCase().includes('hr'), 'must never reveal HR visibility to the flagged person');
+    assert.ok(!flagNotif.message.toLowerCase().includes('admin'), 'must never reveal Admin visibility to the flagged person');
+  });
+
+  await t.test('this same person now shows as red-flagged on the HR roster', async () => {
+    const roster = (await api(baseUrl, '/api/reports/hr-roster', { token: hrToken })).data.roster;
+    const entry = roster.find(r => r.username === 'late_person');
+    assert.equal(entry.isPendingRedFlag, true, 'a real 5-day escalation must show up as a red flag on the roster');
+  });
+});
+
 test('performance statistics use submission date, never approval date', async (t) => {
   const { baseUrl, dbPath, stop } = startTestServer();
   t.after(() => stop());

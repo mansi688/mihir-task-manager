@@ -17,6 +17,9 @@ let auditLogEntries = []; // admin-only
 let myApprovalRequests = [];
 let allApprovalRequests = []; // admin-only
 let approvalStats = []; // admin-only
+let monthlyLeaderboard = { leaderboard: [], periodLabel: '' };
+let weeklyLeaderboard = { leaderboard: [], periodLabel: '' };
+let quarterAwards = []; let yearAwards = [];
 let peakHoursData = []; // admin-only
 let myDashboardData = null;
 let hrDashboardData = null;
@@ -33,7 +36,7 @@ function setTheme(t) { theme = t; localStorage.setItem('ks_theme', t); document.
 function defaultUiState() {
   return {
     adminTab: 'today', sidebarOpen: false, notifDrawerOpen: false, banner: null,
-    loginErr: '', pwChangeErr: '', showForgotPassword: false, forgotPasswordStage: 'request', forgotPasswordErr: '', forgotPasswordUsername: '',
+    loginErr: '', pwChangeErr: '', showForgotPassword: false, forgotPasswordStage: 'request', forgotPasswordErr: '', forgotPasswordUsername: '', showPasswordChangeModal: true,
     pendingTaskFile: null, pendingTaskFileName: null,
     pendingReplyFiles: {},
     taskArchiveTab: 'open',
@@ -70,9 +73,14 @@ let ui = defaultUiState();
 if (token) {
   const savedTab = localStorage.getItem('ls_last_tab');
   if (savedTab) ui.adminTab = savedTab;
+  // Same idea as the tab restore above: once someone has dismissed the temporary-password
+  // reminder, it should stay dismissed across refreshes too, not reappear and feel like the old
+  // hard block all over again — it should only come back if they explicitly click "Set a real
+  // password now" from the banner.
+  if (localStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0;
+  myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0;
   ui = defaultUiState();
 }
 
@@ -359,6 +367,38 @@ function taskSourceBadge(t) { return `<span class="badge received" title="Manual
 // Preserves unsaved typed input (a reply draft, a search box) across the full-DOM re-renders
 // this app does after every action — without this, typing into task A, then completing an
 // action on task B (which triggers a refresh), would silently wipe out what you'd typed in A.
+// Genuine FLIP-style reorder animation for leaderboard rows: since morphChildren already
+// reuses the same DOM node across renders when its `id` matches (rather than tearing it down
+// and rebuilding it), a row whose rank changes keeps the SAME element — it just moves to a new
+// position in the list. That means the classic FLIP trick works cleanly here: record where each
+// row was (First), let the render happen (Last), then immediately counter-transform each row
+// back to its old spot with no transition (Invert) and release the transform with a transition
+// applied (Play) — the browser animates the release, which reads as the row sliding smoothly
+// into its new position rather than jumping there instantly.
+function captureLeaderboardRowPositions() {
+  const rows = document.querySelectorAll('[id^="lb-row-"]');
+  const positions = {};
+  rows.forEach(el => { positions[el.id] = el.getBoundingClientRect().top; });
+  return positions;
+}
+function animateLeaderboardRowPositions(oldPositions) {
+  if (!oldPositions) return;
+  const rows = document.querySelectorAll('[id^="lb-row-"]');
+  rows.forEach(el => {
+    const oldTop = oldPositions[el.id];
+    if (oldTop === undefined) return; // a row that's new to the board this render — nothing to animate from
+    const newTop = el.getBoundingClientRect().top;
+    const delta = oldTop - newTop;
+    if (Math.abs(delta) < 1) return; // didn't actually move — skip the animation entirely
+    el.style.transition = 'none';
+    el.style.transform = `translateY(${delta}px)`;
+    // Forces the browser to apply the above before the transition kicks in, otherwise it would
+    // just animate from the final position to itself (no visible movement at all).
+    el.getBoundingClientRect();
+    el.style.transition = 'transform .4s cubic-bezier(.2,.7,.3,1)';
+    el.style.transform = '';
+  });
+}
 function snapshotFieldValues() {
   const app = document.getElementById('app');
   if (!app) return null;
@@ -487,12 +527,14 @@ function renderSidebar() {
   }
   const active = currentTabKey();
   return `
+  ${ui.sidebarOpen ? `<div class="sidebar-backdrop" data-act="close-sidebar"></div>` : ''}
   <aside class="sidebar ${ui.sidebarOpen ? 'open' : ''}" id="sidebar">
     <div class="sidebar-header">
       <div class="brand-plate">
         <div class="brand-mark">${falconMark()}</div>
         <div><div class="brand-name">MIHIR</div><div class="brand-sub">Task Manager</div></div>
       </div>
+      <button class="close-x sidebar-close-btn" data-act="close-sidebar" title="Close menu">✕</button>
       <div class="sidebar-role">
         <b>${esc(session.name)}</b>
         <span>${esc(session.designation || ROLE_LABEL[session.role] || session.role)}${session.team ? ` · ${esc(session.team)}` : ''}</span>
@@ -554,6 +596,11 @@ function renderTopbarSlim() {
       <button class="icon-btn" data-act="open-notifications" title="Notifications">${icon('bell')}${unreadNotifCount ? `<span class="dot">${unreadNotifCount}</span>` : ''}</button>
     </div>
   </header>
+  ${session.mustChangePassword ? `
+  <div class="card" style="border-color:var(--danger);margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+    <span class="small">⚠ You're still using a temporary password.</span>
+    <button class="btn btn-sm" data-act="reopen-password-change">Set a real password now</button>
+  </div>` : ''}
   ${ui.notifDrawerOpen ? renderNotifDrawer() : ''}`;
 }
 function bannerHTML() {
@@ -668,7 +715,7 @@ function renderForcedPasswordChange() {
         ${passwordFieldHTML('pw-confirm', 'Type it again')}
         <button class="btn btn-primary btn-block" style="margin-top:18px;" data-act="submit-password-change">Set Password & Continue</button>
         ${ui.pwChangeErr ? `<div class="err">${esc(ui.pwChangeErr)}</div>` : ''}
-        <div class="hint"><a href="#" data-act="logout">← Log out instead</a></div>
+        <div class="hint"><a href="#" data-act="dismiss-password-change">Not now — remind me later →</a> &nbsp;|&nbsp; <a href="#" data-act="logout">Log out instead</a></div>
       </div>
     </div>
   </div>`;
@@ -686,6 +733,7 @@ function bindForcedPasswordChange() {
       const data = await api('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ newPassword }) });
       token = data.token;
       session = { ...session, mustChangePassword: false };
+      localStorage.removeItem('ls_pw_reminder_dismissed');
       localStorage.setItem('ls_token', token); localStorage.setItem('ls_session', JSON.stringify(session));
       ui.pwChangeErr = '';
       setBanner('Password set — welcome in.', 'ok');
@@ -694,10 +742,12 @@ function bindForcedPasswordChange() {
   };
   const logoutLink = document.querySelector('[data-act="logout"]');
   if (logoutLink) logoutLink.onclick = (e) => { e.preventDefault(); logout(); };
+  const dismissLink = document.querySelector('[data-act="dismiss-password-change"]');
+  if (dismissLink) dismissLink.onclick = (e) => { e.preventDefault(); ui.showPasswordChangeModal = false; localStorage.setItem('ls_pw_reminder_dismissed', 'true'); render(); };
 }
 function logout() {
   token = null; session = null;
-  localStorage.removeItem('ls_token'); localStorage.removeItem('ls_session'); localStorage.removeItem('ls_last_tab');
+  localStorage.removeItem('ls_token'); localStorage.removeItem('ls_session'); localStorage.removeItem('ls_last_tab'); localStorage.removeItem('ls_pw_reminder_dismissed');
   resetAllAppState();
   render();
 }
@@ -789,6 +839,10 @@ async function refreshData(opts) {
     session = { ...session, email: me.email, phone: me.phone, team: me.team, designation: me.designation, isTeamLead: !!me.isTeamLead };
     localStorage.setItem('ls_session', JSON.stringify(session));
     const notif = await api('/api/notifications');
+    monthlyLeaderboard = await api('/api/reports/monthly-leaderboard');
+    weeklyLeaderboard = await api('/api/reports/weekly-leaderboard');
+    quarterAwards = (await api('/api/reports/period-awards?type=quarter')).awards;
+    yearAwards = (await api('/api/reports/period-awards?type=year')).awards;
     myNotifications = notif.items; unreadNotifCount = notif.unread;
     if (session.role === 'admin') allTasks = await api('/api/tasks');
     if (session.role === 'admin' || session.role === 'director') {
@@ -1897,6 +1951,8 @@ function renderTodayFeed() {
       </div>
     </div>
   </div>
+  ${renderLeaderboardCard(monthlyLeaderboard, '🏆 Monthly Leaderboard', "Nobody has completed approved work yet this month.", 'today-monthly')}
+  ${renderLeaderboardCard(weeklyLeaderboard, '📅 This Week', "Nobody has completed approved work yet this week.", 'today-weekly')}
   <div class="card">
     <div class="card-title">Ongoing Tasks Progress</div>
     <p class="small muted">Green shows the share of tagged people whose part is approved. Click a bar to see exactly who's done and who's remaining.</p>
@@ -2565,6 +2621,7 @@ function renderHRDashboardView() {
           <div><div class="n">${r.tasksCompleted}</div><div class="l">Completed</div></div>
         </div>
         ${r.warningCount > 0 ? `<span class="hr-roster-warning-badge">⚠ ${r.warningCount} warning${r.warningCount === 1 ? '' : 's'}</span>` : ''}
+        ${r.isPendingRedFlag ? `<span class="hr-roster-warning-badge" style="background:rgba(217,60,60,0.18);color:var(--danger);font-weight:800;" title="${r.pendingTaskCount} tasks currently pending">🚩 ${r.pendingTaskCount} pending tasks</span>` : ''}
       </div>`).join('')}
   </div>`;
 }
@@ -2694,6 +2751,67 @@ function bindAuditLogView() {
 }
 
 /* ==================== PERFORMANCE (Admin) ==================== */
+function renderLeaderboardCard(data, title, emptyMessage, boardKey) {
+  const { leaderboard, periodLabel } = data || { leaderboard: [], periodLabel: '' };
+  const MEDAL = { 1: { emoji: '🥇', color: '#D4AF37' }, 2: { emoji: '🥈', color: '#A8A9AD' }, 3: { emoji: '🥉', color: '#CD7F32' } };
+  return `
+  <div class="card" style="border:1px solid var(--line);">
+    <div class="flex-between">
+      <div class="card-title" style="margin:0;">${title}${periodLabel ? ` — ${esc(periodLabel)}` : ''}</div>
+    </div>
+    ${leaderboard.length === 0 ? `<div class="empty">${esc(emptyMessage)}</div>` : `
+    <div class="leaderboard-list" data-leaderboard-key="${esc(boardKey)}">
+      ${leaderboard.slice(0, 10).map(r => {
+        const medal = MEDAL[r.rank];
+        return `
+        <div class="leaderboard-row" id="lb-row-${esc(boardKey)}-${esc(r.username)}" style="${medal ? `border-color:${medal.color};` : ''}">
+          <span class="leaderboard-rank" style="${medal ? `color:${medal.color};font-size:22px;` : ''}">${medal ? medal.emoji : `#${r.rank}`}</span>
+          <span class="leaderboard-avatar ${avatarColorFor(r.username)}">${esc(initials(r.name))}</span>
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:700;">${esc(r.name)}</div>
+            <div class="small muted">${esc(r.team || '')}${r.team ? ' · ' : ''}${r.completions} completed</div>
+          </div>
+          <span class="badge" style="font-weight:800;">${r.rating.toFixed(1)}/5</span>
+        </div>`;
+      }).join('')}
+    </div>`}
+  </div>`;
+}
+function renderPeriodAwardsCard(awards, title) {
+  if (!awards || awards.length === 0) return '';
+  // Group by period label so each past quarter/year gets its own small "podium" — most recent
+  // period first, since that's the one people actually want to see right after it ends.
+  const byPeriod = {};
+  awards.forEach(a => { (byPeriod[a.period_label] = byPeriod[a.period_label] || []).push(a); });
+  const MEDAL = { 1: '🥇', 2: '🥈', 3: '🥉' };
+  return `
+  <div class="card" style="border:1px solid var(--line);">
+    <div class="card-title">${title}</div>
+    ${Object.entries(byPeriod).map(([label, winners]) => `
+      <div style="margin-bottom:14px;">
+        <div class="small muted" style="font-weight:700;margin-bottom:6px;">${esc(label)}</div>
+        <div class="leaderboard-list">
+          ${winners.sort((a, b) => a.rank - b.rank).map(w => `
+            <div class="leaderboard-row">
+              <span class="leaderboard-rank" style="font-size:20px;">${MEDAL[w.rank] || `#${w.rank}`}</span>
+              <span class="leaderboard-avatar ${avatarColorFor(w.username)}">${esc(initials(w.name))}</span>
+              <div style="flex:1;min-width:0;">
+                <div style="font-weight:700;">${esc(w.name)}</div>
+                <div class="small muted">${esc(w.team || '')}${w.team ? ' · ' : ''}${w.completions} completed that period</div>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>`).join('')}
+  </div>`;
+}
+function renderMonthlyLeaderboard() {
+  return `
+  <div class="small muted" style="margin:-4px 0 10px;">Ranked by this month's completed work — volume and how quickly you turn things around, same scoring as the quarterly rating below, just re-checked every month instead of waiting for quarter-end.</div>
+  ${renderLeaderboardCard(monthlyLeaderboard, '🏆 Monthly Leaderboard', "Nobody has completed approved work yet this month.", 'perf-monthly')}`;
+}
+function renderWeeklyLeaderboard() {
+  return renderLeaderboardCard(weeklyLeaderboard, '📅 This Week', "Nobody has completed approved work yet this week.", 'perf-weekly');
+}
 function renderPerformanceView() {
   const deptNames = Array.from(new Set(userDirectory.map(u => u.team).filter(Boolean))).sort();
   const filterDept = ui.performanceDeptFilter;
@@ -2705,6 +2823,10 @@ function renderPerformanceView() {
   const filteredApprovalDetail = filterDept ? (approvalDecisionsDetail || []).filter(d => teamByUsername[d.reviewer_username] === filterDept) : (approvalDecisionsDetail || []);
   return `
   <div class="notice">Objective counts of approved (creator-signed-off) work per employee, credited to the day each person actually submitted it — not the day it happened to get approved. A slow approval never counts against (or for) the employee.</div>
+  ${renderMonthlyLeaderboard()}
+  ${renderWeeklyLeaderboard()}
+  ${renderPeriodAwardsCard(quarterAwards, '🏅 Employee of the Quarter — Past Winners')}
+  ${renderPeriodAwardsCard(yearAwards, '🏅 Employee of the Year — Past Winners')}
   <div class="card">
     <label>Filter by Department</label>
     <select id="performance-dept-filter">
@@ -2969,9 +3091,11 @@ function morphHTML(container, html) {
 
 function render() {
   const snapshot = snapshotFieldValues();
+  const leaderboardPositions = captureLeaderboardRowPositions();
   try {
     renderInner();
     restoreFieldValues(snapshot);
+    animateLeaderboardRowPositions(leaderboardPositions);
   } catch (e) {
     console.error('Render failed:', e);
     const app = document.getElementById('app');
@@ -2981,7 +3105,19 @@ function render() {
 function renderInner() {
   const app = document.getElementById('app');
   if (!session || !token) { morphHTML(app, renderLoginPage()); bindLogin(); return; }
-  if (session.mustChangePassword) { morphHTML(app, renderForcedPasswordChange()); bindForcedPasswordChange(); return; }
+  // Changed from a hard block to a dismissible reminder, at explicit request: forcing this
+  // screen every single time became a genuine dead end on a hosting tier where the database can
+  // reset and wipe out an already-set password — the person would be stuck re-doing this
+  // forever with no way to just get back into their own data. The password-change form itself
+  // still exists and still works exactly as before; it's just no longer the only thing visible.
+  // Security tradeoff, stated plainly rather than hidden: a temporary/default password now
+  // grants full access, not just access to the one change-password screen — reasonable for this
+  // deployment's current situation, but worth reconsidering once on persistent, reliable storage.
+  if (session.mustChangePassword && ui.showPasswordChangeModal) {
+    morphHTML(app, renderForcedPasswordChange());
+    bindForcedPasswordChange();
+    return;
+  }
   let body = '';
   if (ui.adminTab === 'tasks') body = renderTasksView();
   else if (ui.adminTab === 'alltasks' && session.role === 'admin') body = renderAllTasksCard();
@@ -3027,7 +3163,9 @@ function bindGlobal() {
   bindThemeToggle();
   document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { ui.adminTab = b.dataset.tab; ui.sidebarOpen = false; localStorage.setItem('ls_last_tab', ui.adminTab); render(); });
   const menuToggle = document.querySelector('[data-act="toggle-sidebar"]'); if (menuToggle) menuToggle.onclick = () => { ui.sidebarOpen = !ui.sidebarOpen; render(); };
+  document.querySelectorAll('[data-act="close-sidebar"]').forEach(b => b.onclick = () => { ui.sidebarOpen = false; render(); });
   const logoutBtn = document.querySelector('[data-act="logout"]'); if (logoutBtn) logoutBtn.onclick = () => logout();
+  const reopenPwChange = document.querySelector('[data-act="reopen-password-change"]'); if (reopenPwChange) reopenPwChange.onclick = () => { ui.showPasswordChangeModal = true; localStorage.removeItem('ls_pw_reminder_dismissed'); render(); };
   const openNotif = document.querySelector('[data-act="open-notifications"]');
   if (openNotif) openNotif.onclick = () => {
     ui.notifDrawerOpen = true; render();

@@ -71,6 +71,34 @@ test('HR roster: company-wide overview with real completion and warning counts',
     assert.equal(totalAfter - totalBefore, 1, 'the company-wide total must increase by exactly 1 for one shared task, not 2');
   });
 
+  await t.test('a person with exactly 1 pending task is NOT red-flagged, but 2 pending tasks IS', async () => {
+    const carol = await createMember(baseUrl, adminToken, 'carol_pending', 'Carol Pending', 'Sales');
+    await api(baseUrl, '/api/tasks', { method: 'POST', token: adminToken, body: { title: 'Pending Task 1', priority: 'low', deadline: futureDate(), assignedToList: ['carol_pending'] } });
+
+    let roster = (await api(baseUrl, '/api/reports/hr-roster', { token: hrToken })).data.roster;
+    let carolEntry = roster.find(r => r.username === 'carol_pending');
+    assert.equal(carolEntry.pendingTaskCount, 1);
+    assert.equal(carolEntry.isPendingRedFlag, false, 'one pending task alone must not trigger the red flag');
+
+    await api(baseUrl, '/api/tasks', { method: 'POST', token: adminToken, body: { title: 'Pending Task 2', priority: 'low', deadline: futureDate(), assignedToList: ['carol_pending'] } });
+    roster = (await api(baseUrl, '/api/reports/hr-roster', { token: hrToken })).data.roster;
+    carolEntry = roster.find(r => r.username === 'carol_pending');
+    assert.equal(carolEntry.pendingTaskCount, 2);
+    assert.equal(carolEntry.isPendingRedFlag, true, 'two pending tasks must trigger the red flag');
+  });
+
+  await t.test('a task that has already been completed is NOT counted as pending', async () => {
+    const daveToken = await createMember(baseUrl, adminToken, 'dave_pending', 'Dave Pending', 'Sales');
+    const create = await api(baseUrl, '/api/tasks', { method: 'POST', token: adminToken, body: { title: 'Will Be Done', priority: 'low', deadline: futureDate(), assignedToList: ['dave_pending'] } });
+    await api(baseUrl, `/api/tasks/${create.data.id}/submit-mine`, { method: 'POST', token: daveToken, body: { note: 'Done.' } });
+    await api(baseUrl, `/api/tasks/${create.data.id}/approve/dave_pending`, { method: 'POST', token: adminToken });
+
+    const roster = (await api(baseUrl, '/api/reports/hr-roster', { token: hrToken })).data.roster;
+    const daveEntry = roster.find(r => r.username === 'dave_pending');
+    assert.equal(daveEntry.pendingTaskCount, 0, 'a completed task must not count toward pending workload');
+    assert.equal(daveEntry.isPendingRedFlag, false);
+  });
+
   await t.test('Admin can access the roster too', async () => {
     const res = await api(baseUrl, '/api/reports/hr-roster', { token: adminToken });
     assert.equal(res.status, 200);

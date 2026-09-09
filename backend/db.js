@@ -35,6 +35,22 @@ CREATE TABLE IF NOT EXISTS drawing_sections(
   name TEXT PRIMARY KEY,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS period_awards(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  period_type TEXT NOT NULL,
+  period_label TEXT NOT NULL,
+  rank INTEGER NOT NULL,
+  username TEXT NOT NULL,
+  name TEXT NOT NULL,
+  team TEXT,
+  rating REAL,
+  completions INTEGER,
+  awarded_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS period_tracking(
+  period_type TEXT PRIMARY KEY,
+  last_processed_label TEXT
+);
 CREATE TABLE IF NOT EXISTS task_phases(
   name TEXT PRIMARY KEY,
   created_at TEXT NOT NULL
@@ -832,6 +848,45 @@ module.exports = {
     const map = {};
     rows.forEach(r => { map[r.username] = r.c; });
     return map;
+  },
+  // Counts each person's currently PENDING work — tasks assigned to them, on an open (not yet
+  // released-and-blocked) task, that they personally haven't completed their own part of yet.
+  // This is deliberately a live count of right-now workload, not a historical escalation count
+  // (that's what getWarningCountsByUser is for) — used to flag someone who's accumulating
+  // pending tasks right now, regardless of whether any reminder has escalated yet.
+  getPendingTaskCountsByUser() {
+    const rows = db.prepare(`
+      SELECT ta.username, COUNT(*) as c
+      FROM task_assignees ta JOIN tasks t ON t.id = ta.task_id
+      WHERE t.status = 'open' AND ta.completed_at IS NULL AND ta.is_released = 1
+      GROUP BY ta.username
+    `).all();
+    const map = {};
+    rows.forEach(r => { map[r.username] = r.c; });
+    return map;
+  },
+  // ---- calendar-aligned period awards (Employee of the Quarter/Year) ----
+  // Distinct from the trailing-90/365-day "quarter"/"year" figures used elsewhere in this app
+  // (which are rolling windows, always relative to "now") — these are REAL calendar periods
+  // (Jan-Mar, Apr-Jun, etc. / a full Jan-Dec year), computed once a period genuinely ends, and
+  // stored permanently so a past winner is never recomputed differently later.
+  getApprovedCompletionsInRange(startISO, endISO) {
+    return db.prepare("SELECT username, submitted_at FROM task_assignees WHERE decision='approve' AND submitted_at >= ? AND submitted_at < ?").all(startISO, endISO);
+  },
+  getLastProcessedPeriod(periodType) {
+    const row = db.prepare('SELECT last_processed_label FROM period_tracking WHERE period_type=?').get(periodType);
+    return row ? row.last_processed_label : null;
+  },
+  setLastProcessedPeriod(periodType, label) {
+    db.prepare('INSERT INTO period_tracking(period_type, last_processed_label) VALUES(?,?) ON CONFLICT(period_type) DO UPDATE SET last_processed_label=excluded.last_processed_label').run(periodType, label);
+  },
+  savePeriodAward({ period_type, period_label, rank, username, name, team, rating, completions }) {
+    db.prepare(`INSERT INTO period_awards(period_type,period_label,rank,username,name,team,rating,completions,awarded_at)
+                VALUES(?,?,?,?,?,?,?,?,?)`)
+      .run(period_type, period_label, rank, username, name, team || null, rating, completions, new Date().toISOString());
+  },
+  listPeriodAwards(periodType) {
+    return db.prepare('SELECT * FROM period_awards WHERE period_type=? ORDER BY awarded_at DESC, rank ASC').all(periodType);
   },
 
   // ---- audit log ----
