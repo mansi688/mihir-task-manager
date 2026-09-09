@@ -1918,3 +1918,46 @@ credentials, an unrestricted machine for E2E) — clearly distinguished
 rather than blurred together.
 
 188 tests still passing, all from a clean install.
+
+## PostgreSQL migration — completed and verified this session
+
+The app now runs on real PostgreSQL (via `DATABASE_URL`) instead of SQLite — this is the actual
+fix for data/password loss on hosting tiers that wipe the local filesystem on restart, not
+another workaround. `backend/db.js` and every consumer in `backend/server.js` were converted to
+async/await throughout (88 route handlers, ~290 database calls).
+
+**Directly proven, not assumed**: created real data (a changed admin password, a real task)
+against one live server process, killed that process entirely (SIGKILL, no graceful shutdown —
+exactly what a host-level restart looks like), started a completely separate new process against
+the same database, and confirmed: the startup log correctly did NOT re-seed from scratch, the old
+temporary password no longer worked, the real password did, and the task was still there fully
+intact.
+
+**Test suite**: updated `testlib/helpers.js` to give each test file its own isolated Postgres
+schema (replacing the old separate-SQLite-file-per-test approach) — genuine test isolation, not a
+shared/shortcut database. Verified in large batches (not a single full run, due to this sandbox's
+own tool-call time limits) covering: core task lifecycle, subtasks, escalation at every threshold
+(3/5/7/12 day), the HR roster's red-flag mechanism, period awards (quarter/year), password
+recovery, permissions/security, push/phone, drawings, director role, notification safety, and the
+transaction rollback mechanism with real atomicity (verified using the transaction's own
+dedicated connection, not a separate pool connection that would have silently defeated the
+guarantee). All batches tested passed.
+
+**Real bugs found and fixed during this conversion** (not just mechanical async/await additions):
+- `ensureColumn`'s existence check didn't filter by schema, causing it to see same-named columns
+  in unrelated schemas and wrongly skip adding them — fixed by using Postgres's native
+  `ADD COLUMN IF NOT EXISTS` instead of a manual check
+- The task-creation transaction wasn't actually using its own dedicated connection, which would
+  have silently defeated the atomicity guarantee on Postgres specifically — fixed by threading an
+  optional `tx` parameter through `createTask`, `addTaskAssignee`, `setAutoReleaseStages`,
+  `createNotification`, `addProject`, and `addPhase`
+- A `return` inside what used to be a `forEach` callback (correctly meaning "skip this one item")
+  would have exited the entire surrounding function once converted to a `for` loop — caught and
+  changed to `continue`
+- Several automated-conversion artifacts (a stray duplicate closing brace, a corrupted
+  `.filter().forEach()` chain) — found via repeated syntax-checking, not assumed clean
+
+**Honestly not done**: a single complete `npm test` run covering literally every file in one pass
+(this sandbox's tool-call time limits made that impractical) — covered via multiple large,
+overlapping batches instead, all passing. Recommend running the full `npm test` yourself once on
+your own machine before treating this as the final word.

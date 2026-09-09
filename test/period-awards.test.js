@@ -1,10 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const Database = require('better-sqlite3');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('Employee of the Quarter/Year: snapshots the period that just ended, never the current one, and never duplicates', async (t) => {
-  const { baseUrl, dbPath, stop } = startTestServer();
+  const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const starToken = await createMember(baseUrl, adminToken, 'star_performer', 'Star Performer', 'Sales');
@@ -15,10 +14,10 @@ test('Employee of the Quarter/Year: snapshots the period that just ended, never 
 
   // Backdate the submission into the PREVIOUS calendar quarter (roughly 4 months back is safely
   // always in a genuinely different quarter than "now", regardless of what month tests run in).
-  const raw = new Database(dbPath);
+  const raw = await getRawClient();
   const fourMonthsAgo = new Date(Date.now() - 120 * 86400000).toISOString();
-  raw.prepare('UPDATE task_assignees SET submitted_at=? WHERE task_id=?').run(fourMonthsAgo, create.data.id);
-  raw.close();
+  await raw.query('UPDATE task_assignees SET submitted_at=$1 WHERE task_id=$2', [fourMonthsAgo, create.data.id]);
+  await raw.end();
 
   await api(baseUrl, '/api/reports/check-period-awards-now', { method: 'POST', token: adminToken });
 
@@ -36,8 +35,8 @@ test('Employee of the Quarter/Year: snapshots the period that just ended, never 
     assert.equal(after, before, 'a period that already has an award must never be re-processed');
   });
 
-  await t.test('a member (not just admin) can view past award winners', async () => {
+  await t.test('a member cannot view past award winners — admin only, per explicit request', async () => {
     const memberView = await api(baseUrl, '/api/reports/period-awards?type=quarter', { token: starToken });
-    assert.equal(memberView.status, 200);
+    assert.equal(memberView.status, 403);
   });
 });

@@ -839,10 +839,12 @@ async function refreshData(opts) {
     session = { ...session, email: me.email, phone: me.phone, team: me.team, designation: me.designation, isTeamLead: !!me.isTeamLead };
     localStorage.setItem('ls_session', JSON.stringify(session));
     const notif = await api('/api/notifications');
-    monthlyLeaderboard = await api('/api/reports/monthly-leaderboard');
-    weeklyLeaderboard = await api('/api/reports/weekly-leaderboard');
-    quarterAwards = (await api('/api/reports/period-awards?type=quarter')).awards;
-    yearAwards = (await api('/api/reports/period-awards?type=year')).awards;
+    if (session.role === 'admin') {
+      monthlyLeaderboard = await api('/api/reports/monthly-leaderboard');
+      weeklyLeaderboard = await api('/api/reports/weekly-leaderboard');
+      quarterAwards = (await api('/api/reports/period-awards?type=quarter')).awards;
+      yearAwards = (await api('/api/reports/period-awards?type=year')).awards;
+    }
     myNotifications = notif.items; unreadNotifCount = notif.unread;
     if (session.role === 'admin') allTasks = await api('/api/tasks');
     if (session.role === 'admin' || session.role === 'director') {
@@ -1951,7 +1953,7 @@ function renderTodayFeed() {
       </div>
     </div>
   </div>
-  ${renderLeaderboardCard(monthlyLeaderboard, '🏆 Monthly Leaderboard', "Nobody has completed approved work yet this month.", 'today-monthly')}
+  ${session.role === 'admin' ? renderLeaderboardCard(monthlyLeaderboard, '🏆 Monthly Leaderboard', "Nobody has completed approved work yet this month.", 'today-monthly') : ''}
   ${renderLeaderboardCard(weeklyLeaderboard, '📅 This Week', "Nobody has completed approved work yet this week.", 'today-weekly')}
   <div class="card">
     <div class="card-title">Ongoing Tasks Progress</div>

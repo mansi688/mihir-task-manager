@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember } = require('../testlib/helpers');
 
 test('push notification subscription management', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
 
@@ -45,7 +45,7 @@ test('push notification subscription management', async (t) => {
 });
 
 test('phone number (WhatsApp) profile update', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const memberToken = await createMember(baseUrl, adminToken, 'phonetest', 'Phone Test');

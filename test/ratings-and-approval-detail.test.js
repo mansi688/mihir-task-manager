@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('ratings: transparent, fair, and correct even for a very fast responder', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const bobToken = await createMember(baseUrl, adminToken, 'bob', 'Bob');
@@ -39,7 +39,7 @@ test('ratings: transparent, fair, and correct even for a very fast responder', a
 });
 
 test('Documents Approved detail log: real per-decision records', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const bobToken = await createMember(baseUrl, adminToken, 'bob', 'Bob');

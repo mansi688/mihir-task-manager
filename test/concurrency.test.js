@@ -9,7 +9,7 @@ const { startTestServer, api, login, createMember, futureDate } = require('../te
 // behavior is: exactly one request wins, the other gets a clean rejection, and nothing ends up
 // double-processed. This is being verified here, not assumed.
 test('concurrency: simultaneous conflicting requests', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
 
   const adminToken = await login(baseUrl, 'admin', 'admin123');

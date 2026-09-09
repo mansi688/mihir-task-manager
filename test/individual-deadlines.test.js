@@ -1,10 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const Database = require('better-sqlite3');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('per-individual task deadlines drive personal reminders independently of the overall task deadline', async (t) => {
-  const { baseUrl, dbPath, stop } = startTestServer();
+  const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const aliceToken = await createMember(baseUrl, adminToken, 'alice', 'Alice');
@@ -44,9 +43,9 @@ test('per-individual task deadlines drive personal reminders independently of th
     const id = create.data.id;
     // Back-date bob's individual deadline into the past so it's genuinely overdue right now
     // (futureDate(0) is "today", which may not yet be strictly <= now at test-run time).
-    const raw = new Database(dbPath);
-    raw.prepare('UPDATE task_assignees SET individual_deadline=? WHERE task_id=? AND username=?').run(new Date(Date.now() - 3600000).toISOString().slice(0, 16), id, 'bob');
-    raw.close();
+    const raw = await getRawClient();
+    await raw.query('UPDATE task_assignees SET individual_deadline=$1 WHERE task_id=$2 AND username=$3', [new Date(Date.now() - 3600000).toISOString().slice(0, 16), id, 'bob']);
+    await raw.end();
 
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
 
@@ -84,9 +83,9 @@ test('per-individual task deadlines drive personal reminders independently of th
       method: 'POST', token: adminToken,
       body: { title: 'Blocked Individual Deadline Test', priority: 'high', deadline: futureDate(30), assignedToList: ['bob'], dependsOnTaskId: prereq.data.id },
     });
-    const raw = new Database(dbPath);
-    raw.prepare('UPDATE task_assignees SET individual_deadline=? WHERE task_id=? AND username=?').run(new Date(Date.now() - 3600000).toISOString().slice(0, 16), dependent.data.id, 'bob');
-    raw.close();
+    const raw = await getRawClient();
+    await raw.query('UPDATE task_assignees SET individual_deadline=$1 WHERE task_id=$2 AND username=$3', [new Date(Date.now() - 3600000).toISOString().slice(0, 16), dependent.data.id, 'bob']);
+    await raw.end();
 
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
     const bobNotifs = (await api(baseUrl, '/api/notifications', { token: bobToken })).data.items.filter(n => n.task_id === dependent.data.id && n.type.startsWith('deadline_'));

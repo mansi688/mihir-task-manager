@@ -3,22 +3,22 @@ const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('task creation transaction: a mid-sequence failure leaves NO partial task, assignees, or notifications behind', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   await createMember(baseUrl, adminToken, 'alice', 'Alice');
 
   const db = require('../backend/db');
-  const beforeTaskCount = db.listAllTasks().length;
+  const beforeTaskCount = (await db.listAllTasks()).length;
 
   let threw = false;
   try {
-    db.runInTransaction(() => {
-      db.createTask({
+    await db.runInTransaction(async (tx) => {
+      await db.createTask({
         id: 'TASK-ROLLBACK-TEST', title: 'Should Not Survive', priority: 'medium',
         deadline: futureDate(), created_by: 'Admin', created_by_username: 'admin',
-      });
-      db.addTaskAssignee('TASK-ROLLBACK-TEST', 'alice', 'Sales', 1, true);
+      }, tx);
+      await db.addTaskAssignee('TASK-ROLLBACK-TEST', 'alice', 'Sales', 1, true, null, tx);
       throw new Error('Simulated failure partway through');
     });
   } catch (e) {
@@ -26,14 +26,14 @@ test('task creation transaction: a mid-sequence failure leaves NO partial task, 
   }
 
   assert.ok(threw, 'the error must still propagate, not be silently swallowed');
-  const afterTaskCount = db.listAllTasks().length;
+  const afterTaskCount = (await db.listAllTasks()).length;
   assert.equal(afterTaskCount, beforeTaskCount, 'no task row should exist after a rolled-back transaction');
-  assert.equal(db.getTask('TASK-ROLLBACK-TEST'), undefined, 'the specific task must not exist at all');
-  assert.equal(db.listAssignees('TASK-ROLLBACK-TEST').length, 0, 'no assignee row should have survived either');
+  assert.equal(await db.getTask('TASK-ROLLBACK-TEST'), undefined, 'the specific task must not exist at all');
+  assert.equal((await db.listAssignees('TASK-ROLLBACK-TEST')).length, 0, 'no assignee row should have survived either');
 });
 
 test('a genuinely successful task creation still commits everything together, as normal', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const bobToken = await createMember(baseUrl, adminToken, 'bob', 'Bob');

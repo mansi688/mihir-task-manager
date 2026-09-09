@@ -1,7 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const bcrypt = require('bcrypt');
-const Database = require('better-sqlite3');
 const { startTestServer, api, login, createMember } = require('../testlib/helpers');
 
 // Honesty note: this sandbox has no real SMTP credentials, so actual email delivery is not
@@ -11,7 +10,7 @@ const { startTestServer, api, login, createMember } = require('../testlib/helper
 // successful reset does NOT force yet another password change) — by injecting a known OTP hash
 // directly, the same way the actual server would have stored one after really sending an email.
 test('forgot-password gracefully reports email is not configured (this app\'s default state)', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const res = await api(baseUrl, '/api/auth/forgot-password', { method: 'POST', body: { username: 'admin' } });
   assert.equal(res.status, 200);
@@ -19,7 +18,7 @@ test('forgot-password gracefully reports email is not configured (this app\'s de
 });
 
 test('forgot-password never reveals whether a username exists', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const realUser = await api(baseUrl, '/api/auth/forgot-password', { method: 'POST', body: { username: 'admin' } });
   const fakeUser = await api(baseUrl, '/api/auth/forgot-password', { method: 'POST', body: { username: 'no_such_person_at_all' } });
@@ -28,7 +27,7 @@ test('forgot-password never reveals whether a username exists', async (t) => {
 });
 
 test('repeated OTP requests for the same account are rate-limited', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   await createMember(baseUrl, adminToken, 'ratelimited', 'Rate Limited Test');
@@ -49,7 +48,7 @@ test('repeated OTP requests for the same account are rate-limited', async (t) =>
 });
 
 test('OTP verification logic: correct code resets password permanently (no forced re-change)', async (t) => {
-  const { baseUrl, dbPath, stop } = startTestServer();
+  const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   await createMember(baseUrl, adminToken, 'otptest', 'OTP Test');
@@ -57,10 +56,9 @@ test('OTP verification logic: correct code resets password permanently (no force
   // Simulate what the server does internally after a real email send: store a hashed OTP with
   // an expiry, exactly as /api/auth/forgot-password would have.
   const otp = '482913';
-  const raw = new Database(dbPath);
-  raw.prepare('UPDATE users SET password_reset_otp_hash=?, password_reset_otp_expires=? WHERE username=?')
-    .run(bcrypt.hashSync(otp, 10), new Date(Date.now() + 10 * 60000).toISOString(), 'otptest');
-  raw.close();
+  const raw = await getRawClient();
+  await raw.query('UPDATE users SET password_reset_otp_hash=$1, password_reset_otp_expires=$2 WHERE username=$3', [bcrypt.hashSync(otp, 10), new Date(Date.now() + 10 * 60000).toISOString(), 'otptest']);
+  await raw.end();
 
   const wrongCode = await api(baseUrl, '/api/auth/reset-with-otp', { method: 'POST', body: { username: 'otptest', otp: '000000', newPassword: 'NewRealPass123' } });
   assert.equal(wrongCode.status, 400, 'an incorrect code must be rejected');
@@ -77,16 +75,15 @@ test('OTP verification logic: correct code resets password permanently (no force
 });
 
 test('an expired OTP is rejected', async (t) => {
-  const { baseUrl, dbPath, stop } = startTestServer();
+  const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   await createMember(baseUrl, adminToken, 'expiretest', 'Expire Test');
 
   const otp = '111222';
-  const raw = new Database(dbPath);
-  raw.prepare('UPDATE users SET password_reset_otp_hash=?, password_reset_otp_expires=? WHERE username=?')
-    .run(bcrypt.hashSync(otp, 10), new Date(Date.now() - 60000).toISOString(), 'expiretest'); // expired 1 minute ago
-  raw.close();
+  const raw = await getRawClient();
+  await raw.query('UPDATE users SET password_reset_otp_hash=$1, password_reset_otp_expires=$2 WHERE username=$3', [bcrypt.hashSync(otp, 10), new Date(Date.now() - 60000).toISOString(), 'expiretest']); // expired 1 minute ago
+  await raw.end();
 
   const res = await api(baseUrl, '/api/auth/reset-with-otp', { method: 'POST', body: { username: 'expiretest', otp, newPassword: 'NewRealPass123' } });
   assert.equal(res.status, 400);

@@ -1,26 +1,56 @@
-// Shared setup for every test file: a fresh, isolated SQLite file per test file (never your
-// real data) and the real Express app started on an ephemeral port, so tests hit the exact same
+// Shared setup for every test file: a fresh, isolated Postgres SCHEMA per test file (never your
+// real data), and the real Express app started on an ephemeral port, so tests hit the exact same
 // code paths a real request would — not a mocked-out version of the app.
-const path = require('path');
-const fs = require('fs');
-const os = require('os');
+//
+// startTestServer() is now ASYNC (it wasn't when this used synchronous SQLite) — requiring
+// server.js as a module no longer runs db.init() automatically (that only happens when
+// server.js is executed directly, guarded by `if (require.main === module)`), so this calls
+// db.init() itself before starting to listen, same as a real deployment's startup sequence.
+const { Client } = require('pg');
 
-function startTestServer() {
-  const dbPath = path.join(os.tmpdir(), `tm-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
-  process.env.DB_PATH = dbPath;
+const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL || 'postgres://postgres:testpass@localhost:5432/taskmanager_test';
+
+async function startTestServer() {
+  const schema = `test_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const url = new URL(TEST_DATABASE_URL);
+  url.searchParams.set('options', `-c search_path=${schema},public`);
+  process.env.DATABASE_URL = url.toString();
+  process.env.PGSSLMODE = 'disable';
   process.env.JWT_SECRET = 'test-secret-not-for-real-use-' + Math.random().toString(36);
   delete require.cache[require.resolve('../backend/db')];
   delete require.cache[require.resolve('../backend/server')];
+
+  const setupClient = new Client({ connectionString: TEST_DATABASE_URL });
+  await setupClient.connect();
+  await setupClient.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
+  await setupClient.end();
+
+  const db = require('../backend/db');
+  await db.init();
   const app = require('../backend/server');
   const server = app.listen(0);
   const port = server.address().port;
   const baseUrl = `http://localhost:${port}`;
+
   return {
     baseUrl,
-    dbPath,
+    schema,
+    // For tests that need to directly manipulate timestamps/rows (backdating a task's
+    // escalation clock, etc.) — a raw Postgres client already pointed at this exact test's
+    // isolated schema, replacing the old `new Database(dbPath)` pattern from the SQLite days.
+    async getRawClient() {
+      const client = new Client({ connectionString: TEST_DATABASE_URL });
+      await client.connect();
+      await client.query(`SET search_path TO "${schema}", public`);
+      return client;
+    },
     async stop() {
       await new Promise(resolve => server.close(resolve));
-      [dbPath, dbPath + '-wal', dbPath + '-shm'].forEach(f => { try { fs.unlinkSync(f); } catch (e) { /* fine if it never existed */ } });
+      await db.pool.end();
+      const client = new Client({ connectionString: TEST_DATABASE_URL });
+      await client.connect();
+      await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      await client.end();
     },
   };
 }

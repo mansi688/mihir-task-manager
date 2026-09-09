@@ -1,10 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const Database = require('better-sqlite3');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('HR roster: company-wide overview with real completion and warning counts', async (t) => {
-  const { baseUrl, dbPath, stop } = startTestServer();
+  const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const hrToken = await createMember(baseUrl, adminToken, 'hr_roster_test', 'HR Roster Test', 'HR Department');
@@ -35,10 +34,9 @@ test('HR roster: company-wide overview with real completion and warning counts',
 
   await t.test('warning counts reflect real escalation history, once per task even with multiple thresholds fired', async () => {
     const create = await api(baseUrl, '/api/tasks', { method: 'POST', token: adminToken, body: { title: 'Roster Warning Test', priority: 'medium', deadline: futureDate(20), assignedToList: ['bob_roster'] } });
-    const raw = new Database(dbPath);
-    raw.prepare('UPDATE task_assignees SET warning_5day_sent_at=?, warning_7day_sent_at=? WHERE task_id=? AND username=?')
-      .run(new Date().toISOString(), new Date().toISOString(), create.data.id, 'bob_roster');
-    raw.close();
+    const raw = await getRawClient();
+    await raw.query('UPDATE task_assignees SET warning_5day_sent_at=$1, warning_7day_sent_at=$2 WHERE task_id=$3 AND username=$4', [new Date().toISOString(), new Date().toISOString(), create.data.id, 'bob_roster']);
+    await raw.end();
 
     const roster = await api(baseUrl, '/api/reports/hr-roster', { token: hrToken });
     const bobEntry = roster.data.roster.find(r => r.username === 'bob_roster');
