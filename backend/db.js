@@ -1,22 +1,11 @@
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 
-// Real client-server database: PostgreSQL via a connection pool, replacing the previous
-// SQLite/better-sqlite3 embedded-file setup. This is the one unavoidable, structural
-// consequence of that move: every function below is now async (returns a Promise), since
-// Postgres is a network database, not a local synchronous file. Every call site in server.js
-// must `await` these, and every route handler that calls one must be `async`.
-//
-// Connection string comes from DATABASE_URL — the standard Postgres env var name, and exactly
-// what Render's (or any managed Postgres provider's) connection string env var is named.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false },
 });
 
-// Translates better-sqlite3-style `?` positional placeholders into Postgres's `$1, $2, ...` —
-// keeps every query below readable and close to its original SQLite form, rather than requiring
-// every single query to be hand-renumbered.
 function q(sql, params) {
   let i = 0;
   return { text: sql.replace(/\?/g, () => `$${++i}`), values: params || [] };
@@ -25,9 +14,6 @@ async function run(sql, params) { return pool.query(q(sql, params)); }
 async function get(sql, params) { const r = await pool.query(q(sql, params)); return r.rows[0]; }
 async function all(sql, params) { const r = await pool.query(q(sql, params)); return r.rows; }
 
-// The Postgres equivalent of better-sqlite3's synchronous `db.transaction(fn)()` wrapper — one
-// dedicated client from the pool so BEGIN/COMMIT/ROLLBACK all happen on the same connection, and
-// a genuine rollback on any error instead of a partial write staying committed.
 async function runInTransaction(fn) {
   const client = await pool.connect();
   try {
@@ -49,20 +35,9 @@ async function runInTransaction(fn) {
 }
 
 async function ensureColumn(table, column, decl) {
-  // Postgres supports "IF NOT EXISTS" directly on ADD COLUMN (SQLite never did, which is why
-  // this used to manually check information_schema.columns first) — that manual check had a
-  // real bug on Postgres specifically: it didn't filter by schema, so it could see a
-  // same-named column in a completely different schema (e.g. a different test's isolated
-  // schema) and wrongly conclude it already existed here too. Letting Postgres's own
-  // IF NOT EXISTS handle it is both simpler and correctly schema-scoped by default.
   await run(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${decl}`);
 }
 
-// Runs once at startup (server.js must `await db.init()` before listening) — creates every
-// table if it doesn't exist, applies every column migration, backfills the teams table, and
-// seeds the default/legacy accounts on first run. All of this used to happen as synchronous
-// top-level code at module load; Postgres makes that impossible (every query is a Promise), so
-// it's now one explicit async function instead.
 async function init() {
   await run(`
     CREATE TABLE IF NOT EXISTS users(
@@ -317,10 +292,9 @@ async function init() {
 
 module.exports = {
   init,
-  pool, // exposed for a clean shutdown (pool.end()) and for /ready health checks
+  pool,
   runInTransaction,
 
-  // ---- users ----
   async getUser(username) { return get('SELECT * FROM users WHERE username=?', [username]); },
   async recordFailedLogin(username) {
     const user = await get('SELECT failed_login_count FROM users WHERE username=?', [username]);
@@ -372,7 +346,6 @@ module.exports = {
     });
   },
 
-  // ---- sessions ----
   async createSession({ id, username, device, ip }) {
     const now = new Date().toISOString();
     await run('INSERT INTO sessions(id,username,device,ip,created_at,last_seen) VALUES(?,?,?,?,?,?)', [id, username, device || null, ip || null, now, now]);
@@ -381,12 +354,6 @@ module.exports = {
   async touchSession(id) { await run('UPDATE sessions SET last_seen=? WHERE id=?', [new Date().toISOString(), id]); },
   async revokeSession(id) { await run('UPDATE sessions SET revoked=1 WHERE id=?', [id]); },
 
-  // ---- tasks ----
-  // `tx` (optional): pass the object handed to your db.runInTransaction(async (tx) => {...})
-  // callback to make this write participate in that same transaction/connection, instead of
-  // grabbing its own separate one from the pool — required for real atomicity when several of
-  // these calls need to succeed or fail together (e.g. creating a task, its assignees, and their
-  // notifications as one unit). Omit it for normal, standalone use.
   async createTask({ id, title, description, priority, deadline, created_by, created_by_username, depends_on_task_id, attachment, attachment_name, is_drawing_request, parent_task_id, project, phase }, tx) {
     if (project) await module.exports.addProject(project, tx);
     if (phase) await module.exports.addPhase(phase, tx);
@@ -410,7 +377,6 @@ module.exports = {
     const rows = await all('SELECT decision, completed_at FROM task_assignees WHERE task_id=? AND stage=?', [taskId, stage]);
     if (rows.length === 0) return false;
     return rows.every(r => r.decision === 'approve' && r.completed_at);
-
   },
   async hasStage(taskId, stage) {
     const r = await get('SELECT COUNT(*) c FROM task_assignees WHERE task_id=? AND stage=?', [taskId, stage]);
@@ -451,11 +417,6 @@ module.exports = {
   async reopenAssignee(taskId, username) {
     await run('UPDATE task_assignees SET completed_at=NULL, completed_by=NULL, decision=NULL, submitted_at=NULL WHERE task_id=? AND username=?', [taskId, username]);
   },
-  // Each returns true only if THIS call actually changed the row — false means someone else's
-  // simultaneous request already got there first (or the task was never in the expected state
-  // to begin with). The WHERE clause's status check is what makes this atomic and race-safe:
-  // Postgres guarantees only one concurrent UPDATE can match a given row's current status, so
-  // two simultaneous close requests can never both report success.
   async closeTask(id, closedByName) {
     const result = await run("UPDATE tasks SET status='closed', closed_at=?, closed_by=? WHERE id=? AND status='open'", [new Date().toISOString(), closedByName, id]);
     if (result.rowCount === 0) return false;
@@ -504,7 +465,6 @@ module.exports = {
   },
   async listReplies(taskId) { return all('SELECT * FROM task_replies WHERE task_id=? ORDER BY created_at', [taskId]); },
 
-  // ---- follow-ups ----
   async addFollowup(taskId, username, taggedBy) {
     await run('INSERT INTO task_followups(task_id,username,tagged_by,created_at) VALUES(?,?,?,?) ON CONFLICT (task_id, username) DO NOTHING', [taskId, username, taggedBy || null, new Date().toISOString()]);
   },
@@ -552,7 +512,6 @@ module.exports = {
   async getTaskAttachment(id) { return get('SELECT attachment, attachment_name FROM tasks WHERE id=?', [id]); },
   async getReplyAttachment(replyId) { return get('SELECT attachment, attachment_name, task_id FROM task_replies WHERE id=?', [replyId]); },
 
-  // ---- escalating reminders ----
   async markTaskAssigneeReminded(taskId, username) {
     await run('UPDATE task_assignees SET last_reminded_at=? WHERE task_id=? AND username=?', [new Date().toISOString(), taskId, username]);
   },
@@ -592,7 +551,6 @@ module.exports = {
     await run(`UPDATE task_assignees SET last_reminded_at=NULL, reminder_3day_sent_at=NULL, warning_5day_sent_at=NULL, warning_7day_sent_at=NULL, warning_12day_sent_at=NULL, escalation_baseline_at=? WHERE task_id=?`, [new Date().toISOString(), taskId]);
   },
 
-  // ---- deadline-based reminders ----
   async listOpenTasksWithDeadlines() {
     return all(`SELECT id, title, deadline, deadline_reminder_sent, deadline_overdue_notified, created_by_username
       FROM tasks WHERE status='open' AND deadline IS NOT NULL`);
@@ -610,7 +568,6 @@ module.exports = {
   async markAssigneeDeadlineReminderSent(taskId, username) { await run('UPDATE task_assignees SET deadline_reminder_sent_at=? WHERE task_id=? AND username=?', [new Date().toISOString(), taskId, username]); },
   async markAssigneeDeadlineOverdueNotified(taskId, username) { await run('UPDATE task_assignees SET deadline_overdue_notified_at=? WHERE task_id=? AND username=?', [new Date().toISOString(), taskId, username]); },
 
-  // ---- per-task reports ----
   async listReportableTasks() {
     return all("SELECT id, title, status, priority, deadline, created_by, closed_at, cancelled_at, report_generated_at FROM tasks WHERE status IN ('closed','cancelled') ORDER BY COALESCE(closed_at, cancelled_at) DESC");
   },
@@ -623,7 +580,6 @@ module.exports = {
     await run('UPDATE tasks SET report_data=?, report_generated_at=? WHERE id=?', [JSON.stringify(reportObj), new Date().toISOString(), id]);
   },
 
-  // ---- peak hours ----
   async getAllActivityTimestamps() {
     return {
       taskCreated: await all('SELECT created_at, created_by_username as username FROM tasks'),
@@ -634,7 +590,6 @@ module.exports = {
     };
   },
 
-  // ---- performance / completion stats ----
   async getApprovedCompletions() {
     return all("SELECT username, submitted_at FROM task_assignees WHERE decision='approve' AND submitted_at IS NOT NULL");
   },
@@ -650,7 +605,6 @@ module.exports = {
     return Array.from(map.values());
   },
 
-  // ---- teams / departments ----
   async listTeams() { const rows = await all('SELECT name FROM teams ORDER BY name'); return rows.map(r => r.name); },
   async addTeam(name) {
     const clean = String(name || '').trim();
@@ -662,7 +616,6 @@ module.exports = {
     await run('DELETE FROM teams WHERE name=?', [name]);
   },
 
-  // ---- projects & drawing library ----
   async listProjects() { const rows = await all('SELECT name FROM projects ORDER BY name'); return rows.map(r => r.name); },
   async addProject(name, tx) {
     const clean = String(name || '').trim();
@@ -676,7 +629,6 @@ module.exports = {
     if (!clean) return;
     await run('INSERT INTO drawing_sections(name, created_at) VALUES(?, ?) ON CONFLICT (name) DO NOTHING', [clean, new Date().toISOString()]);
   },
-  // ---- task phases ----
   async listPhases() { const rows = await all('SELECT name FROM task_phases ORDER BY name'); return rows.map(r => r.name); },
   async addPhase(name, tx) {
     const clean = String(name || '').trim();
@@ -699,7 +651,6 @@ module.exports = {
   async getDrawingMeta(id) { return get('SELECT id, project, uploaded_by_username FROM drawings WHERE id=?', [id]); },
   async deleteDrawing(id) { await run('DELETE FROM drawings WHERE id=?', [id]); },
 
-  // ---- Send for Approval ----
   async createApprovalRequest({ id, title, description, file_data, file_name, created_by_username, created_by_name, reviewers }) {
     await run(`INSERT INTO approval_requests(id,title,description,file_data,file_name,created_by_username,created_by_name,status,created_at)
       VALUES(?,?,?,?,?,?,?,'pending',?)`, [id, title, description || null, file_data || null, file_name || null, created_by_username, created_by_name, new Date().toISOString()]);
@@ -724,12 +675,6 @@ module.exports = {
   },
   async getApprovalFile(id) { return get('SELECT file_data, file_name FROM approval_requests WHERE id=?', [id]); },
   async listApprovalRequestsForUser(username) {
-    // Rewritten from a LEFT JOIN + SELECT DISTINCT: Postgres rejects that pattern outright
-    // (DISTINCT requires every ORDER BY column to also be in the select list — SQLite allowed
-    // it, Postgres enforces the SQL standard here), and since this threw as an *unhandled*
-    // rejection with no try/catch around it, the request never got a response at all — it hung
-    // forever. This EXISTS-based version needs no DISTINCT, no join fan-out, and works
-    // identically on both databases.
     const rows = await all(`
       SELECT ar.id FROM approval_requests ar
       WHERE ar.created_by_username = ? OR EXISTS (
@@ -810,7 +755,6 @@ module.exports = {
     return map;
   },
 
-  // ---- calendar-aligned period awards (Employee of the Quarter/Year) ----
   async getApprovedCompletionsInRange(startISO, endISO) {
     return all("SELECT username, submitted_at FROM task_assignees WHERE decision='approve' AND submitted_at >= ? AND submitted_at < ?", [startISO, endISO]);
   },
@@ -830,27 +774,21 @@ module.exports = {
     return all('SELECT * FROM period_awards WHERE period_type=? ORDER BY awarded_at DESC, rank ASC', [periodType]);
   },
 
-  // ---- audit log ----
   async logAudit({ actor_username, actor_name, actor_team, action, details, ip_address, device }) {
     await run('INSERT INTO audit_log(actor_username,actor_name,actor_team,action,details,ip_address,device,created_at) VALUES(?,?,?,?,?,?,?,?)',
       [actor_username || null, actor_name || null, actor_team || null, action, details || null, ip_address || null, device || null, new Date().toISOString()]);
   },
   async listAuditLog(limit) { return all('SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ?', [limit || 200]); },
 
-  // ---- notifications ----
   _notificationHook: null,
   setNotificationHook(fn) { module.exports._notificationHook = fn; },
   async createNotification({ username, type, message, task_id }, tx) {
     const runner = tx ? tx.run : run;
     await runner('INSERT INTO notifications(username,type,message,task_id,read,created_at) VALUES(?,?,?,?,0,?)',
       [username, type, message, task_id || null, new Date().toISOString()]);
-    // The push/WhatsApp dispatch hook deliberately never runs on the transaction's own client —
-    // it's fire-and-forget external I/O (an HTTP call to a push service or WhatsApp), which has
-    // no business holding open a database transaction while it happens. It's called here
-    // regardless of whether `tx` was passed, same as the non-transactional path.
     if (module.exports._notificationHook) {
       try { module.exports._notificationHook({ username, type, message, task_id }); }
-      catch (e) { console.error('Notification hook (push/WhatsApp dispatch) failed:', e.message); }
+      catch (e) { console.error('Notification hook dispatch failed:', e.message); }
     }
   },
   async savePushSubscription(username, endpoint, p256dh, auth) {
