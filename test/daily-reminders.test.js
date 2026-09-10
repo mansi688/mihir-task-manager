@@ -1,10 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const Database = require('better-sqlite3');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('daily reminders fire for an ongoing task, and stop the moment the person completes their part', async (t) => {
-  const { baseUrl, dbPath, stop } = startTestServer();
+  const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
 
   const adminToken = await login(baseUrl, 'admin', 'admin123');
@@ -28,9 +27,9 @@ test('daily reminders fire for an ongoing task, and stop the moment the person c
   });
 
   await t.test('a fresh day, still incomplete, gets another reminder', async () => {
-    const raw = new Database(dbPath);
-    raw.prepare('UPDATE task_assignees SET last_reminded_at=? WHERE task_id=?').run(new Date(Date.now() - 25 * 3600000).toISOString(), id);
-    raw.close();
+    const raw = await getRawClient();
+    await raw.query('UPDATE task_assignees SET last_reminded_at=$1 WHERE task_id=$2', [new Date(Date.now() - 25 * 3600000).toISOString(), id]);
+    await raw.end();
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
     const notifs = (await api(baseUrl, '/api/notifications', { token: bobToken })).data.items;
     const reminderCount = notifs.filter(n => n.type === 'task_reminder' && n.task_id === id).length;

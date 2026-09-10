@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { startTestServer, api, login } = require('../testlib/helpers');
 
 test('login rate limiter: blocks genuine mass-scanning, never blocks a realistic office login rush', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
 
   await t.test('50 login attempts from one IP (a realistic morning office rush) all succeed or fail on their own merits, never on rate limit', async () => {
@@ -30,7 +30,7 @@ test('login rate limiter: blocks genuine mass-scanning, never blocks a realistic
 });
 
 test('health and readiness endpoints work correctly and expose nothing sensitive', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
 
   const health = await api(baseUrl, '/health');
@@ -47,7 +47,7 @@ test('health and readiness endpoints work correctly and expose nothing sensitive
 });
 
 test('version endpoint exposes basic info with no secrets', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const res = await fetch(`${baseUrl}/version`);
   const data = await res.json();
@@ -57,7 +57,7 @@ test('version endpoint exposes basic info with no secrets', async (t) => {
 });
 
 test('security headers are present on every response', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const res = await fetch(`${baseUrl}/health`);
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
@@ -66,7 +66,7 @@ test('security headers are present on every response', async (t) => {
 });
 
 test('every response includes a request ID for tracing, and error responses surface it too', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const badRequest = await api(baseUrl, '/api/tasks', { method: 'POST', token: adminToken, body: { title: '' } });

@@ -77,7 +77,7 @@ if (pushConfigured) {
 }
 async function sendPushToUser(username, title, body, taskId) {
   if (!pushConfigured) return;
-  const subs = db.listPushSubscriptionsForUser(username);
+  const subs = await db.listPushSubscriptionsForUser(username);
   for (const sub of subs) {
     try {
       await webpush.sendNotification(
@@ -87,7 +87,7 @@ async function sendPushToUser(username, title, body, taskId) {
     } catch (e) {
       // A 404/410 means the browser itself has invalidated this subscription (uninstalled,
       // permission revoked, etc.) — clean it up instead of retrying it forever.
-      if (e.statusCode === 404 || e.statusCode === 410) db.removePushSubscription(sub.endpoint);
+      if (e.statusCode === 404 || e.statusCode === 410) await db.removePushSubscription(sub.endpoint);
       else console.error(`Push to ${username} failed:`, e.message);
     }
   }
@@ -131,8 +131,8 @@ function summarizeNotification(message, maxLen) {
 
 // The one place every notification's push/WhatsApp dispatch happens — registered once here,
 // so no individual call site anywhere else in this file needs to know push/WhatsApp exist.
-db.setNotificationHook(({ username, type, message, task_id }) => {
-  const user = db.getUser(username);
+db.setNotificationHook(async ({ username, type, message, task_id }) => {
+  const user = await db.getUser(username);
   if (!user) return;
   const summary = summarizeNotification(message, 120);
   sendPushToUser(username, 'MIHIR Task Manager', summary, task_id).catch(e => console.error('Push dispatch error:', e.message));
@@ -229,15 +229,15 @@ const aiRateLimiter = makeRateLimiter(30, 5 * 60 * 1000); // AI calls hit a real
 // know whether this instance is alive and able to serve traffic. Deliberately expose nothing
 // sensitive (no paths, no config, no counts that could aid an attacker).
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
-app.get('/ready', (req, res) => {
+app.get('/ready', async (req, res) => {
   try {
-    db.listUsers(); // a cheap, already-exposed read — confirms the database connection is genuinely responsive, not just that the process is alive
+    await db.listUsers(); // a cheap, already-exposed read — confirms the database connection is genuinely responsive, not just that the process is alive
     res.json({ status: 'ready' });
   } catch (e) {
     res.status(503).json({ status: 'not ready' });
   }
 });
-app.get('/version', (req, res) => {
+app.get('/version', async (req, res) => {
   const pkg = require('../package.json');
   res.json({ name: pkg.name, version: pkg.version, node: process.version, env: process.env.NODE_ENV || 'development' });
 });
@@ -296,10 +296,10 @@ function tooLong(text, max) { return str(text).length > max; }
 // req.ip reflects the direct connecting IP; if this app ever runs behind a reverse proxy, set
 // `app.set('trust proxy', true)` and ensure the proxy is trusted, or this will show the proxy's
 // address instead of the real client's.
-function auditFromReq(req, action, details, actorOverride) {
+async function auditFromReq(req, action, details, actorOverride) {
   const actor = actorOverride || { username: req.user.username, name: req.user.name };
-  const actorRecord = db.getUser(actor.username);
-  db.logAudit({
+  const actorRecord = await db.getUser(actor.username);
+  await db.logAudit({
     actor_username: actor.username,
     actor_name: actor.name,
     actor_team: actorRecord ? actorRecord.team : null,
@@ -322,24 +322,25 @@ function parseDeadline(deadline) {
 // commenting/attaching AND viewing a task's attachments — closes a real gap where the reply
 // endpoint previously had no server-side check at all (only the UI hid the box), so anyone
 // logged in could technically comment on or attach files to a task they had nothing to do with.
-function isInvolvedInTask(user, task) {
+async function isInvolvedInTask(user, task) {
   if (user.role === 'admin') return true;
   if (task.created_by_username === user.username) return true;
-  if (db.listAssignees(task.id).some(a => a.username === user.username)) return true;
-  if (db.listFollowups(task.id).some(f => f.username === user.username)) return true;
+  if ((await db.listAssignees(task.id)).some(a => a.username === user.username)) return true;
+  if ((await db.listFollowups(task.id)).some(f => f.username === user.username)) return true;
   return false;
 }
 // Called right after a task closes — finds anything that was waiting on it, gives every
 // assignee on those now-unblocked tasks a fresh escalation clock (so a 10-day wait doesn't
 // immediately read as a 10-day personal delay), and lets them know they can proceed.
-function releaseDependentsOf(closedTask) {
-  const dependents = db.listDependentTasks(closedTask.id);
-  dependents.forEach(dep => {
-    db.resetEscalationTimersForTask(dep.id);
-    db.listAssignees(dep.id).forEach(a => {
-      db.createNotification({ username: a.username, type: 'task_assigned', message: `"${closedTask.title}" is done — you can now proceed with "${dep.title}".`, task_id: dep.id });
-    });
-  });
+async function releaseDependentsOf(closedTask) {
+  const dependents = await db.listDependentTasks(closedTask.id);
+  for (const dep of dependents) {
+    await db.resetEscalationTimersForTask(dep.id);
+    const depAssignees = await db.listAssignees(dep.id);
+    for (const a of depAssignees) {
+      await db.createNotification({ username: a.username, type: 'task_assigned', message: `"${closedTask.title}" is done — you can now proceed with "${dep.title}".`, task_id: dep.id });
+    }
+  }
 }
 function sign(payload, expiresIn) { return jwt.sign(payload, JWT_SECRET, { expiresIn: expiresIn || '12h' }); }
 
@@ -363,13 +364,13 @@ function isHRTeam(team) {
 }
 
 function auth(roles) {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const header = req.headers.authorization || '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : null;
     if (!token) return res.status(401).json({ error: 'Not logged in.' });
     let payload;
     try { payload = jwt.verify(token, JWT_SECRET); } catch (e) { return res.status(401).json({ error: 'Session expired — please log in again.' }); }
-    const user = db.getUser(payload.username);
+    const user = await db.getUser(payload.username);
     if (!user) return res.status(401).json({ error: 'Session invalid — please log in again.' });
     if ((user.token_version || 0) !== (payload.tv || 0)) return res.status(401).json({ error: 'Session revoked — please log in again.' });
     if (!roles.includes(user.role)) return res.status(403).json({ error: 'Not permitted for this role.' });
@@ -385,7 +386,7 @@ function auth(roles) {
 app.post('/api/auth/login', loginRateLimiter, async (req, res) => {
   const username = str((req.body || {}).username).trim();
   const password = str((req.body || {}).password);
-  const user = db.getUser(username);
+  const user = await db.getUser(username);
   if (user && user.locked_until && new Date(user.locked_until) > new Date()) {
     const minutesLeft = Math.ceil((new Date(user.locked_until) - new Date()) / 60000);
     return res.status(423).json({ error: `Too many failed attempts — this account is locked for about ${minutesLeft} more minute${minutesLeft === 1 ? '' : 's'}.` });
@@ -399,17 +400,18 @@ app.post('/api/auth/login', loginRateLimiter, async (req, res) => {
   const passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false;
   if (!user || !passwordMatches) {
     if (user) {
-      db.recordFailedLogin(user.username);
-      const justLocked = db.getUser(user.username);
+      await db.recordFailedLogin(user.username);
+      const justLocked = await db.getUser(user.username);
       if (justLocked && justLocked.locked_until) {
-        auditFromReq(req, 'account_locked', `Account locked for 3 minutes after 5 failed login attempts.`, { username: user.username, name: user.name });
+        await auditFromReq(req, 'account_locked', `Account locked for 3 minutes after 5 failed login attempts.`, { username: user.username, name: user.name });
       }
     }
     return res.status(401).json({ error: 'Invalid username or password.' });
   }
-  db.clearFailedLogins(user.username);
+  await db.clearFailedLogins(user.username);
   const sid = genId('SESS');
-  db.createSession({ id: sid, username: user.username, device: req.headers['user-agent'], ip: req.ip });
+  await db.createSession({ id: sid, username: user.username, device: req.headers['user-agent'], ip: req.ip });
+  await auditFromReq(req, 'login', `Logged in.`, { username: user.username, name: user.name });
   const token = sign({ username: user.username, role: user.role, name: user.name, tv: user.token_version || 0, sid });
   res.json({ token, user: { username: user.username, role: user.role, name: user.name, mustChangePassword: !!user.must_change_password } });
 });
@@ -441,12 +443,12 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   if (!username) return res.json({ ...genericResponse, emailConfigured: !!mailTransporter });
   if (otpRateLimited(username)) return res.json({ ...genericResponse, emailConfigured: !!mailTransporter });
   if (!mailTransporter) return res.json({ ...genericResponse, emailConfigured: false });
-  const user = db.getUser(username);
+  const user = await db.getUser(username);
   if (!user || !user.email) return res.json({ ...genericResponse, emailConfigured: true });
   const otp = String(Math.floor(100000 + Math.random() * 900000));
   const otpHash = bcrypt.hashSync(otp, 10);
   const expires = new Date(Date.now() + 10 * 60000).toISOString();
-  db.setPasswordResetOtp(user.username, otpHash, expires);
+  await db.setPasswordResetOtp(user.username, otpHash, expires);
   try {
     await sendOtpEmail(user.email, otp, user.name);
   } catch (e) {
@@ -454,84 +456,86 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
   res.json({ ...genericResponse, emailConfigured: true });
 });
-app.post('/api/auth/reset-with-otp', (req, res) => {
+app.post('/api/auth/reset-with-otp', async (req, res) => {
   const username = str((req.body || {}).username).trim();
   const otp = str((req.body || {}).otp).trim();
   const newPassword = str((req.body || {}).newPassword);
-  const user = db.getUser(username);
+  const user = await db.getUser(username);
   if (!user || !user.password_reset_otp_hash || !user.password_reset_otp_expires) {
     return res.status(400).json({ error: 'No reset code is pending for this account — request a new one.' });
   }
   if (new Date(user.password_reset_otp_expires) < new Date()) {
-    db.clearPasswordResetOtp(username);
+    await db.clearPasswordResetOtp(username);
     return res.status(400).json({ error: 'That code has expired — request a new one.' });
   }
   if (!bcrypt.compareSync(otp, user.password_reset_otp_hash)) {
     return res.status(400).json({ error: 'Incorrect code.' });
   }
   const pwErr1 = validatePasswordStrength(newPassword); if (pwErr1) return res.status(400).json({ error: pwErr1 });
-  db.setPassword(user.username, bcrypt.hashSync(newPassword, 10));
-  db.clearPasswordResetOtp(username);
+  await db.setPassword(user.username, bcrypt.hashSync(newPassword, 10));
+  await db.clearPasswordResetOtp(username);
+  await auditFromReq(req, 'password_reset_via_otp', `Reset their own password using a forgot-password code.`, { username: user.username, name: user.name });
   res.json({ ok: true });
 });
-app.post('/api/auth/logout-everywhere', auth(ALL_ROLES), (req, res) => {
-  db.bumpTokenVersion(req.user.username);
-  const user = db.getUser(req.user.username);
+app.post('/api/auth/logout-everywhere', auth(ALL_ROLES), async (req, res) => {
+  await db.bumpTokenVersion(req.user.username);
+  const user = await db.getUser(req.user.username);
   const token = sign({ username: user.username, role: user.role, name: user.name, tv: user.token_version || 0, sid: req.user.sid });
   res.json({ ok: true, token });
 });
-app.post('/api/auth/change-password', auth(ALL_ROLES), (req, res) => {
+app.post('/api/auth/change-password', auth(ALL_ROLES), async (req, res) => {
   const newPassword = str((req.body || {}).newPassword);
   const pwErr1 = validatePasswordStrength(newPassword); if (pwErr1) return res.status(400).json({ error: pwErr1 });
-  db.setPassword(req.user.username, bcrypt.hashSync(newPassword, 10));
-  const user = db.getUser(req.user.username);
+  await db.setPassword(req.user.username, bcrypt.hashSync(newPassword, 10));
+  await auditFromReq(req, 'password_changed', `Changed their own password.`);
+  const user = await db.getUser(req.user.username);
   const token = sign({ username: user.username, role: user.role, name: user.name, tv: user.token_version || 0, sid: req.user.sid });
   res.json({ ok: true, token });
 });
-app.post('/api/auth/update-name', auth(ALL_ROLES), (req, res) => {
+app.post('/api/auth/update-name', auth(ALL_ROLES), async (req, res) => {
   const name = str((req.body || {}).name).trim();
   if (!name) return res.status(400).json({ error: 'Name cannot be empty.' });
   if (name.length > 80) return res.status(400).json({ error: 'Name is too long.' });
-  db.updateOwnName(req.user.username, name);
-  const user = db.getUser(req.user.username);
+  await db.updateOwnName(req.user.username, name);
+  const user = await db.getUser(req.user.username);
   const token = sign({ username: user.username, role: user.role, name: user.name, tv: user.token_version || 0, sid: req.user.sid });
   res.json({ ok: true, token, name: user.name });
 });
-app.post('/api/auth/update-email', auth(ALL_ROLES), (req, res) => {
+app.post('/api/auth/update-email', auth(ALL_ROLES), async (req, res) => {
   const email = str((req.body || {}).email).trim();
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "That doesn't look like a valid email address." });
-  db.updateOwnEmail(req.user.username, email || null);
+  await db.updateOwnEmail(req.user.username, email || null);
   res.json({ ok: true, email: email || null });
 });
 // Phone number for WhatsApp task notifications — E.164 format required (e.g. +919876543210),
 // since that's what the WhatsApp Cloud API expects the recipient number to look like.
-app.post('/api/auth/update-phone', auth(ALL_ROLES), (req, res) => {
+app.post('/api/auth/update-phone', auth(ALL_ROLES), async (req, res) => {
   const phone = str((req.body || {}).phone).trim();
   if (phone && !/^\+[1-9]\d{7,14}$/.test(phone)) return res.status(400).json({ error: 'Enter your phone number in international format, e.g. +919876543210.' });
-  db.updateOwnPhone(req.user.username, phone || null);
+  await db.updateOwnPhone(req.user.username, phone || null);
   res.json({ ok: true, phone: phone || null });
 });
 app.get('/api/push/vapid-public-key', (req, res) => res.json({ publicKey: pushConfigured ? VAPID_PUBLIC_KEY : null }));
-app.post('/api/push/subscribe', auth(ALL_ROLES), (req, res) => {
+app.post('/api/push/subscribe', auth(ALL_ROLES), async (req, res) => {
   const sub = (req.body || {}).subscription;
   if (!sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) return res.status(400).json({ error: 'Invalid push subscription.' });
-  db.savePushSubscription(req.user.username, sub.endpoint, sub.keys.p256dh, sub.keys.auth);
+  await db.savePushSubscription(req.user.username, sub.endpoint, sub.keys.p256dh, sub.keys.auth);
   res.json({ ok: true });
 });
-app.post('/api/push/unsubscribe', auth(ALL_ROLES), (req, res) => {
+app.post('/api/push/unsubscribe', auth(ALL_ROLES), async (req, res) => {
   const endpoint = str((req.body || {}).endpoint).trim();
-  if (endpoint) db.removePushSubscription(endpoint);
+  if (endpoint) await db.removePushSubscription(endpoint);
   res.json({ ok: true });
 });
-app.get('/api/auth/me', auth(ALL_ROLES), (req, res) => {
-  const user = db.getUser(req.user.username);
+app.get('/api/auth/me', auth(ALL_ROLES), async (req, res) => {
+  const user = await db.getUser(req.user.username);
   res.json({ username: user.username, role: user.role, name: user.name, email: user.email, phone: user.phone, team: user.team, designation: user.designation, isTeamLead: !!user.is_team_lead });
 });
 
 /* ============ USERS (Admin manages accounts) ============ */
-app.get('/api/users', auth(['admin']), (req, res) => res.json(db.listUsers()));
-app.get('/api/users/directory', auth(ALL_ROLES), (req, res) => res.json(db.listUsers()));
-app.post('/api/users', auth(['admin']), (req, res) => {
+app.get('/api/users', auth(['admin']), async (req, res) => res.json(await db.listUsers()));
+app.get('/api/users/directory', auth(ALL_ROLES), async (req, res) => res.json(await db.listUsers()));
+app.post('/api/users', auth(['admin']), async (req, res) => {
   const username = str((req.body || {}).username).trim();
   const password = str((req.body || {}).password);
   const name = str((req.body || {}).name).trim();
@@ -541,85 +545,85 @@ app.post('/api/users', auth(['admin']), (req, res) => {
   if (!/^[a-zA-Z0-9._-]{3,40}$/.test(username)) return res.status(400).json({ error: 'Username must be 3-40 characters: letters, numbers, dots, underscores, or hyphens only.' });
   const pwErr2 = validatePasswordStrength(password); if (pwErr2) return res.status(400).json({ error: pwErr2 });
   if (!name) return res.status(400).json({ error: 'Name is required.' });
-  if (db.getUser(username)) return res.status(409).json({ error: 'That username is already taken.' });
-  db.createUser({ username, password_hash: bcrypt.hashSync(password, 10), role, name, team, designation, must_change_password: true });
-  auditFromReq(req, 'account_created', `Created account "${username}" (${name}), role: ${role}`);
+  if (await db.getUser(username)) return res.status(409).json({ error: 'That username is already taken.' });
+  await db.createUser({ username, password_hash: bcrypt.hashSync(password, 10), role, name, team, designation, must_change_password: true });
+  await auditFromReq(req, 'account_created', `Created account "${username}" (${name}), role: ${role}`);
   res.json({ ok: true, username });
 });
-app.post('/api/users/:username/team', auth(['admin']), (req, res) => {
-  if (!db.getUser(req.params.username)) return res.status(404).json({ error: 'User not found.' });
-  db.setUserTeam(req.params.username, str((req.body || {}).team).trim());
+app.post('/api/users/:username/team', auth(['admin']), async (req, res) => {
+  if (!await db.getUser(req.params.username)) return res.status(404).json({ error: 'User not found.' });
+  await db.setUserTeam(req.params.username, str((req.body || {}).team).trim());
   res.json({ ok: true });
 });
-app.post('/api/users/:username/designation', auth(['admin']), (req, res) => {
-  if (!db.getUser(req.params.username)) return res.status(404).json({ error: 'User not found.' });
-  db.updateUserDesignation(req.params.username, str((req.body || {}).designation).trim());
+app.post('/api/users/:username/designation', auth(['admin']), async (req, res) => {
+  if (!await db.getUser(req.params.username)) return res.status(404).json({ error: 'User not found.' });
+  await db.updateUserDesignation(req.params.username, str((req.body || {}).designation).trim());
   res.json({ ok: true });
 });
-app.post('/api/users/:username/team-lead', auth(['admin']), (req, res) => {
-  if (!db.getUser(req.params.username)) return res.status(404).json({ error: 'User not found.' });
+app.post('/api/users/:username/team-lead', auth(['admin']), async (req, res) => {
+  if (!await db.getUser(req.params.username)) return res.status(404).json({ error: 'User not found.' });
   const isTeamLead = !!(req.body || {}).isTeamLead;
-  db.setUserTeamLead(req.params.username, isTeamLead);
-  auditFromReq(req, 'team_lead_changed', `${isTeamLead ? 'Made' : 'Removed'} "${req.params.username}" ${isTeamLead ? 'a' : 'as'} team lead`);
+  await db.setUserTeamLead(req.params.username, isTeamLead);
+  await auditFromReq(req, 'team_lead_changed', `${isTeamLead ? 'Made' : 'Removed'} "${req.params.username}" ${isTeamLead ? 'a' : 'as'} team lead`);
   res.json({ ok: true });
 });
 // Grants a Director visibility into department(s) beyond their own — Admin-only, and only
 // meaningful for Director-role accounts (harmlessly ignored for anyone else, since nobody but
 // Directors are ever restricted by department in the first place).
-app.post('/api/users/:username/visible-departments', auth(['admin']), (req, res) => {
-  const user = db.getUser(req.params.username);
+app.post('/api/users/:username/visible-departments', auth(['admin']), async (req, res) => {
+  const user = await db.getUser(req.params.username);
   if (!user) return res.status(404).json({ error: 'User not found.' });
   const departments = Array.isArray((req.body || {}).departments) ? (req.body || {}).departments.map(d => str(d).trim()).filter(Boolean) : [];
-  db.setVisibleDepartments(req.params.username, departments.join(','));
-  auditFromReq(req, 'director_visibility_changed', `Set "${req.params.username}"'s additional visible departments to: ${departments.length ? departments.join(', ') : '(none)'}`);
+  await db.setVisibleDepartments(req.params.username, departments.join(','));
+  await auditFromReq(req, 'director_visibility_changed', `Set "${req.params.username}"'s additional visible departments to: ${departments.length ? departments.join(', ') : '(none)'}`);
   res.json({ ok: true });
 });
-app.post('/api/users/:username/name', auth(['admin']), (req, res) => {
-  const user = db.getUser(req.params.username);
+app.post('/api/users/:username/name', auth(['admin']), async (req, res) => {
+  const user = await db.getUser(req.params.username);
   if (!user) return res.status(404).json({ error: 'User not found.' });
   const name = str((req.body || {}).name).trim();
   if (!name) return res.status(400).json({ error: 'Name cannot be empty.' });
-  db.updateUserDisplayName(user.username, name);
+  await db.updateUserDisplayName(user.username, name);
   res.json({ ok: true });
 });
 // Changing the actual login username — touches every table that references it as a functional
 // lookup key (see db.renameUsername for the full list and reasoning). Any of that account's
 // active sessions stop working the moment this runs (their token still carries the old
 // username) — expected, they just log back in with the new one.
-app.post('/api/users/:username/rename', auth(['admin']), (req, res) => {
+app.post('/api/users/:username/rename', auth(['admin']), async (req, res) => {
   const oldUsername = req.params.username;
-  const user = db.getUser(oldUsername);
+  const user = await db.getUser(oldUsername);
   if (!user) return res.status(404).json({ error: 'User not found.' });
   const newUsername = str((req.body || {}).newUsername).trim();
   if (!/^[a-zA-Z0-9._-]{3,40}$/.test(newUsername)) return res.status(400).json({ error: 'Username must be 3-40 characters: letters, numbers, dots, underscores, or hyphens only.' });
   if (newUsername === oldUsername) return res.status(400).json({ error: "That's already this account's username." });
-  if (db.getUser(newUsername)) return res.status(409).json({ error: 'That username is already taken.' });
-  db.renameUsername(oldUsername, newUsername);
-  auditFromReq(req, 'username_changed', `Renamed account "${oldUsername}" to "${newUsername}"`);
+  if (await db.getUser(newUsername)) return res.status(409).json({ error: 'That username is already taken.' });
+  await db.renameUsername(oldUsername, newUsername);
+  await auditFromReq(req, 'username_changed', `Renamed account "${oldUsername}" to "${newUsername}"`);
   res.json({ ok: true, newUsername });
 });
-app.post('/api/users/:username/reset-password', auth(['admin']), (req, res) => {
-  const user = db.getUser(req.params.username);
+app.post('/api/users/:username/reset-password', auth(['admin']), async (req, res) => {
+  const user = await db.getUser(req.params.username);
   if (!user) return res.status(404).json({ error: 'User not found.' });
   const newPassword = str((req.body || {}).newPassword);
   const pwErr1 = validatePasswordStrength(newPassword); if (pwErr1) return res.status(400).json({ error: pwErr1 });
-  db.forcePasswordReset(user.username, bcrypt.hashSync(newPassword, 10));
-  auditFromReq(req, 'password_reset', `Reset password for "${user.username}"`);
+  await db.forcePasswordReset(user.username, bcrypt.hashSync(newPassword, 10));
+  await auditFromReq(req, 'password_reset', `Reset password for "${user.username}"`);
   res.json({ ok: true });
 });
-app.delete('/api/users/:username', auth(['admin']), (req, res) => {
+app.delete('/api/users/:username', auth(['admin']), async (req, res) => {
   if (req.params.username === req.user.username) return res.status(400).json({ error: "You can't remove your own account." });
-  if (!db.getUser(req.params.username)) return res.status(404).json({ error: 'User not found.' });
-  const openTasks = db.getOpenTaskInvolvement(req.params.username);
+  if (!await db.getUser(req.params.username)) return res.status(404).json({ error: 'User not found.' });
+  const openTasks = await db.getOpenTaskInvolvement(req.params.username);
   if (openTasks.length > 0) {
     return res.status(400).json({ error: `This account is still involved in ${openTasks.length} open task${openTasks.length === 1 ? '' : 's'} (e.g. "${openTasks[0]}") — reassign, cancel, or close ${openTasks.length === 1 ? 'it' : 'them'} first. Otherwise ${openTasks.length === 1 ? 'that task' : 'those tasks'} would be stuck forever waiting on someone who no longer exists.` });
   }
-  db.deleteUser(req.params.username);
-  auditFromReq(req, 'account_removed', `Removed account "${req.params.username}"`);
+  await db.deleteUser(req.params.username);
+  await auditFromReq(req, 'account_removed', `Removed account "${req.params.username}"`);
   res.json({ ok: true });
 });
 
-app.get('/api/audit-log', auth(['admin']), (req, res) => res.json(db.listAuditLog(200)));
+app.get('/api/audit-log', auth(['admin']), async (req, res) => res.json(await db.listAuditLog(200)));
 
 /* ============ AI FEATURE ============
    Only the deadline-risk check is kept — it's the one AI feature that genuinely still works
@@ -633,8 +637,8 @@ app.get('/api/audit-log', auth(['admin']), (req, res) => res.json(db.listAuditLo
 // never invented by the model; AI is only used to phrase the same numbers more naturally, and
 // silently falls back to a plain template sentence if AI isn't configured or fails. This means
 // the actual warning always works, with or without an API key.
-function computeHistoricalDurationDays(priority) {
-  const rows = db.getApprovedTaskDurationsByPriority(priority);
+async function computeHistoricalDurationDays(priority) {
+  const rows = await db.getApprovedTaskDurationsByPriority(priority);
   const durations = rows.map(r => (new Date(r.completed_at) - new Date(r.created_at)) / 86400000).filter(d => d >= 0);
   if (durations.length < 3) return null; // too few past examples to say anything meaningful
   return { avgDays: durations.reduce((a, b) => a + b, 0) / durations.length, sampleSize: durations.length };
@@ -646,7 +650,7 @@ app.post('/api/ai/deadline-check', aiRateLimiter, auth(ALL_ROLES), async (req, r
     const deadlineD = parseDeadline(deadline);
     if (!deadlineD) return res.json({ warning: null });
     const daysAvailable = (deadlineD.getTime() - Date.now()) / 86400000;
-    const hist = computeHistoricalDurationDays(priority);
+    const hist = await computeHistoricalDurationDays(priority);
     if (!hist || daysAvailable >= hist.avgDays) return res.json({ warning: null });
     const template = `Heads up: ${priority}-priority tasks have historically taken about ${hist.avgDays.toFixed(1)} days to complete (based on ${hist.sampleSize} past tasks), but this deadline only allows about ${Math.max(0, daysAvailable).toFixed(1)} days.`;
     let message = template;
@@ -718,43 +722,43 @@ async function generateReportSuggestions(task, computed) {
     return text || template;
   } catch (e) { return template; }
 }
-app.get('/api/reports/tasks-list', auth(['admin']), (req, res) => res.json(db.listReportableTasks()));
-app.get('/api/reports/task/:id', auth(['admin']), (req, res) => {
+app.get('/api/reports/tasks-list', auth(['admin']), async (req, res) => res.json(await db.listReportableTasks()));
+app.get('/api/reports/task/:id', auth(['admin']), async (req, res) => {
   // "Not generated yet" is a completely normal, expected state here — not an error — so this
   // returns 200 with generated:false rather than a 404, which was showing up as a scary red
   // "Failed to load resource" in the browser console on totally routine use (just clicking a
   // task in the list before ever generating its report).
-  const cached = db.getCachedReport(req.params.id);
+  const cached = await db.getCachedReport(req.params.id);
   if (!cached) return res.json({ generated: false });
   res.json({ generated: true, ...cached });
 });
 app.post('/api/reports/task/:id/generate', auth(['admin']), async (req, res) => {
   try {
-    const task = db.getTaskFull(req.params.id);
+    const task = await db.getTaskFull(req.params.id);
     if (!task) return res.status(404).json({ error: 'Task not found.' });
     if (task.status === 'open') return res.status(400).json({ error: 'Task is still open — reports are only for closed or cancelled tasks.' });
     const computed = computeTaskReport(task);
     const suggestions = await generateReportSuggestions(task, computed);
     const report = { ...computed, suggestions };
-    db.saveReport(task.id, report);
+    await db.saveReport(task.id, report);
     res.json(report);
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
-app.get('/api/reports/peak-hours', auth(['admin', 'director']), (req, res) => {
+app.get('/api/reports/peak-hours', auth(['admin', 'director']), async (req, res) => {
   const username = str(req.query.username).trim();
   // A Director's view is scoped to their own department plus whatever Admin has additionally
   // granted them — never company-wide, and never another department's individual unless
   // explicitly granted visibility into it.
   let allowedUsernames = null;
   if (req.user.role === 'director') {
-    const allowedTeams = directorAllowedTeams(db.getUser(req.user.username));
-    allowedUsernames = new Set(db.listUsers().filter(u => allowedTeams.has(u.team)).map(u => u.username));
+    const allowedTeams = directorAllowedTeams(await db.getUser(req.user.username));
+    allowedUsernames = new Set((await db.listUsers()).filter(u => allowedTeams.has(u.team)).map(u => u.username));
     if (username && username !== 'all' && !allowedUsernames.has(username)) {
       return res.status(403).json({ error: "You don't have visibility into that person's data." });
     }
   }
-  const data = db.getAllActivityTimestamps();
+  const data = await db.getAllActivityTimestamps();
   const hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, taskCreated: 0, replies: 0, submissions: 0, approvals: 0, logins: 0, total: 0 }));
   // "total" (and therefore the "busiest hour") only counts genuine work — creating a task,
   // commenting, submitting, approving. A login isn't doing anything; someone who just opens the
@@ -780,11 +784,11 @@ app.get('/api/reports/peak-hours', auth(['admin', 'director']), (req, res) => {
    Objective counts only — how many of an employee's tagged parts were approved as done, over
    the last 7 / 30 / 365 days and all-time. Deliberately not a subjective score or letter grade;
    just the numbers, for whoever's reviewing (Admin) to interpret. */
-function computeUserCounts(rows, dateField) {
+async function computeUserCounts(rows, dateField) {
   const now = Date.now();
   const DAY_MS = 86400000;
   const stats = {};
-  db.listUsers().forEach(u => { stats[u.username] = { username: u.username, name: u.name, team: u.team, week: 0, month: 0, quarter: 0, year: 0, allTime: 0 }; });
+  (await db.listUsers()).forEach(u => { stats[u.username] = { username: u.username, name: u.name, team: u.team, week: 0, month: 0, quarter: 0, year: 0, allTime: 0 }; });
   rows.forEach(r => {
     if (!stats[r.username]) return;
     const ageDays = (now - new Date(r[dateField]).getTime()) / DAY_MS;
@@ -796,10 +800,10 @@ function computeUserCounts(rows, dateField) {
   });
   return Object.values(stats).sort((a, b) => b.month - a.month || b.week - a.week);
 }
-app.get('/api/reports/completion', auth(['admin', 'director']), (req, res) => {
-  const stats = computeUserCounts(db.getApprovedCompletions(), 'submitted_at');
+app.get('/api/reports/completion', auth(['admin', 'director']), async (req, res) => {
+  const stats = await computeUserCounts(await db.getApprovedCompletions(), 'submitted_at');
   if (req.user.role === 'admin') return res.json(stats);
-  const allowed = directorAllowedTeams(db.getUser(req.user.username));
+  const allowed = directorAllowedTeams(await db.getUser(req.user.username));
   res.json(stats.filter(s => allowed.has(s.team)));
 });
 // A transparent rating, not a black-box score — every number shown is a real, explainable
@@ -808,16 +812,17 @@ app.get('/api/reports/completion', auth(['admin', 'director']), (req, res) => {
 // against an unrealistic yardstick). Computed over the quarter (trailing 90 days), since that's
 // a natural performance-review cadence. Nobody is scored below 0 or above 5, and anyone with no
 // completed work this quarter simply gets "not enough data" rather than a punitive 0.
-app.get('/api/reports/ratings', auth(['admin', 'director']), (req, res) => {
-  const completionStats = computeUserCounts(db.getApprovedCompletions(), 'submitted_at');
+app.get('/api/reports/ratings', auth(['admin', 'director']), async (req, res) => {
+  const completionStats = await computeUserCounts(await db.getApprovedCompletions(), 'submitted_at');
   const activeThisQuarter = completionStats.filter(s => s.quarter > 0);
   const companyAvgQuarterCompletions = activeThisQuarter.length > 0
     ? activeThisQuarter.reduce((sum, s) => sum + s.quarter, 0) / activeThisQuarter.length : 0;
   const responseTimesByUser = {};
-  db.listUsers().forEach(u => { responseTimesByUser[u.username] = db.getMyResponseDurations(u.username); });
+  const allUsersForResponseTimes = await db.listUsers();
+  for (const u of allUsersForResponseTimes) { responseTimesByUser[u.username] = await db.getMyResponseDurations(u.username); }
   const allResponseTimes = Object.values(responseTimesByUser).flat();
   const companyAvgResponseDays = allResponseTimes.length > 0 ? allResponseTimes.reduce((a, b) => a + b, 0) / allResponseTimes.length : null;
-  const warningCounts = db.getWarningCountsByUser();
+  const warningCounts = await db.getWarningCountsByUser();
 
   let ratings = completionStats.map(s => {
     const myResponseTimes = responseTimesByUser[s.username] || [];
@@ -837,7 +842,7 @@ app.get('/api/reports/ratings', auth(['admin', 'director']), (req, res) => {
     return { username: s.username, name: s.name, team: s.team, rating, volumeScore: Math.round(volumeScore * 10) / 10, timelinessScore: Math.round(timelinessScore * 10) / 10, quarterCompletions: s.quarter, avgResponseDays: myAvgResponse, warningCount: warningCounts[s.username] || 0 };
   });
   if (req.user.role !== 'admin') {
-    const allowed = directorAllowedTeams(db.getUser(req.user.username));
+    const allowed = directorAllowedTeams(await db.getUser(req.user.username));
     ratings = ratings.filter(r => allowed.has(r.team));
   }
   res.json({ ratings, companyAvgQuarterCompletions: Math.round(companyAvgQuarterCompletions * 10) / 10, companyAvgResponseDays: companyAvgResponseDays !== null ? Math.round(companyAvgResponseDays * 10) / 10 : null });
@@ -852,8 +857,8 @@ app.get('/api/reports/ratings', auth(['admin', 'director']), (req, res) => {
 // Shared by the weekly and monthly leaderboards (and reused for quarter/year-end snapshots
 // below) — computes the same rating model (volume vs. company average + timeliness), just
 // scoped to whichever period field is passed in ('week', 'month', 'quarter', 'year').
-function computeLeaderboard(periodKey) {
-  const completionStats = computeUserCounts(db.getApprovedCompletions(), 'submitted_at');
+async function computeLeaderboard(periodKey) {
+  const completionStats = await computeUserCounts(await db.getApprovedCompletions(), 'submitted_at');
   const active = completionStats.filter(s => s[periodKey] > 0);
   const companyAvgCompletions = active.length > 0
     ? active.reduce((sum, s) => sum + s[periodKey], 0) / active.length : 0;
@@ -863,7 +868,8 @@ function computeLeaderboard(periodKey) {
   // silently pretended away here. Volume (the completion count itself) IS genuinely
   // period-scoped, which is the part that matters most for a leaderboard.
   const responseTimesByUser = {};
-  db.listUsers().forEach(u => { responseTimesByUser[u.username] = db.getMyResponseDurations(u.username); });
+  const allUsersForResponseTimes = await db.listUsers();
+  for (const u of allUsersForResponseTimes) { responseTimesByUser[u.username] = await db.getMyResponseDurations(u.username); }
   const allResponseTimes = active.map(s => responseTimesByUser[s.username] || []).flat();
   const companyAvgResponseDays = allResponseTimes.length > 0 ? allResponseTimes.reduce((a, b) => a + b, 0) / allResponseTimes.length : null;
 
@@ -894,11 +900,11 @@ function getYearInfo(date) {
   const year = date.getFullYear();
   return { label: String(year), start: new Date(year, 0, 1), end: new Date(year + 1, 0, 1) };
 }
-function computeCalendarLeaderboard(startDate, endDate) {
-  const rows = db.getApprovedCompletionsInRange(startDate.toISOString(), endDate.toISOString());
+async function computeCalendarLeaderboard(startDate, endDate) {
+  const rows = await db.getApprovedCompletionsInRange(startDate.toISOString(), endDate.toISOString());
   const counts = {};
   rows.forEach(r => { counts[r.username] = (counts[r.username] || 0) + 1; });
-  const users = db.listUsers();
+  const users = await db.listUsers();
   const active = Object.keys(counts).map(username => {
     const u = users.find(x => x.username === username);
     return u ? { username, name: u.name, team: u.team, completions: counts[username] } : null;
@@ -910,37 +916,38 @@ function computeCalendarLeaderboard(startDate, endDate) {
 // computes final rankings for THAT completed period specifically (not the current one, which
 // has barely started) and stores them permanently. Safe to call repeatedly — does nothing once
 // a period has already been recorded, so a daily check never double-awards the same period.
-function checkAndSnapshotPeriodAwards() {
+async function checkAndSnapshotPeriodAwards() {
   const now = new Date();
-  [
+  const periodConfigs = [
     { type: 'quarter', getInfo: getQuarterInfo, prevDate: new Date(now.getFullYear(), now.getMonth() - 3, 1) },
     { type: 'year', getInfo: getYearInfo, prevDate: new Date(now.getFullYear() - 1, 0, 1) },
-  ].forEach(({ type, getInfo, prevDate }) => {
+  ];
+  for (const { type, getInfo, prevDate } of periodConfigs) {
     const prevPeriod = getInfo(prevDate);
-    const alreadyProcessed = db.getLastProcessedPeriod(type);
-    if (alreadyProcessed === prevPeriod.label) return; // this period's award already exists
-    const ranked = computeCalendarLeaderboard(prevPeriod.start, prevPeriod.end);
-    ranked.slice(0, 3).forEach(r => {
-      db.savePeriodAward({ period_type: type, period_label: prevPeriod.label, rank: r.rank, username: r.username, name: r.name, team: r.team, rating: null, completions: r.completions });
-    });
-    db.setLastProcessedPeriod(type, prevPeriod.label);
-  });
+    const alreadyProcessed = await db.getLastProcessedPeriod(type);
+    if (alreadyProcessed === prevPeriod.label) continue; // this period's award already exists
+    const ranked = await computeCalendarLeaderboard(prevPeriod.start, prevPeriod.end);
+    for (const r of ranked.slice(0, 3)) {
+      await db.savePeriodAward({ period_type: type, period_label: prevPeriod.label, rank: r.rank, username: r.username, name: r.name, team: r.team, rating: null, completions: r.completions });
+    }
+    await db.setLastProcessedPeriod(type, prevPeriod.label);
+  }
 }
 // Checked once a day — cheap, and a missed check just means the award appears a day later than
 // the period technically ended, never earlier or duplicated.
 setInterval(checkAndSnapshotPeriodAwards, 24 * 60 * 60 * 1000).unref();
-app.get('/api/reports/period-awards', auth(['admin', 'director', 'member']), (req, res) => {
+app.get('/api/reports/period-awards', auth(['admin']), async (req, res) => {
   const type = req.query.type === 'year' ? 'year' : 'quarter';
-  res.json({ awards: db.listPeriodAwards(type) });
+  res.json({ awards: await db.listPeriodAwards(type) });
 });
-app.get('/api/reports/weekly-leaderboard', auth(['admin', 'director', 'member']), (req, res) => {
+app.get('/api/reports/weekly-leaderboard', auth(['admin']), async (req, res) => {
   const now = new Date();
   const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay());
-  res.json({ leaderboard: computeLeaderboard('week'), periodLabel: `Week of ${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` });
+  res.json({ leaderboard: await computeLeaderboard('week'), periodLabel: `Week of ${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` });
 });
-app.get('/api/reports/monthly-leaderboard', auth(['admin', 'director', 'member']), (req, res) => {
+app.get('/api/reports/monthly-leaderboard', auth(['admin']), async (req, res) => {
   const now = new Date();
-  res.json({ leaderboard: computeLeaderboard('month'), periodLabel: now.toLocaleString('en-US', { month: 'long', year: 'numeric' }) });
+  res.json({ leaderboard: await computeLeaderboard('month'), periodLabel: now.toLocaleString('en-US', { month: 'long', year: 'numeric' }) });
 });
 
 // Self-scoped only — always uses the logged-in person's own username, never an admin-chosen
@@ -951,19 +958,19 @@ app.get('/api/reports/monthly-leaderboard', auth(['admin', 'director', 'member']
 // which only ever shows one person (or the whole company summed together) at a time. This
 // shows every employee side by side with their real completion count and real warning count, so
 // HR/Admin can spot who's been flagged without drilling into each person one at a time.
-app.get('/api/reports/hr-roster', auth(ALL_ROLES), (req, res) => {
-  const actingUser = db.getUser(req.user.username);
+app.get('/api/reports/hr-roster', auth(ALL_ROLES), async (req, res) => {
+  const actingUser = await db.getUser(req.user.username);
   const isHR = actingUser && isHRTeam(actingUser.team);
   if (!(req.user.role === 'admin' || isHR)) return res.status(403).json({ error: 'Only HR Department members and Admin can view the roster.' });
-  const completionAll = computeUserCounts(db.getApprovedCompletions(), 'submitted_at');
-  const warningCounts = db.getWarningCountsByUser();
-  const pendingCounts = db.getPendingTaskCountsByUser();
+  const completionAll = await computeUserCounts(await db.getApprovedCompletions(), 'submitted_at');
+  const warningCounts = await db.getWarningCountsByUser();
+  const pendingCounts = await db.getPendingTaskCountsByUser();
   // The threshold requested: 2+ currently pending tasks flags the person red for whoever's
   // looking at this roster — HR and Admin are the only two audiences who ever see this view.
   const PENDING_RED_FLAG_THRESHOLD = 2;
   // The roster is a personnel/employee overview, not a leadership dashboard — Admin and
   // Directors are never shown as entries in it, for anyone viewing it, Admin included.
-  const roster = db.listUsers().filter(u => u.role !== 'admin' && u.role !== 'director').map(u => {
+  const roster = (await db.listUsers()).filter(u => u.role !== 'admin' && u.role !== 'director').map(u => {
     const completion = completionAll.find(s => s.username === u.username) || { allTime: 0 };
     const pendingTaskCount = pendingCounts[u.username] || 0;
     return {
@@ -993,41 +1000,43 @@ app.get('/api/reports/hr-roster', auth(ALL_ROLES), (req, res) => {
   // approved, was previously being counted as "2 completed tasks" instead of 1. Each person's
   // own tasksCompleted figure above is still correct and unchanged (their own personal credit
   // for their own approved work) — only the company-wide aggregate was wrong.
-  const totalTasksCompleted = db.listAllTasks().filter(t => t.status === 'closed').length;
+  const totalTasksCompleted = (await db.listAllTasks()).filter(t => t.status === 'closed').length;
   res.json({ roster, totalTasksCompleted });
 });
-app.get('/api/reports/my-dashboard', auth(ALL_ROLES), (req, res) => {
+app.get('/api/reports/my-dashboard', auth(ALL_ROLES), async (req, res) => {
   // Self-scoped for everyone EXCEPT admin, who can pass ?username=X to view any individual's
   // dashboard too — the same real numbers that person sees themselves, not a separate view.
   // A non-admin can never see anyone's numbers but their own, no matter what they pass.
   const requestedUsername = str(req.query.username).trim();
   if (req.user.role === 'admin' && requestedUsername === 'all') {
     // Whole-company aggregate — sums across everyone, not one individual's numbers.
-    const completionAll = computeUserCounts(db.getApprovedCompletions(), 'submitted_at');
-    const approvalAll = computeUserCounts(db.getApprovalDecisionStats(), 'decided_at');
+    const completionAll = await computeUserCounts(await db.getApprovedCompletions(), 'submitted_at');
+    const approvalAll = await computeUserCounts(await db.getApprovalDecisionStats(), 'decided_at');
     const sumField = (rows, field) => rows.reduce((s, r) => s + r[field], 0);
     const completion = { week: sumField(completionAll, 'week'), month: sumField(completionAll, 'month'), year: sumField(completionAll, 'year'), allTime: sumField(completionAll, 'allTime') };
     const approval = { week: sumField(approvalAll, 'week'), month: sumField(approvalAll, 'month'), year: sumField(approvalAll, 'year'), allTime: sumField(approvalAll, 'allTime') };
-    const allDurations = db.listUsers().flatMap(u => db.getMyResponseDurations(u.username));
+    const allUsersForDurations = await db.listUsers();
+    let allDurations = [];
+    for (const u of allUsersForDurations) { allDurations = allDurations.concat(await db.getMyResponseDurations(u.username)); }
     const avgResponseDays = allDurations.length > 0 ? allDurations.reduce((a, b) => a + b, 0) / allDurations.length : null;
-    const allOpenTasks = db.listAllTasks().filter(t => t.status === 'open');
+    const allOpenTasks = (await db.listAllTasks()).filter(t => t.status === 'open');
     let onHoldCount = 0, waitingOnOthersCount = 0, needsActionCount = 0;
-    allOpenTasks.forEach(t => {
-      const rows = db.listAssignees(t.id);
+    for (const t of allOpenTasks) {
+      const rows = await db.listAssignees(t.id);
       rows.forEach(row => {
         if (!row.is_released) onHoldCount++;
         else if (row.decision === 'approve' && row.completed_at) waitingOnOthersCount++;
         else needsActionCount++;
       });
-    });
-    const data = db.getAllActivityTimestamps();
+    }
+    const data = await db.getAllActivityTimestamps();
     const hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, total: 0 }));
     ['taskCreated', 'replies', 'submissions', 'approvals'].forEach(key => {
       data[key].forEach(r => { const h = getISTHour(r.created_at); if (!isNaN(h)) hours[h].total++; });
     });
     return res.json({ username: 'all', completion, approval, avgResponseDays, sampleSize: allDurations.length, needsActionCount, onHoldCount, waitingOnOthersCount, peakHours: hours });
   }
-  const actingUser = db.getUser(req.user.username);
+  const actingUser = await db.getUser(req.user.username);
   const isHR = actingUser && isHRTeam(actingUser.team);
   const canViewOthers = req.user.role === 'admin' || isHR;
   // The "all" sentinel is handled entirely by the admin-only whole-company branch above — for
@@ -1035,32 +1044,30 @@ app.get('/api/reports/my-dashboard', auth(ALL_ROLES), (req, res) => {
   // as if they'd requested nothing at all, rather than being treated as a literal username to
   // look up (which would incorrectly 404, since no account is actually named "all").
   const username = (canViewOthers && requestedUsername && requestedUsername !== 'all') ? requestedUsername : req.user.username;
-  if (username !== req.user.username && !db.getUser(username)) return res.status(404).json({ error: 'User not found.' });
-  const completionAll = computeUserCounts(db.getApprovedCompletions(), 'submitted_at');
-  const approvalAll = computeUserCounts(db.getApprovalDecisionStats(), 'decided_at');
+  if (username !== req.user.username && !await db.getUser(username)) return res.status(404).json({ error: 'User not found.' });
+  const completionAll = await computeUserCounts(await db.getApprovedCompletions(), 'submitted_at');
+  const approvalAll = await computeUserCounts(await db.getApprovalDecisionStats(), 'decided_at');
   const completion = completionAll.find(s => s.username === username) || { week: 0, month: 0, year: 0, allTime: 0 };
   const approval = approvalAll.find(s => s.username === username) || { week: 0, month: 0, year: 0, allTime: 0 };
 
   // Average response time: from being released to actually submitting — a fair "how quickly do
   // I typically act once I'm free to" metric, since it starts counting from release, not from
   // task creation (which could include time this person was on hold and unable to act at all).
-  const responseDurations = db.getMyResponseDurations(username);
+  const responseDurations = await db.getMyResponseDurations(username);
   const avgResponseDays = responseDurations.length > 0
     ? responseDurations.reduce((a, b) => a + b, 0) / responseDurations.length
     : null;
 
-  const myOpenTasks = db.listTasksForUser(username).filter(t => t.status === 'open');
-  const onHoldCount = myOpenTasks.filter(t => {
-    const row = db.listAssignees(t.id).find(a => a.username === username);
-    return row && !row.is_released;
-  }).length;
-  const waitingOnOthersCount = myOpenTasks.filter(t => {
-    const row = db.listAssignees(t.id).find(a => a.username === username);
-    return row && row.decision === 'approve' && row.completed_at;
-  }).length;
+  const myOpenTasks = (await db.listTasksForUser(username)).filter(t => t.status === 'open');
+  let onHoldCount = 0, waitingOnOthersCount = 0;
+  for (const t of myOpenTasks) {
+    const row = (await db.listAssignees(t.id)).find(a => a.username === username);
+    if (row && !row.is_released) onHoldCount++;
+    else if (row && row.decision === 'approve' && row.completed_at) waitingOnOthersCount++;
+  }
   const needsActionCount = myOpenTasks.length - onHoldCount - waitingOnOthersCount;
 
-  const data = db.getAllActivityTimestamps();
+  const data = await db.getAllActivityTimestamps();
   const hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, total: 0 }));
   // Same reasoning as the company-wide Peak Hours page: a login isn't work, so it's excluded
   // from this person's own "activity" total — only things they actually did count here.
@@ -1080,22 +1087,22 @@ app.get('/api/reports/my-dashboard', auth(ALL_ROLES), (req, res) => {
    the free-text `team` column already on each user — existing free text still works untouched,
    this just gives Admin (and team leads adding their own people) a consistent list to pick from
    and grow, instead of everyone retyping department names from memory. */
-app.get('/api/teams', auth(ALL_ROLES), (req, res) => res.json(db.listTeams()));
-app.post('/api/teams', auth(['admin']), (req, res) => {
+app.get('/api/teams', auth(ALL_ROLES), async (req, res) => res.json(await db.listTeams()));
+app.post('/api/teams', auth(['admin']), async (req, res) => {
   const name = str((req.body || {}).name).trim();
   if (!name) return res.status(400).json({ error: 'Department name is required.' });
   if (name.length > 60) return res.status(400).json({ error: 'Department name is too long.' });
-  db.addTeam(name);
+  await db.addTeam(name);
   res.json({ ok: true, name });
 });
 // Never deletes any accounts — anyone in this department just has their Team field cleared,
 // same as if it had never been set. Audit-logged since it affects every account in it at once.
-app.delete('/api/teams/:name', auth(['admin']), (req, res) => {
+app.delete('/api/teams/:name', auth(['admin']), async (req, res) => {
   const name = str(req.params.name).trim();
-  if (!db.listTeams().includes(name)) return res.status(404).json({ error: 'Department not found.' });
-  const affected = db.listUsers().filter(u => u.team === name).length;
-  db.removeTeam(name);
-  auditFromReq(req, 'department_removed', `Removed department "${name}"${affected > 0 ? ` (unassigned ${affected} account${affected === 1 ? '' : 's'})` : ''}`);
+  if (!(await db.listTeams()).includes(name)) return res.status(404).json({ error: 'Department not found.' });
+  const affected = (await db.listUsers()).filter(u => u.team === name).length;
+  await db.removeTeam(name);
+  await auditFromReq(req, 'department_removed', `Removed department "${name}"${affected > 0 ? ` (unassigned ${affected} account${affected === 1 ? '' : 's'})` : ''}`);
   res.json({ ok: true, affected });
 });
 
@@ -1104,7 +1111,7 @@ app.delete('/api/teams/:name', auth(['admin']), (req, res) => {
    document itself — there's no "submit work" step, since they're deciding, not producing work.
    One rejection kills the request immediately (status: needs_revision); the creator uploads a
    revised document to the SAME request, which resets every reviewer back to pending. */
-app.post('/api/approvals', auth(ALL_ROLES), (req, res) => {
+app.post('/api/approvals', auth(ALL_ROLES), async (req, res) => {
   const title = str((req.body || {}).title).trim();
   const description = str((req.body || {}).description).trim();
   const fileName = str((req.body || {}).fileName).trim();
@@ -1116,33 +1123,33 @@ app.post('/api/approvals', auth(ALL_ROLES), (req, res) => {
   if (tooLong(description, 5000)) return res.status(400).json({ error: 'Description is too long (max 5000 characters).' });
   if (reviewers.length === 0) return res.status(400).json({ error: 'Tag at least one person to approve this.' });
   if (!fileData) return res.status(400).json({ error: 'A document is required.' });
-  for (const u of reviewers) { if (!db.getUser(u)) return res.status(400).json({ error: `Unknown user: ${u}` }); }
+  for (const u of reviewers) { if (!await db.getUser(u)) return res.status(400).json({ error: `Unknown user: ${u}` }); }
   const uploadError = validateUploadedFile(fileData, fileName, MAX_FILE_CHARS);
   if (uploadError) return res.status(400).json({ error: uploadError });
   const id = genId('APR');
-  db.createApprovalRequest({ id, title, description, file_data: fileData, file_name: fileName, created_by_username: req.user.username, created_by_name: req.user.name, reviewers });
-  reviewers.forEach(u => {
-    if (u !== req.user.username) db.createNotification({ username: u, type: 'approval_requested', message: `${req.user.name} sent "${title}" for your approval.`, task_id: null });
-  });
+  await db.createApprovalRequest({ id, title, description, file_data: fileData, file_name: fileName, created_by_username: req.user.username, created_by_name: req.user.name, reviewers });
+  for (const u of reviewers) {
+    if (u !== req.user.username) await db.createNotification({ username: u, type: 'approval_requested', message: `${req.user.name} sent "${title}" for your approval.`, task_id: null });
+  }
   res.json({ ok: true, id });
 });
-app.get('/api/approvals/mine', auth(ALL_ROLES), (req, res) => res.json(db.listApprovalRequestsForUser(req.user.username)));
-app.get('/api/approvals', auth(['admin']), (req, res) => res.json(db.listAllApprovalRequests()));
-app.get('/api/approvals/:id/attachment', auth(ALL_ROLES), (req, res) => {
-  const request = db.getApprovalRequest(req.params.id);
+app.get('/api/approvals/mine', auth(ALL_ROLES), async (req, res) => res.json(await db.listApprovalRequestsForUser(req.user.username)));
+app.get('/api/approvals', auth(['admin']), async (req, res) => res.json(await db.listAllApprovalRequests()));
+app.get('/api/approvals/:id/attachment', auth(ALL_ROLES), async (req, res) => {
+  const request = await db.getApprovalRequest(req.params.id);
   if (!request) return res.status(404).json({ error: 'Approval request not found.' });
   const isInvolved = request.created_by_username === req.user.username || req.user.role === 'admin' ||
-    db.listReviewers(request.id).some(r => r.username === req.user.username);
+    (await db.listReviewers(request.id)).some(r => r.username === req.user.username);
   if (!isInvolved) return res.status(403).json({ error: "You're not involved in this approval request." });
-  const row = db.getApprovalFile(req.params.id);
+  const row = await db.getApprovalFile(req.params.id);
   if (!row || !row.file_data) return res.status(404).json({ error: 'No document on this request.' });
   res.json({ data: row.file_data, name: row.file_name });
 });
-app.post('/api/approvals/:id/decide', auth(ALL_ROLES), (req, res) => {
-  const request = db.getApprovalRequest(req.params.id);
+app.post('/api/approvals/:id/decide', auth(ALL_ROLES), async (req, res) => {
+  const request = await db.getApprovalRequest(req.params.id);
   if (!request) return res.status(404).json({ error: 'Approval request not found.' });
   if (request.status !== 'pending') return res.status(400).json({ error: 'This request is not awaiting a decision.' });
-  const reviewers = db.listReviewers(request.id);
+  const reviewers = await db.listReviewers(request.id);
   const mine = reviewers.find(r => r.username === req.user.username);
   if (!mine) return res.status(403).json({ error: "You're not tagged as an approver on this request." });
   if (mine.decision) return res.status(400).json({ error: 'You already decided on this request.' });
@@ -1150,29 +1157,29 @@ app.post('/api/approvals/:id/decide', auth(ALL_ROLES), (req, res) => {
   if (!['approved', 'rejected'].includes(decision)) return res.status(400).json({ error: 'Decision must be approved or rejected.' });
   const reason = str((req.body || {}).reason).trim();
   if (decision === 'rejected' && reason.length < 5) return res.status(400).json({ error: 'A reason (at least 5 characters) is required to reject.' });
-  db.recordReviewerDecision(request.id, req.user.username, decision, reason);
+  await db.recordReviewerDecision(request.id, req.user.username, decision, reason);
   if (decision === 'rejected') {
-    db.setApprovalRequestStatus(request.id, 'needs_revision', null);
-    db.addApprovalHistory(request.id, req.user.username, req.user.name, `Rejected: ${reason}`);
-    auditFromReq(req, 'approval_rejected', `Rejected "${request.title}": ${reason}`);
+    await db.setApprovalRequestStatus(request.id, 'needs_revision', null);
+    await db.addApprovalHistory(request.id, req.user.username, req.user.name, `Rejected: ${reason}`);
+    await auditFromReq(req, 'approval_rejected', `Rejected "${request.title}": ${reason}`);
     if (request.created_by_username !== req.user.username) {
-      db.createNotification({ username: request.created_by_username, type: 'approval_rejected', message: `${req.user.name} rejected "${request.title}": ${reason}`, task_id: null });
+      await db.createNotification({ username: request.created_by_username, type: 'approval_rejected', message: `${req.user.name} rejected "${request.title}": ${reason}`, task_id: null });
     }
     return res.json({ ok: true, status: 'needs_revision' });
   }
-  db.addApprovalHistory(request.id, req.user.username, req.user.name, 'Approved');
-  const stillPending = db.listReviewers(request.id).some(r => r.decision !== 'approved');
+  await db.addApprovalHistory(request.id, req.user.username, req.user.name, 'Approved');
+  const stillPending = (await db.listReviewers(request.id)).some(r => r.decision !== 'approved');
   if (!stillPending) {
-    db.setApprovalRequestStatus(request.id, 'approved', new Date().toISOString());
-    db.addApprovalHistory(request.id, null, null, 'Fully approved by everyone tagged');
+    await db.setApprovalRequestStatus(request.id, 'approved', new Date().toISOString());
+    await db.addApprovalHistory(request.id, null, null, 'Fully approved by everyone tagged');
     if (request.created_by_username !== req.user.username) {
-      db.createNotification({ username: request.created_by_username, type: 'approval_approved', message: `"${request.title}" is fully approved.`, task_id: null });
+      await db.createNotification({ username: request.created_by_username, type: 'approval_approved', message: `"${request.title}" is fully approved.`, task_id: null });
     }
   }
   res.json({ ok: true, status: stillPending ? 'pending' : 'approved' });
 });
-app.post('/api/approvals/:id/revise', auth(ALL_ROLES), (req, res) => {
-  const request = db.getApprovalRequest(req.params.id);
+app.post('/api/approvals/:id/revise', auth(ALL_ROLES), async (req, res) => {
+  const request = await db.getApprovalRequest(req.params.id);
   if (!request) return res.status(404).json({ error: 'Approval request not found.' });
   if (request.created_by_username !== req.user.username && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Only whoever sent this (or Admin) can upload a revision.' });
@@ -1183,29 +1190,30 @@ app.post('/api/approvals/:id/revise', auth(ALL_ROLES), (req, res) => {
   if (!fileData) return res.status(400).json({ error: 'A revised document is required.' });
   const uploadError = validateUploadedFile(fileData, fileName, MAX_FILE_CHARS);
   if (uploadError) return res.status(400).json({ error: uploadError });
-  db.reviseApprovalRequest(request.id, fileData, fileName);
-  db.resetReviewersForRevision(request.id);
-  db.addApprovalHistory(request.id, req.user.username, req.user.name, `Uploaded a revised document: ${fileName}`);
-  db.listReviewers(request.id).forEach(r => {
-    if (r.username !== req.user.username) db.createNotification({ username: r.username, type: 'approval_requested', message: `${req.user.name} sent a revised "${request.title}" for your approval.`, task_id: null });
-  });
+  await db.reviseApprovalRequest(request.id, fileData, fileName);
+  await db.resetReviewersForRevision(request.id);
+  await db.addApprovalHistory(request.id, req.user.username, req.user.name, `Uploaded a revised document: ${fileName}`);
+  const revisedReviewers = await db.listReviewers(request.id);
+  for (const r of revisedReviewers) {
+    if (r.username !== req.user.username) await db.createNotification({ username: r.username, type: 'approval_requested', message: `${req.user.name} sent a revised "${request.title}" for your approval.`, task_id: null });
+  }
   res.json({ ok: true });
 });
-app.get('/api/reports/approvals', auth(['admin', 'director']), (req, res) => {
-  const stats = computeUserCounts(db.getApprovalDecisionStats(), 'decided_at');
+app.get('/api/reports/approvals', auth(['admin', 'director']), async (req, res) => {
+  const stats = await computeUserCounts(await db.getApprovalDecisionStats(), 'decided_at');
   if (req.user.role === 'admin') return res.json(stats);
-  const allowed = directorAllowedTeams(db.getUser(req.user.username));
+  const allowed = directorAllowedTeams(await db.getUser(req.user.username));
   res.json(stats.filter(s => allowed.has(s.team)));
 });
 // Every individual Approve/Reject decision, in full — who decided, what request, who asked
 // (the creator), the decision itself, and the exact timestamp. Director-scoped the same way as
 // the summary counts above.
-app.get('/api/reports/approval-decisions', auth(['admin', 'director']), (req, res) => {
-  let decisions = db.listApprovalDecisionsDetailed();
+app.get('/api/reports/approval-decisions', auth(['admin', 'director']), async (req, res) => {
+  let decisions = await db.listApprovalDecisionsDetailed();
   if (req.user.role !== 'admin') {
-    const allowed = directorAllowedTeams(db.getUser(req.user.username));
+    const allowed = directorAllowedTeams(await db.getUser(req.user.username));
     const teamByUsername = {};
-    db.listUsers().forEach(u => { teamByUsername[u.username] = u.team; });
+    (await db.listUsers()).forEach(u => { teamByUsername[u.username] = u.team; });
     decisions = decisions.filter(d => allowed.has(teamByUsername[d.reviewer_username]));
   }
   res.json(decisions);
@@ -1216,25 +1224,25 @@ app.get('/api/reports/approval-decisions', auth(['admin', 'director']), (req, re
    full project-management module. Drawings are filed against a project and can be fetched and
    downloaded by anyone who knows the project name. Anyone authenticated can upload or download
    — this is an internal single-company tool, same trust model as the rest of the app. */
-app.get('/api/projects', auth(ALL_ROLES), (req, res) => res.json(db.listProjects()));
-app.post('/api/projects', auth(ALL_ROLES), (req, res) => {
+app.get('/api/projects', auth(ALL_ROLES), async (req, res) => res.json(await db.listProjects()));
+app.post('/api/projects', auth(ALL_ROLES), async (req, res) => {
   const name = str((req.body || {}).name).trim();
   if (!name) return res.status(400).json({ error: 'Project name is required.' });
   if (name.length > 80) return res.status(400).json({ error: 'Project name is too long.' });
-  db.addProject(name);
+  await db.addProject(name);
   res.json({ ok: true, name });
 });
-app.get('/api/drawing-sections', auth(ALL_ROLES), (req, res) => res.json(db.listSections()));
-app.get('/api/task-phases', auth(ALL_ROLES), (req, res) => res.json(db.listPhases()));
-app.get('/api/drawings', auth(ALL_ROLES), (req, res) => {
+app.get('/api/drawing-sections', auth(ALL_ROLES), async (req, res) => res.json(await db.listSections()));
+app.get('/api/task-phases', auth(ALL_ROLES), async (req, res) => res.json(await db.listPhases()));
+app.get('/api/drawings', auth(ALL_ROLES), async (req, res) => {
   const project = str(req.query.project).trim();
   if (!project) return res.status(400).json({ error: 'A project name is required.' });
-  res.json(db.listDrawingsForProject(project));
+  res.json(await db.listDrawingsForProject(project));
 });
-app.post('/api/drawings', auth(ALL_ROLES), (req, res) => {
+app.post('/api/drawings', auth(ALL_ROLES), async (req, res) => {
   // Upload restricted to Admin ("Director") or Design team — fetching/downloading stays open
   // to everyone. Anyone else trying to upload gets a clear reason why.
-  const actingUser = db.getUser(req.user.username);
+  const actingUser = await db.getUser(req.user.username);
   const isDesignTeam = actingUser && (actingUser.team || '').toLowerCase().includes('design');
   if (!(req.user.role === 'admin' || isDesignTeam)) {
     return res.status(403).json({ error: 'Only Admin or Design team members can upload drawings.' });
@@ -1251,22 +1259,22 @@ app.post('/api/drawings', auth(ALL_ROLES), (req, res) => {
   if (tooLong(title, 200)) return res.status(400).json({ error: 'Title is too long (max 200 characters).' });
   const uploadError = validateUploadedFile(fileData, fileName, MAX_DRAWING_FILE_CHARS);
   if (uploadError) return res.status(400).json({ error: uploadError });
-  const id = db.addDrawing({ project, section, title, file_name: fileName, file_data: fileData, uploaded_by_username: req.user.username, uploaded_by_name: req.user.name });
+  const id = await db.addDrawing({ project, section, title, file_name: fileName, file_data: fileData, uploaded_by_username: req.user.username, uploaded_by_name: req.user.name });
   res.json({ ok: true, id });
 });
-app.get('/api/drawings/:id/download', auth(ALL_ROLES), (req, res) => {
-  const row = db.getDrawingFile(req.params.id);
+app.get('/api/drawings/:id/download', auth(ALL_ROLES), async (req, res) => {
+  const row = await db.getDrawingFile(req.params.id);
   if (!row || !row.file_data) return res.status(404).json({ error: 'Drawing not found.' });
   res.json({ data: row.file_data, name: row.file_name });
 });
-app.delete('/api/drawings/:id', auth(ALL_ROLES), (req, res) => {
-  const meta = db.getDrawingMeta(req.params.id);
+app.delete('/api/drawings/:id', auth(ALL_ROLES), async (req, res) => {
+  const meta = await db.getDrawingMeta(req.params.id);
   if (!meta) return res.status(404).json({ error: 'Drawing not found.' });
   if (!(req.user.role === 'admin' || meta.uploaded_by_username === req.user.username)) {
     return res.status(403).json({ error: 'Only whoever uploaded this drawing (or Admin) can remove it.' });
   }
-  db.deleteDrawing(req.params.id);
-  auditFromReq(req, 'drawing_removed', `Removed drawing #${req.params.id} from project "${meta.project}"`);
+  await db.deleteDrawing(req.params.id);
+  await auditFromReq(req, 'drawing_removed', `Removed drawing #${req.params.id} from project "${meta.project}"`);
   res.json({ ok: true });
 });
 
@@ -1274,8 +1282,8 @@ app.delete('/api/drawings/:id', auth(ALL_ROLES), (req, res) => {
 // needing Admin — mirrors how Mihir Store Management lets a team lead/head add their own
 // people. A non-admin lead can only create plain "member" accounts within their own team;
 // only Admin can create another Admin, or place someone outside the acting lead's team.
-app.post('/api/team/members', auth(ALL_ROLES), (req, res) => {
-  const actingUser = db.getUser(req.user.username);
+app.post('/api/team/members', auth(ALL_ROLES), async (req, res) => {
+  const actingUser = await db.getUser(req.user.username);
   const isLeadOrAdmin = actingUser && (actingUser.role === 'admin' || actingUser.is_team_lead);
   if (!isLeadOrAdmin) return res.status(403).json({ error: 'Only Admin or a team lead can add team members.' });
   const username = str((req.body || {}).username).trim();
@@ -1289,8 +1297,8 @@ app.post('/api/team/members', auth(ALL_ROLES), (req, res) => {
   if (!/^[a-zA-Z0-9._-]{3,40}$/.test(username)) return res.status(400).json({ error: 'Username must be 3-40 characters: letters, numbers, dots, underscores, or hyphens only.' });
   const pwErr2 = validatePasswordStrength(password); if (pwErr2) return res.status(400).json({ error: pwErr2 });
   if (!name) return res.status(400).json({ error: 'Name is required.' });
-  if (db.getUser(username)) return res.status(409).json({ error: 'That username is already taken.' });
-  db.createUser({ username, password_hash: bcrypt.hashSync(password, 10), role, name, team, must_change_password: true });
+  if (await db.getUser(username)) return res.status(409).json({ error: 'That username is already taken.' });
+  await db.createUser({ username, password_hash: bcrypt.hashSync(password, 10), role, name, team, must_change_password: true });
   res.json({ ok: true, username });
 });
 
@@ -1298,7 +1306,7 @@ app.post('/api/team/members', auth(ALL_ROLES), (req, res) => {
    Anyone can create a task and tag one or more people on it. A task closes only once everyone
    tagged has completed their part — OR whoever created it (plus Admin, as the one retained
    override) force-closes it early. */
-app.post('/api/tasks', auth(ALL_ROLES), (req, res) => {
+app.post('/api/tasks', auth(ALL_ROLES), async (req, res) => {
   const title = str((req.body || {}).title).trim();
   const description = str((req.body || {}).description).trim();
   const priority = ['high', 'medium', 'low'].includes(str((req.body || {}).priority)) ? str((req.body || {}).priority) : 'medium';
@@ -1348,10 +1356,10 @@ app.post('/api/tasks', auth(ALL_ROLES), (req, res) => {
     const uploadError = validateUploadedFile(attachment, attachmentName, fileLimit);
     if (uploadError) return res.status(400).json({ error: uploadError });
   }
-  if (dependsOnTaskId && !db.getTask(dependsOnTaskId)) return res.status(400).json({ error: 'The task this depends on was not found.' });
+  if (dependsOnTaskId && !await db.getTask(dependsOnTaskId)) return res.status(400).json({ error: 'The task this depends on was not found.' });
   let parentTask = null;
   if (parentTaskId) {
-    parentTask = db.getTask(parentTaskId);
+    parentTask = await db.getTask(parentTaskId);
     if (!parentTask) return res.status(400).json({ error: 'The parent task was not found.' });
     if (parentTask.status !== 'open') return res.status(400).json({ error: 'Cannot add a subtask to a task that is already closed or cancelled.' });
   }
@@ -1365,7 +1373,7 @@ app.post('/api/tasks', auth(ALL_ROLES), (req, res) => {
   if (dependsOnTaskId) {
     let cursor = dependsOnTaskId, depth = 0;
     while (cursor && depth < 500) {
-      const cursorTask = db.getTask(cursor);
+      const cursorTask = await db.getTask(cursor);
       if (!cursorTask || !cursorTask.depends_on_task_id) break;
       cursor = cursorTask.depends_on_task_id;
       depth++;
@@ -1374,7 +1382,7 @@ app.post('/api/tasks', auth(ALL_ROLES), (req, res) => {
   }
   const usersByUsername = {};
   for (const u of usernames) {
-    const user = db.getUser(u);
+    const user = await db.getUser(u);
     if (!user) return res.status(400).json({ error: `Unknown user: ${u}` });
     usersByUsername[u] = user;
   }
@@ -1383,88 +1391,89 @@ app.post('/api/tasks', auth(ALL_ROLES), (req, res) => {
   // notification either all commit together or none do — a mid-loop failure (e.g. a database
   // error on one insert) can no longer leave a task half-created with some assignees tagged and
   // others silently missing.
-  db.runInTransaction(() => {
-    db.createTask({
+  await db.runInTransaction(async (tx) => {
+    await db.createTask({
       id, title, description, priority, deadline, created_by: req.user.name, created_by_username: req.user.username,
       depends_on_task_id: dependsOnTaskId || null, attachment, attachment_name: attachmentName, is_drawing_request: isDrawingRequest,
       parent_task_id: parentTaskId || null, project: project || null, phase: phase || null,
-    });
-    if (stageGroups.length > 1) db.setAutoReleaseStages(id, autoReleaseStages);
-    stageGroups.forEach((group, idx) => {
+    }, tx);
+    if (stageGroups.length > 1) await db.setAutoReleaseStages(id, autoReleaseStages, tx);
+    for (const [idx, group] of stageGroups.entries()) {
       const stageNum = idx + 1;
       const isReleased = stageNum === 1;
-      group.forEach(uname => {
+      for (const uname of group) {
         const u = usersByUsername[uname];
-        db.addTaskAssignee(id, u.username, u.team, stageNum, isReleased, individualDeadlines[u.username]);
-        if (u.username === req.user.username) return;
+        await db.addTaskAssignee(id, u.username, u.team, stageNum, isReleased, individualDeadlines[u.username], tx);
+        if (u.username === req.user.username) continue;
         const message = isReleased
           ? `${req.user.name} tagged you on "${title}".`
           : `${req.user.name} tagged you on "${title}" — you're on hold for now until Level ${stageNum - 1} finishes their part.`;
-        db.createNotification({ username: u.username, type: 'task_assigned', message, task_id: id });
-      });
-    });
+        await db.createNotification({ username: u.username, type: 'task_assigned', message, task_id: id }, tx);
+      }
+    }
   });
   // Tell the prerequisite task's creator and assignees that something new now depends on it —
   // clears up "does picking this send a notification?": yes, but only to the task it depends
   // on, not to anyone on the new task itself.
   if (dependsOnTaskId) {
-    const prereq = db.getTask(dependsOnTaskId);
+    const prereq = await db.getTask(dependsOnTaskId);
     if (prereq) {
-      const notifyTargets = new Set([prereq.created_by_username, ...db.listAssignees(dependsOnTaskId).map(a => a.username)]);
-      notifyTargets.forEach(username => {
+      const notifyTargets = new Set([prereq.created_by_username, ...(await db.listAssignees(dependsOnTaskId)).map(a => a.username)]);
+      for (const username of notifyTargets) {
         if (username && username !== req.user.username) {
-          db.createNotification({ username, type: 'task_assigned', message: `"${title}" now depends on "${prereq.title}" finishing first.`, task_id: dependsOnTaskId });
+          await db.createNotification({ username, type: 'task_assigned', message: `"${title}" now depends on "${prereq.title}" finishing first.`, task_id: dependsOnTaskId });
         }
-      });
+      }
     }
   }
   if (parentTask) {
-    const notifyTargets = new Set([parentTask.created_by_username, ...db.listAssignees(parentTaskId).map(a => a.username)]);
-    notifyTargets.forEach(username => {
+    const notifyTargets = new Set([parentTask.created_by_username, ...(await db.listAssignees(parentTaskId)).map(a => a.username)]);
+    for (const username of notifyTargets) {
       if (username && username !== req.user.username) {
-        db.createNotification({ username, type: 'task_assigned', message: `"${title}" was added as a subtask of "${parentTask.title}" — it must be closed before the main task can close.`, task_id: id });
+        await db.createNotification({ username, type: 'task_assigned', message: `"${title}" was added as a subtask of "${parentTask.title}" — it must be closed before the main task can close.`, task_id: id });
       }
-    });
+    }
   }
+  await auditFromReq(req, 'task_created', `Created ${parentTask ? 'subtask' : 'task'} "${title}" (${id})${parentTask ? ` under "${parentTask.title}"` : ''}.`);
   res.json({ ok: true, id });
 });
-app.get('/api/tasks', auth(['admin']), (req, res) => res.json(db.listAllTasks().map(t => db.getTaskFullLight(t.id))));
+app.get('/api/tasks', auth(['admin']), async (req, res) => res.json(await Promise.all((await db.listAllTasks()).map(t => db.getTaskFullLight(t.id)))));
 // Minimal open-task list (id + title only, no other details) so EVERY user — not just Admin —
 // can pick a company-wide "Depends On" task, since a dependency very often belongs to a
 // different team than the one creating the new task. Previously this used each user's own
 // task list, so anyone who wasn't Admin almost always saw an empty dropdown.
-app.get('/api/tasks/open-titles', auth(ALL_ROLES), (req, res) => {
+app.get('/api/tasks/open-titles', auth(ALL_ROLES), async (req, res) => {
   // Includes deadline in the payload so the dropdown can disambiguate tasks that share the same
   // title — e.g. every unedited "Ask for Drawing" task defaults to the literal title "Drawing
   // Request," which made the list look like it only ever showed one confusing repeated entry.
-  res.json(db.listAllTasks().filter(t => t.status === 'open').map(t => ({ id: t.id, title: t.title, deadline: t.deadline })));
+  res.json((await db.listAllTasks()).filter(t => t.status === 'open').map(t => ({ id: t.id, title: t.title, deadline: t.deadline })));
 });
-app.get('/api/tasks/mine', auth(ALL_ROLES), (req, res) => res.json(db.listTasksForUser(req.user.username).map(t => db.getTaskFullLight(t.id))));
-app.get('/api/tasks/:id', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTaskFull(req.params.id);
+app.get('/api/tasks/mine', auth(ALL_ROLES), async (req, res) => res.json(await Promise.all((await db.listTasksForUser(req.user.username)).map(t => db.getTaskFullLight(t.id)))));
+app.get('/api/tasks/:id', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTaskFull(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   res.json(task);
 });
-app.get('/api/tasks/:id/attachment', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.get('/api/tasks/:id/attachment', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
-  if (!isInvolvedInTask(req.user, task)) return res.status(403).json({ error: "You're not involved in this task." });
-  const row = db.getTaskAttachment(task.id);
+  if (!(await isInvolvedInTask(req.user, task))) return res.status(403).json({ error: "You're not involved in this task." });
+  const row = await db.getTaskAttachment(task.id);
   if (!row || !row.attachment) return res.status(404).json({ error: 'No attachment on this task.' });
   res.json({ data: row.attachment, name: row.attachment_name });
 });
-app.get('/api/tasks/:id/replies/:replyId/attachment', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.get('/api/tasks/:id/replies/:replyId/attachment', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
-  if (!isInvolvedInTask(req.user, task)) return res.status(403).json({ error: "You're not involved in this task." });
-  const row = db.getReplyAttachment(req.params.replyId);
+  if (!(await isInvolvedInTask(req.user, task))) return res.status(403).json({ error: "You're not involved in this task." });
+  const row = await db.getReplyAttachment(req.params.replyId);
   if (!row || row.task_id !== req.params.id || !row.attachment) return res.status(404).json({ error: 'No attachment on this reply.' });
   res.json({ data: row.attachment, name: row.attachment_name });
 });
-app.post('/api/tasks/:id/reply', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/reply', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
-  if (!isInvolvedInTask(req.user, task)) return res.status(403).json({ error: "You're not involved in this task, so you can't comment on it." });
+  if (!(await isInvolvedInTask(req.user, task))) return res.status(403).json({ error: "You're not involved in this task, so you can't comment on it." });
   const message = str((req.body || {}).message).trim();
   const { attachment } = req.body || {};
   const attachmentName = str((req.body || {}).attachmentName).trim();
@@ -1479,27 +1488,27 @@ app.post('/api/tasks/:id/reply', auth(ALL_ROLES), (req, res) => {
     const uploadError = validateUploadedFile(attachment, attachmentName, fileLimit);
     if (uploadError) return res.status(400).json({ error: uploadError });
   }
-  db.addReply(task.id, { by_username: req.user.username, by_name: req.user.name, message, attachment, attachment_name: attachmentName });
+  await db.addReply(task.id, { by_username: req.user.username, by_name: req.user.name, message, attachment, attachment_name: attachmentName });
   // Notify both primary assignees AND anyone tagged for follow-up — follow-up people asked to
   // "keep an eye on this" should hear about replies just like assignees do.
   const notifyTargets = new Set([
-    ...db.listAssignees(task.id).map(a => a.username),
-    ...db.listFollowups(task.id).map(f => f.username),
+    ...(await db.listAssignees(task.id)).map(a => a.username),
+    ...(await db.listFollowups(task.id)).map(f => f.username),
   ]);
-  notifyTargets.forEach(u => {
-    if (u !== req.user.username) db.createNotification({ username: u, type: 'task_reply', message: `${req.user.name} replied on "${task.title}".`, task_id: task.id });
-  });
+  for (const u of notifyTargets) {
+    if (u !== req.user.username) await db.createNotification({ username: u, type: 'task_reply', message: `${req.user.name} replied on "${task.title}".`, task_id: task.id });
+  }
   // @mentions in the comment text: anyone @mentioned who exists as a real account gets notified
   // too, even if they weren't already an assignee or follow-up person — a distinct message so
   // it's clear they were specifically called out, not just part of the general reply notice.
   const mentionedUsernames = new Set();
   const mentionMatches = message.matchAll(/@([a-zA-Z0-9._-]{3,40})/g);
-  for (const m of mentionMatches) { if (db.getUser(m[1])) mentionedUsernames.add(m[1]); }
-  mentionedUsernames.forEach(u => {
+  for (const m of mentionMatches) { if (await db.getUser(m[1])) mentionedUsernames.add(m[1]); }
+  for (const u of mentionedUsernames) {
     if (u !== req.user.username && !notifyTargets.has(u)) {
-      db.createNotification({ username: u, type: 'mentioned_in_comment', message: `${req.user.name} mentioned you in a comment on "${task.title}".`, task_id: task.id });
+      await db.createNotification({ username: u, type: 'mentioned_in_comment', message: `${req.user.name} mentioned you in a comment on "${task.title}".`, task_id: task.id });
     }
-  });
+  }
   res.json({ ok: true });
 });
 
@@ -1512,33 +1521,33 @@ app.post('/api/tasks/:id/reply', auth(ALL_ROLES), (req, res) => {
 // this task as regular assignees (so it now also needs their sign-off to fully close) and
 // flags it as a drawing request so every future reply on it gets the larger CAD file-size
 // allowance too. Restricted to people already involved, same reasoning as follow-up tagging.
-app.post('/api/tasks/:id/ask-for-drawing', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/ask-for-drawing', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (task.status !== 'open') return res.status(400).json({ error: 'Task is not open.' });
-  const isAssignee = db.listAssignees(task.id).some(a => a.username === req.user.username);
+  const isAssignee = (await db.listAssignees(task.id)).some(a => a.username === req.user.username);
   const isCreator = task.created_by_username === req.user.username;
   if (!(isAssignee || isCreator || req.user.role === 'admin')) {
     return res.status(403).json({ error: "You're not involved in this task yet, so you can't request a drawing on it." });
   }
-  const designTeamUsers = db.listUsers().filter(u => (u.team || '').toLowerCase().includes('design'));
-  const adminUsers = db.listUsers().filter(u => u.role === 'admin');
+  const designTeamUsers = (await db.listUsers()).filter(u => (u.team || '').toLowerCase().includes('design'));
+  const adminUsers = (await db.listUsers()).filter(u => u.role === 'admin');
   const targets = [...designTeamUsers, ...adminUsers];
   if (targets.length === 0) return res.status(400).json({ error: 'No Design team members or Admin accounts exist yet to tag.' });
-  db.markAsDrawingRequest(task.id);
-  targets.forEach(u => {
-    db.addTaskAssignee(task.id, u.username, u.team);
+  await db.markAsDrawingRequest(task.id);
+  for (const u of targets) {
+    await db.addTaskAssignee(task.id, u.username, u.team);
     if (u.username !== req.user.username) {
-      db.createNotification({ username: u.username, type: 'task_assigned', message: `${req.user.name} asked for a drawing on "${task.title}" and tagged you.`, task_id: task.id });
+      await db.createNotification({ username: u.username, type: 'task_assigned', message: `${req.user.name} asked for a drawing on "${task.title}" and tagged you.`, task_id: task.id });
     }
-  });
+  }
   res.json({ ok: true });
 });
 
 // Add/remove tagged people on an EXISTING open task — creator/Admin only, since it's a change
 // to who's accountable for the work, same authority level as approving or force-closing.
-app.post('/api/tasks/:id/assignees', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/assignees', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (task.status !== 'open') return res.status(400).json({ error: 'Task is not open.' });
   const isCreator = task.created_by_username && task.created_by_username === req.user.username;
@@ -1546,51 +1555,56 @@ app.post('/api/tasks/:id/assignees', auth(ALL_ROLES), (req, res) => {
   const rawList = Array.isArray((req.body || {}).usernames) ? req.body.usernames : [];
   const usernames = Array.from(new Set(rawList.map(u => str(u).trim()).filter(Boolean)));
   if (usernames.length === 0) return res.status(400).json({ error: 'Select at least one person to add.' });
-  const existing = new Set(db.listAssignees(task.id).map(a => a.username));
+  const existing = new Set((await db.listAssignees(task.id)).map(a => a.username));
   let added = 0;
-  usernames.forEach(u => {
-    const user = db.getUser(u);
-    if (!user || existing.has(u)) return;
-    db.addTaskAssignee(task.id, u, user.team);
+  for (const u of usernames) {
+    const user = await db.getUser(u);
+    // A bare `return` here previously left the request hanging forever with no response at
+    // all — any invalid or already-assigned username in the list would silently freeze the
+    // whole request. Skipping just that one username and continuing is both the correct fix
+    // and matches how the rest of this loop is meant to behave: add whoever's valid and new,
+    // ignore the rest, always send a real response.
+    if (!user || existing.has(u)) continue;
+    await db.addTaskAssignee(task.id, u, user.team);
     added++;
-    db.createNotification({ username: u, type: 'task_assigned', message: `${req.user.name} tagged you on "${task.title}".`, task_id: task.id });
-  });
+    await db.createNotification({ username: u, type: 'task_assigned', message: `${req.user.name} tagged you on "${task.title}".`, task_id: task.id });
+  }
   res.json({ ok: true, added });
 });
 // Sets or clears one person's individual deadline on an existing task — creator/Admin only,
 // same authority level as adding people to a task in the first place.
-app.post('/api/tasks/:id/assignees/:username/deadline', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/assignees/:username/deadline', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   const isCreator = task.created_by_username && task.created_by_username === req.user.username;
   if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can set an individual deadline.' });
-  const assignees = db.listAssignees(task.id);
+  const assignees = await db.listAssignees(task.id);
   if (!assignees.some(a => a.username === req.params.username)) return res.status(404).json({ error: 'That person is not tagged on this task.' });
   const deadline = str((req.body || {}).deadline).trim();
   if (deadline && !parseDeadline(deadline)) return res.status(400).json({ error: 'Not a valid date.' });
-  db.setIndividualDeadline(task.id, req.params.username, deadline || null);
+  await db.setIndividualDeadline(task.id, req.params.username, deadline || null);
   res.json({ ok: true });
 });
-app.delete('/api/tasks/:id/assignees/:username', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.delete('/api/tasks/:id/assignees/:username', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (task.status !== 'open') return res.status(400).json({ error: 'Task is not open.' });
   const isCreator = task.created_by_username && task.created_by_username === req.user.username;
   if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can remove people from it.' });
-  const assignees = db.listAssignees(task.id);
+  const assignees = await db.listAssignees(task.id);
   const target = assignees.find(a => a.username === req.params.username);
   if (!target) return res.status(404).json({ error: 'That person is not tagged on this task.' });
   if (target.submitted_at || target.completed_at) return res.status(400).json({ error: "Can't remove someone who has already submitted or been approved on this task — that's real recorded work and stays on record." });
   if (assignees.length <= 1) return res.status(400).json({ error: 'A task needs at least one tagged person — add someone else first.' });
-  db.removeTaskAssignee(task.id, req.params.username);
+  await db.removeTaskAssignee(task.id, req.params.username);
   res.json({ ok: true });
 });
 
-app.post('/api/tasks/:id/followup', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/followup', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
-  const isAssignee = db.listAssignees(task.id).some(a => a.username === req.user.username);
-  const isFollowup = db.listFollowups(task.id).some(f => f.username === req.user.username);
+  const isAssignee = (await db.listAssignees(task.id)).some(a => a.username === req.user.username);
+  const isFollowup = (await db.listFollowups(task.id)).some(f => f.username === req.user.username);
   const isCreator = task.created_by_username === req.user.username;
   if (!(isAssignee || isFollowup || isCreator || req.user.role === 'admin')) {
     return res.status(403).json({ error: "You're not involved in this task yet, so you can't tag others for follow-up on it." });
@@ -1598,13 +1612,13 @@ app.post('/api/tasks/:id/followup', auth(ALL_ROLES), (req, res) => {
   const rawList = Array.isArray((req.body || {}).usernames) ? req.body.usernames : [];
   const usernames = Array.from(new Set(rawList.map(u => str(u).trim()).filter(Boolean)));
   if (usernames.length === 0) return res.status(400).json({ error: 'Select at least one person to tag for follow-up.' });
-  for (const u of usernames) { if (!db.getUser(u)) return res.status(400).json({ error: `Unknown user: ${u}` }); }
-  usernames.forEach(u => {
-    db.addFollowup(task.id, u, req.user.username);
+  for (const u of usernames) { if (!await db.getUser(u)) return res.status(400).json({ error: `Unknown user: ${u}` }); }
+  for (const u of usernames) {
+    await db.addFollowup(task.id, u, req.user.username);
     if (u !== req.user.username) {
-      db.createNotification({ username: u, type: 'followup_tagged', message: `${req.user.name} asked you to follow up on "${task.title}".`, task_id: task.id });
+      await db.createNotification({ username: u, type: 'followup_tagged', message: `${req.user.name} asked you to follow up on "${task.title}".`, task_id: task.id });
     }
-  });
+  }
   res.json({ ok: true });
 });
 // Submitting is a REQUEST, not completion — "Mark My Part Done" is gone. An assignee submits
@@ -1612,124 +1626,132 @@ app.post('/api/tasks/:id/followup', auth(ALL_ROLES), (req, res) => {
 // puts the whole authority to close a task in the creator's hands, exercised either by approving
 // every tagged person's part one at a time (which auto-closes once all are approved) or by
 // force-closing directly at any time.
-app.post('/api/tasks/:id/submit-mine', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/submit-mine', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (task.status !== 'open') return res.status(400).json({ error: 'Task is not open.' });
-  const assignees = db.listAssignees(task.id);
+  const assignees = await db.listAssignees(task.id);
   const mine = assignees.find(a => a.username === req.user.username);
   if (!mine) return res.status(403).json({ error: "You're not tagged on this task." });
   if (!mine.is_released) return res.status(400).json({ error: "You're on hold for now — wait to be released before submitting your part." });
   if (mine.decision === 'approve' && mine.completed_at) return res.status(400).json({ error: 'Your part is already approved.' });
-  if (db.isTaskBlocked(task.id)) return res.status(400).json({ error: "This task depends on another task that isn't closed yet." });
+  if (await db.isTaskBlocked(task.id)) return res.status(400).json({ error: "This task depends on another task that isn't closed yet." });
   // A required note describing what was actually done — not a bare click — gives the creator
   // something concrete to check the work against, and discourages submitting to grab an early
   // credit on unfinished work. If the task has a checklist, every item must be checked off
   // first: a real, verifiable signal of progress that a note alone can't fake.
   const note = str((req.body || {}).note).trim();
   if (note.length < 5) return res.status(400).json({ error: 'Briefly describe what you completed (at least 5 characters) before submitting.' });
-  const checklist = db.listChecklistItems(task.id);
+  const checklist = await db.listChecklistItems(task.id);
   if (checklist.length > 0 && checklist.some(c => !c.is_checked)) {
     return res.status(400).json({ error: 'Check off every checklist item on this task before submitting your part.' });
   }
-  db.markAssigneeSubmitted(task.id, req.user.username, note);
+  await db.markAssigneeSubmitted(task.id, req.user.username, note);
   if (task.created_by_username && task.created_by_username !== req.user.username) {
-    db.createNotification({ username: task.created_by_username, type: 'task_submitted', message: `${req.user.name} submitted their part of "${task.title}" for your approval.`, task_id: task.id });
+    await db.createNotification({ username: task.created_by_username, type: 'task_submitted', message: `${req.user.name} submitted their part of "${task.title}" for your approval.`, task_id: task.id });
   }
   res.json({ ok: true });
 });
 // Approve/reject a specific tagged person's submitted work — restricted to whoever created the
 // task, or Admin. Approving is the only thing that actually marks a part "done"; once every
 // tagged person is approved, the task closes automatically.
-app.post('/api/tasks/:id/approve/:username', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/approve/:username', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (task.status !== 'open') return res.status(400).json({ error: 'Task is not open.' });
   const isCreator = task.created_by_username && task.created_by_username === req.user.username;
   if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can approve work on it.' });
-  const assignees = db.listAssignees(task.id);
+  const assignees = await db.listAssignees(task.id);
   const target = assignees.find(a => a.username === req.params.username);
   if (!target) return res.status(404).json({ error: 'That person is not tagged on this task.' });
   if (target.decision === 'approve' && target.completed_at) return res.status(400).json({ error: 'Already approved — nothing to do.' });
   if (!target.submitted_at) return res.status(400).json({ error: "That person hasn't submitted their part yet — nothing to approve." });
-  db.markAssigneeDone(task.id, req.params.username, req.user.name, 'approve');
+  const didApprove = await db.markAssigneeDone(task.id, req.params.username, req.user.name, 'approve');
+  if (!didApprove) return res.status(400).json({ error: 'This was already approved — probably by someone else just now.' });
   if (req.params.username !== req.user.username) {
-    db.createNotification({ username: req.params.username, type: 'task_reply', message: `${req.user.name} approved your part of "${task.title}".`, task_id: task.id });
+    await db.createNotification({ username: req.params.username, type: 'task_reply', message: `${req.user.name} approved your part of "${task.title}".`, task_id: task.id });
   }
   // If this approval just completed the stage that person was in, and the creator opted into
   // auto-release for this task, immediately release the next stage (if one exists and isn't
   // already released) — otherwise the creator releases it manually whenever they're ready.
   const stageNum = target.stage || 1;
-  if (task.auto_release_stages && db.isStageFullyApproved(task.id, stageNum) && db.hasStage(task.id, stageNum + 1) && !db.isStageReleased(task.id, stageNum + 1)) {
-    db.releaseStage(task.id, stageNum + 1, req.user.name);
-    db.listAssignees(task.id).filter(a => a.stage === stageNum + 1).forEach(a => {
-      db.createNotification({ username: a.username, type: 'task_assigned', message: `You're released to start your part of "${task.title}".`, task_id: task.id });
-    });
+  if (task.auto_release_stages && await db.isStageFullyApproved(task.id, stageNum) && await db.hasStage(task.id, stageNum + 1) && !await db.isStageReleased(task.id, stageNum + 1)) {
+    await db.releaseStage(task.id, stageNum + 1, req.user.name);
+    const nextStageAssignees = (await db.listAssignees(task.id)).filter(a => a.stage === stageNum + 1);
+    for (const a of nextStageAssignees) {
+      await db.createNotification({ username: a.username, type: 'task_assigned', message: `You're released to start your part of "${task.title}".`, task_id: task.id });
+    }
   }
-  const stillOpen = db.listAssignees(task.id).some(a => !(a.decision === 'approve' && a.completed_at));
-  if (!stillOpen) { db.closeTask(task.id, req.user.name); releaseDependentsOf(task); }
+  const stillOpen = (await db.listAssignees(task.id)).some(a => !(a.decision === 'approve' && a.completed_at));
+  if (!stillOpen) { await db.closeTask(task.id, req.user.name); await releaseDependentsOf(task); }
+  await auditFromReq(req, 'task_approved', `Approved ${req.params.username}'s part of "${task.title}"${!stillOpen ? ' — this closed the task, everyone is now approved' : ''}.`);
   res.json({ ok: true, taskClosed: !stillOpen });
 });
 // Manual stage release — creator/Admin only, for tasks that didn't opt into auto-release, or
 // as an override any time. Only allowed once the stage before it is fully approved.
-app.post('/api/tasks/:id/release-stage/:stageNum', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/release-stage/:stageNum', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (task.status !== 'open') return res.status(400).json({ error: 'Task is not open.' });
   const isCreator = task.created_by_username && task.created_by_username === req.user.username;
   if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can release a stage.' });
   const stageNum = parseInt(req.params.stageNum, 10);
-  if (!db.hasStage(task.id, stageNum)) return res.status(404).json({ error: 'That stage does not exist on this task.' });
-  if (stageNum > 1 && !db.isStageFullyApproved(task.id, stageNum - 1)) {
+  if (!await db.hasStage(task.id, stageNum)) return res.status(404).json({ error: 'That stage does not exist on this task.' });
+  if (stageNum > 1 && !await db.isStageFullyApproved(task.id, stageNum - 1)) {
     return res.status(400).json({ error: `Level ${stageNum - 1} isn't fully approved yet.` });
   }
-  if (db.isStageReleased(task.id, stageNum)) return res.status(400).json({ error: `Level ${stageNum} is already released.` });
-  db.releaseStage(task.id, stageNum, req.user.name);
-  db.listAssignees(task.id).filter(a => a.stage === stageNum).forEach(a => {
-    db.createNotification({ username: a.username, type: 'task_assigned', message: `You're released to start your part of "${task.title}".`, task_id: task.id });
-  });
+  if (await db.isStageReleased(task.id, stageNum)) return res.status(400).json({ error: `Level ${stageNum} is already released.` });
+  const didRelease = await db.releaseStage(task.id, stageNum, req.user.name);
+  if (!didRelease) return res.status(400).json({ error: `Level ${stageNum} was already released — probably by someone else just now.` });
+  const thisStageAssignees = (await db.listAssignees(task.id)).filter(a => a.stage === stageNum);
+  for (const a of thisStageAssignees) {
+    await db.createNotification({ username: a.username, type: 'task_assigned', message: `You're released to start your part of "${task.title}".`, task_id: task.id });
+  }
   res.json({ ok: true });
 });
-app.post('/api/tasks/:id/reject/:username', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/reject/:username', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (task.status !== 'open') return res.status(400).json({ error: 'Task is not open.' });
   const isCreator = task.created_by_username && task.created_by_username === req.user.username;
   if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can reject work on it.' });
-  const assignees = db.listAssignees(task.id);
+  const assignees = await db.listAssignees(task.id);
   const target = assignees.find(a => a.username === req.params.username);
   if (!target) return res.status(404).json({ error: 'That person is not tagged on this task.' });
   if (!target.submitted_at) return res.status(400).json({ error: "That person hasn't submitted anything yet — nothing to reject." });
   const reason = str((req.body || {}).reason).trim();
   if (reason.length < 5) return res.status(400).json({ error: 'A reason (at least 5 characters) is required so the person knows what to fix.' });
-  db.resetAssigneeSubmission(task.id, req.params.username);
-  db.addReply(task.id, { by_username: req.user.username, by_name: req.user.name, message: `Rejected ${req.params.username}'s submission: ${reason} — needs to be redone and resubmitted.` });
+  if (!(await db.resetAssigneeSubmission(task.id, req.params.username))) return res.status(400).json({ error: 'This submission was already handled — probably by someone else just now.' });
+  await db.addReply(task.id, { by_username: req.user.username, by_name: req.user.name, message: `Rejected ${req.params.username}'s submission: ${reason} — needs to be redone and resubmitted.` });
   if (req.params.username !== req.user.username) {
-    db.createNotification({ username: req.params.username, type: 'task_reply', message: `${req.user.name} rejected your part of "${task.title}": ${reason} — please redo and resubmit.`, task_id: task.id });
+    await db.createNotification({ username: req.params.username, type: 'task_reply', message: `${req.user.name} rejected your part of "${task.title}": ${reason} — please redo and resubmit.`, task_id: task.id });
   }
   res.json({ ok: true });
 });
 // Force-close: restricted to whoever created this specific task, plus Admin as the one
 // retained override.
-app.post('/api/tasks/:id/close', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/close', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (task.status !== 'open') return res.status(400).json({ error: 'Task is not open.' });
   const isCreator = task.created_by_username && task.created_by_username === req.user.username;
   if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can force-close it.' });
-  if (db.isTaskBlocked(task.id)) {
-    const prereq = db.getTask(task.depends_on_task_id);
+  if (await db.isTaskBlocked(task.id)) {
+    const prereq = await db.getTask(task.depends_on_task_id);
     return res.status(400).json({ error: `This task depends on "${prereq ? prereq.title : task.depends_on_task_id}", which isn't closed yet.` });
   }
-  const openSubtasks = db.listOpenSubtasks(task.id);
+  const openSubtasks = await db.listOpenSubtasks(task.id);
   if (openSubtasks.length > 0) {
     return res.status(400).json({ error: `This task has ${openSubtasks.length} open subtask${openSubtasks.length === 1 ? '' : 's'} that must be closed first: ${openSubtasks.map(s => `"${s.title}"`).join(', ')}.` });
   }
-  const stillOpenAssignees = db.listAssignees(task.id).filter(a => !(a.decision === 'approve' && a.completed_at));
-  db.closeTask(task.id, req.user.name);
-  releaseDependentsOf(task);
+  const stillOpenAssignees = (await db.listAssignees(task.id)).filter(a => !(a.decision === 'approve' && a.completed_at));
+  const didClose = await db.closeTask(task.id, req.user.name);
+  if (!didClose) return res.status(400).json({ error: 'This task was already closed — probably by someone else just now.' });
+  await releaseDependentsOf(task);
   if (stillOpenAssignees.length > 0) {
-    auditFromReq(req, 'task_force_closed', `Force-closed "${task.title}" while ${stillOpenAssignees.map(a => a.username).join(', ')} had not yet been approved.`);
+    await auditFromReq(req, 'task_force_closed', `Force-closed "${task.title}" while ${stillOpenAssignees.map(a => a.username).join(', ')} had not yet been approved.`);
+  } else {
+    await auditFromReq(req, 'task_closed', `Closed "${task.title}" — everyone's part was already approved.`);
   }
   res.json({ ok: true });
 });
@@ -1737,28 +1759,28 @@ app.post('/api/tasks/:id/close', auth(ALL_ROLES), (req, res) => {
 // abandoned, not one where the work got done. Same authority as force-close (creator or
 // Admin), but requires a reason, and never counts toward anyone's completion stats since no
 // approval ever happens on a cancelled task.
-app.post('/api/tasks/:id/cancel', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/cancel', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (task.status !== 'open') return res.status(400).json({ error: 'Task is not open.' });
   const isCreator = task.created_by_username && task.created_by_username === req.user.username;
   if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can cancel it.' });
   const reason = str((req.body || {}).reason).trim();
   if (reason.length < 5) return res.status(400).json({ error: 'A reason (at least 5 characters) is required to cancel a task.' });
-  db.cancelTask(task.id, req.user.name, reason);
-  releaseDependentsOf(task);
-  auditFromReq(req, 'task_cancelled', `Cancelled "${task.title}": ${reason}`);
+  if (!(await db.cancelTask(task.id, req.user.name, reason))) return res.status(400).json({ error: 'This task was already cancelled or closed — probably by someone else just now.' });
+  await releaseDependentsOf(task);
+  await auditFromReq(req, 'task_cancelled', `Cancelled "${task.title}": ${reason}`);
   const notifyTargets = new Set([
-    ...db.listAssignees(task.id).map(a => a.username),
-    ...db.listFollowups(task.id).map(f => f.username),
+    ...(await db.listAssignees(task.id)).map(a => a.username),
+    ...(await db.listFollowups(task.id)).map(f => f.username),
   ]);
-  notifyTargets.forEach(u => {
-    if (u !== req.user.username) db.createNotification({ username: u, type: 'task_closed', message: `${req.user.name} cancelled "${task.title}": ${reason}`, task_id: task.id });
-  });
+  for (const u of notifyTargets) {
+    if (u !== req.user.username) await db.createNotification({ username: u, type: 'task_closed', message: `${req.user.name} cancelled "${task.title}": ${reason}`, task_id: task.id });
+  }
   res.json({ ok: true });
 });
-app.post('/api/tasks/:id/reopen', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTaskFull(req.params.id);
+app.post('/api/tasks/:id/reopen', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTaskFull(req.params.id);
   if (!task || (task.status !== 'closed' && task.status !== 'cancelled')) return res.status(400).json({ error: 'Task is not closed or cancelled.' });
   // Reopening is creator/Admin authority only — same principle as closing itself: whoever
   // created the task (or Admin) is the one accountable for deciding it needs more work, not any
@@ -1767,47 +1789,49 @@ app.post('/api/tasks/:id/reopen', auth(ALL_ROLES), (req, res) => {
   if (!(isCreator || req.user.role === 'admin')) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can reopen it.' });
   const reason = str((req.body || {}).reason).trim();
   if (reason.length < 5) return res.status(400).json({ error: 'A reason (at least 5 characters) is required to reopen a task.' });
-  db.reopenTask(task.id);
-  task.assignees.forEach(a => db.reopenAssignee(task.id, a.username));
-  auditFromReq(req, 'task_reopened', `Reopened "${task.title}": ${reason}`);
-  db.listAdminUsernames().forEach(a => {
-    if (a !== req.user.username) db.createNotification({ username: a, type: 'task_reopened', message: `${req.user.name} reopened "${task.title}": ${reason}`, task_id: task.id });
-  });
+  const didReopen = await db.reopenTask(task.id);
+  if (!didReopen) return res.status(400).json({ error: 'This task is already open — probably reopened by someone else just now.' });
+  for (const a of task.assignees) await db.reopenAssignee(task.id, a.username);
+  await auditFromReq(req, 'task_reopened', `Reopened "${task.title}": ${reason}`);
+  const reopenAdmins = await db.listAdminUsernames();
+  for (const a of reopenAdmins) {
+    if (a !== req.user.username) await db.createNotification({ username: a, type: 'task_reopened', message: `${req.user.name} reopened "${task.title}": ${reason}`, task_id: task.id });
+  }
   res.json({ ok: true });
 });
-app.post('/api/tasks/:id/checklist', auth(ALL_ROLES), (req, res) => {
-  const task = db.getTask(req.params.id);
+app.post('/api/tasks/:id/checklist', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   const text = str((req.body || {}).text).trim();
   if (!text) return res.status(400).json({ error: 'Checklist item text is required.' });
   if (tooLong(text, 300)) return res.status(400).json({ error: 'Checklist item is too long (max 300 characters).' });
-  const existing = db.listChecklistItems(task.id);
-  db.addChecklistItem(task.id, text, existing.length);
+  const existing = await db.listChecklistItems(task.id);
+  await db.addChecklistItem(task.id, text, existing.length);
   res.json({ ok: true });
 });
-app.post('/api/tasks/:id/checklist/:itemId/toggle', auth(ALL_ROLES), (req, res) => {
-  const item = db.getChecklistItem(req.params.itemId);
+app.post('/api/tasks/:id/checklist/:itemId/toggle', auth(ALL_ROLES), async (req, res) => {
+  const item = await db.getChecklistItem(req.params.itemId);
   if (!item || item.task_id !== req.params.id) return res.status(404).json({ error: 'Checklist item not found.' });
-  db.toggleChecklistItem(item.id, !item.is_checked);
+  await db.toggleChecklistItem(item.id, !item.is_checked);
   res.json({ ok: true });
 });
-app.delete('/api/tasks/:id/checklist/:itemId', auth(['admin']), (req, res) => {
-  const item = db.getChecklistItem(req.params.itemId);
+app.delete('/api/tasks/:id/checklist/:itemId', auth(['admin']), async (req, res) => {
+  const item = await db.getChecklistItem(req.params.itemId);
   if (!item || item.task_id !== req.params.id) return res.status(404).json({ error: 'Checklist item not found.' });
-  db.deleteChecklistItem(item.id);
+  await db.deleteChecklistItem(item.id);
   res.json({ ok: true });
 });
 
 /* ============ NOTIFICATIONS ============ */
-app.get('/api/notifications', auth(ALL_ROLES), (req, res) => {
-  res.json({ items: db.listNotifications(req.user.username), unread: db.countUnreadNotifications(req.user.username) });
+app.get('/api/notifications', auth(ALL_ROLES), async (req, res) => {
+  res.json({ items: await db.listNotifications(req.user.username), unread: await db.countUnreadNotifications(req.user.username) });
 });
-app.post('/api/notifications/:id/read', auth(ALL_ROLES), (req, res) => {
-  db.markNotificationRead(req.params.id, req.user.username);
+app.post('/api/notifications/:id/read', auth(ALL_ROLES), async (req, res) => {
+  await db.markNotificationRead(req.params.id, req.user.username);
   res.json({ ok: true });
 });
-app.post('/api/notifications/read-all', auth(ALL_ROLES), (req, res) => {
-  db.markAllNotificationsRead(req.user.username);
+app.post('/api/notifications/read-all', auth(ALL_ROLES), async (req, res) => {
+  await db.markAllNotificationsRead(req.user.username);
   res.json({ ok: true });
 });
 
@@ -1820,20 +1844,22 @@ app.post('/api/notifications/read-all', auth(ALL_ROLES), (req, res) => {
         created the task), 12 days (the same warning raised again to the creator). Plus a
         weekly digest to every Admin account ranking who has the most outstanding warnings. */
 const REMINDER_INTERVAL_HOURS = 24;
-function sendTaskReminders() {
+async function sendTaskReminders() {
   // Skip anyone whose task is currently blocked on a dependency, or who is on hold in a later
   // stage — they can't act on it yet, so reminding or warning them (or their creator) would be
   // blaming someone for a delay that isn't theirs.
-  const rows = db.listIncompleteAssigneesForOpenTasks().filter(r => !db.isTaskBlocked(r.task_id) && r.is_released);
+  const allOpenRows = await db.listIncompleteAssigneesForOpenTasks();
+  const blockedFlags = await Promise.all(allOpenRows.map(r => db.isTaskBlocked(r.task_id)));
+  const rows = allOpenRows.filter((r, idx) => !blockedFlags[idx] && r.is_released);
   let sent = 0;
-  rows.forEach(r => {
+  for (const r of rows) {
     const hoursSinceLastReminder = r.last_reminded_at ? (Date.now() - new Date(r.last_reminded_at).getTime()) / 3600000 : Infinity;
     if (hoursSinceLastReminder >= REMINDER_INTERVAL_HOURS) {
-      db.createNotification({ username: r.username, type: 'task_reminder', message: `Reminder — "${r.title}" is still open and waiting on your part.`, task_id: r.task_id });
-      db.markTaskAssigneeReminded(r.task_id, r.username);
+      await db.createNotification({ username: r.username, type: 'task_reminder', message: `Reminder — "${r.title}" is still open and waiting on your part.`, task_id: r.task_id });
+      await db.markTaskAssigneeReminded(r.task_id, r.username);
       sent++;
     }
-  });
+  }
   return sent;
 }
 // .unref() on all four background timers below: they still fire exactly as before while the
@@ -1844,24 +1870,25 @@ function sendTaskReminders() {
 setInterval(sendTaskReminders, REMINDER_INTERVAL_HOURS * 60 * 60 * 1000).unref();
 
 const ESCALATION_CHECK_INTERVAL_HOURS = 1;
-function sendEscalatingTaskReminders() {
+async function sendEscalatingTaskReminders() {
   // Same reasoning as sendTaskReminders above — a blocked task's "age" clock keeps ticking in
-  // the database (created_at doesn't change), but the person tagged on it has been unable to
   // act since the moment it became blocked, so escalating warnings about them specifically would
   // be punishing them for someone else's delay.
-  const rows = db.listIncompleteAssigneesForEscalation().filter(r => !db.isTaskBlocked(r.task_id) && r.is_released);
+  const allEscalationRows = await db.listIncompleteAssigneesForEscalation();
+  const escalationBlockedFlags = await Promise.all(allEscalationRows.map(r => db.isTaskBlocked(r.task_id)));
+  const rows = allEscalationRows.filter((r, idx) => !escalationBlockedFlags[idx] && r.is_released);
   const msPerDay = 86400000;
-  const adminUsernames = db.listAdminUsernames();
-  const hrUsernames = db.listUsers().filter(u => isHRTeam(u.team)).map(u => u.username);
+  const adminUsernames = await db.listAdminUsernames();
+  const hrUsernames = (await db.listUsers()).filter(u => isHRTeam(u.team)).map(u => u.username);
   let sent = 0;
-  rows.forEach(r => {
+  for (const r of rows) {
     const ageDays = (Date.now() - new Date(r.escalation_baseline_at).getTime()) / msPerDay;
     const creatorUsername = r.created_by_username;
     const creatorDiffersFromAssignee = creatorUsername && creatorUsername !== r.username;
     // Day 3: a reminder to the person themselves — not yet a flag to anyone else.
     if (ageDays >= 3 && !r.reminder_3day_sent_at) {
-      db.createNotification({ username: r.username, type: 'task_reminder_3day', message: `Still open after 3 days — your part of "${r.title}" needs finishing.`, task_id: r.task_id });
-      db.markEscalationStage(r.task_id, r.username, 3);
+      await db.createNotification({ username: r.username, type: 'task_reminder_3day', message: `Still open after 3 days — your part of "${r.title}" needs finishing.`, task_id: r.task_id });
+      await db.markEscalationStage(r.task_id, r.username, 3);
       sent++;
     }
     // Day 5: flags BOTH Admin and HR — a distinct notification from the creator-facing warnings
@@ -1871,39 +1898,39 @@ function sendEscalatingTaskReminders() {
     // to the person being flagged.
     if (ageDays >= 5 && !r.warning_5day_sent_at) {
       const notifiedAlready = new Set([r.username]);
-      adminUsernames.concat(hrUsernames).forEach(a => {
-        if (notifiedAlready.has(a)) return;
+      for (const a of adminUsernames.concat(hrUsernames)) {
+        if (notifiedAlready.has(a)) continue;
         notifiedAlready.add(a);
-        db.createNotification({ username: a, type: 'admin_late_flag', message: `${r.username} has not completed their part of "${r.title}" in 5 days.`, task_id: r.task_id });
-      });
-      db.createNotification({ username: r.username, type: 'task_flagged', message: `You are flagged for incompletion of "${r.title}".`, task_id: r.task_id });
-      db.markEscalationStage(r.task_id, r.username, 5);
+        await db.createNotification({ username: a, type: 'admin_late_flag', message: `${r.username} has not completed their part of "${r.title}" in 5 days.`, task_id: r.task_id });
+      }
+      await db.createNotification({ username: r.username, type: 'task_flagged', message: `You are flagged for incompletion of "${r.title}".`, task_id: r.task_id });
+      await db.markEscalationStage(r.task_id, r.username, 5);
       sent++;
     }
     // Day 7: warn the person, notify the creator (existing), and flag Admin+HR again.
     if (ageDays >= 7 && !r.warning_7day_sent_at) {
-      db.createNotification({ username: r.username, type: 'task_warning', message: `Warning — "${r.title}" has been open 7 days with your part not done.`, task_id: r.task_id });
+      await db.createNotification({ username: r.username, type: 'task_warning', message: `Warning — "${r.title}" has been open 7 days with your part not done.`, task_id: r.task_id });
       if (creatorDiffersFromAssignee) {
-        db.createNotification({ username: creatorUsername, type: 'task_warning_creator', message: `${r.username} has not completed their part of "${r.title}" in 7 days.`, task_id: r.task_id });
+        await db.createNotification({ username: creatorUsername, type: 'task_warning_creator', message: `${r.username} has not completed their part of "${r.title}" in 7 days.`, task_id: r.task_id });
       }
-      adminUsernames.concat(hrUsernames).forEach(a => {
-        if (a !== r.username && a !== creatorUsername) db.createNotification({ username: a, type: 'admin_late_flag', message: `Still flagged — ${r.username} has not completed their part of "${r.title}" in 7 days.`, task_id: r.task_id });
-      });
-      db.markEscalationStage(r.task_id, r.username, 7);
+      for (const a of adminUsernames.concat(hrUsernames)) {
+        if (a !== r.username && a !== creatorUsername) await db.createNotification({ username: a, type: 'admin_late_flag', message: `Still flagged — ${r.username} has not completed their part of "${r.title}" in 7 days.`, task_id: r.task_id });
+      }
+      await db.markEscalationStage(r.task_id, r.username, 7);
       sent++;
     }
     // Day 12: notify the creator again (existing), and flag Admin+HR a third time.
     if (ageDays >= 12 && !r.warning_12day_sent_at) {
       if (creatorDiffersFromAssignee) {
-        db.createNotification({ username: creatorUsername, type: 'task_warning_creator', message: `Still not done — ${r.username} has now not completed their part of "${r.title}" in 12 days.`, task_id: r.task_id });
+        await db.createNotification({ username: creatorUsername, type: 'task_warning_creator', message: `Still not done — ${r.username} has now not completed their part of "${r.title}" in 12 days.`, task_id: r.task_id });
       }
-      adminUsernames.concat(hrUsernames).forEach(a => {
-        if (a !== r.username && a !== creatorUsername) db.createNotification({ username: a, type: 'admin_late_flag', message: `Still flagged — ${r.username} has not completed their part of "${r.title}" in 12 days.`, task_id: r.task_id });
-      });
-      db.markEscalationStage(r.task_id, r.username, 12);
+      for (const a of adminUsernames.concat(hrUsernames)) {
+        if (a !== r.username && a !== creatorUsername) await db.createNotification({ username: a, type: 'admin_late_flag', message: `Still flagged — ${r.username} has not completed their part of "${r.title}" in 12 days.`, task_id: r.task_id });
+      }
+      await db.markEscalationStage(r.task_id, r.username, 12);
       sent++;
     }
-  });
+  }
   return sent;
 }
 setInterval(sendEscalatingTaskReminders, ESCALATION_CHECK_INTERVAL_HOURS * 60 * 60 * 1000).unref();
@@ -1912,72 +1939,74 @@ setInterval(sendEscalatingTaskReminders, ESCALATION_CHECK_INTERVAL_HOURS * 60 * 
 // reminds you before an event starts, rather than counting UP from creation date. Two nudges
 // per task: once when it's within 24 hours of its deadline, and once if the deadline passes
 // while it's still open.
-function sendDeadlineReminders() {
+async function sendDeadlineReminders() {
   const now = new Date();
   let sent = 0;
   // Task-level: notify the creator once when the OVERALL task deadline passes — Admin/creator
   // cares about the task as a whole, not each tagged person's own individual deadline.
-  const tasks = db.listOpenTasksWithDeadlines();
-  tasks.forEach(t => {
+  const tasks = await db.listOpenTasksWithDeadlines();
+  for (const t of tasks) {
     const deadlineDate = parseDeadline(t.deadline);
-    if (!deadlineDate) return;
-    if (db.isTaskBlocked(t.id)) return; // blocked tasks stay exempt from all reminder types
+    if (!deadlineDate) continue;
+    if (await db.isTaskBlocked(t.id)) continue; // blocked tasks stay exempt from all reminder types
     if (!t.deadline_overdue_notified && deadlineDate <= now) {
-      if (t.created_by_username) db.createNotification({ username: t.created_by_username, type: 'deadline_passed', message: `"${t.title}" has passed its deadline and is still open.`, task_id: t.id });
-      db.markDeadlineOverdueNotified(t.id);
+      if (t.created_by_username) await db.createNotification({ username: t.created_by_username, type: 'deadline_passed', message: `"${t.title}" has passed its deadline and is still open.`, task_id: t.id });
+      await db.markDeadlineOverdueNotified(t.id);
       sent++;
     }
-  });
+  }
   // Per-person: each assignee's OWN effective deadline (their individual one if set, else the
   // task's overall deadline) drives their own "due soon"/"passed" notifications. For anyone
   // without an individual deadline, this produces exactly the same result as before — the
   // fallback IS the task deadline, so nothing changes for tasks that never used this feature.
-  const rows = db.listIncompleteAssigneesForDeadlineCheck().filter(r => r.is_released && !db.isTaskBlocked(r.task_id));
-  rows.forEach(r => {
+  const allDeadlineRows = await db.listIncompleteAssigneesForDeadlineCheck();
+  const deadlineBlockedFlags = await Promise.all(allDeadlineRows.map(r => db.isTaskBlocked(r.task_id)));
+  const rows = allDeadlineRows.filter((r, idx) => r.is_released && !deadlineBlockedFlags[idx]);
+  for (const r of rows) {
     const effectiveDeadlineStr = r.individual_deadline || r.task_deadline;
-    if (!effectiveDeadlineStr) return;
+    if (!effectiveDeadlineStr) continue;
     const deadlineDate = parseDeadline(effectiveDeadlineStr);
-    if (!deadlineDate) return;
+    if (!deadlineDate) continue;
     if (!r.deadline_reminder_sent_at && deadlineDate > now && (deadlineDate.getTime() - now.getTime()) <= 24 * 3600000) {
-      db.createNotification({ username: r.username, type: 'deadline_soon', message: `"${r.title}" is due soon (${effectiveDeadlineStr}).`, task_id: r.task_id });
-      db.markAssigneeDeadlineReminderSent(r.task_id, r.username);
+      await db.createNotification({ username: r.username, type: 'deadline_soon', message: `"${r.title}" is due soon (${effectiveDeadlineStr}).`, task_id: r.task_id });
+      await db.markAssigneeDeadlineReminderSent(r.task_id, r.username);
       sent++;
     }
     if (!r.deadline_overdue_notified_at && deadlineDate <= now) {
       const whoseDeadline = r.individual_deadline ? 'your individual deadline' : 'its deadline';
-      db.createNotification({ username: r.username, type: 'deadline_passed', message: `"${r.title}" has passed ${whoseDeadline} and is still open.`, task_id: r.task_id });
-      db.markAssigneeDeadlineOverdueNotified(r.task_id, r.username);
+      await db.createNotification({ username: r.username, type: 'deadline_passed', message: `"${r.title}" has passed ${whoseDeadline} and is still open.`, task_id: r.task_id });
+      await db.markAssigneeDeadlineOverdueNotified(r.task_id, r.username);
       sent++;
     }
-  });
+  }
   return sent;
 }
 setInterval(sendDeadlineReminders, ESCALATION_CHECK_INTERVAL_HOURS * 60 * 60 * 1000).unref();
 
 const WEEKLY_DIGEST_INTERVAL_HOURS = 24 * 7;
-function sendWeeklyWarningDigestToAdmin() {
-  const rows = db.listOutstandingTaskWarnings();
+async function sendWeeklyWarningDigestToAdmin() {
+  const rows = await db.listOutstandingTaskWarnings();
   if (rows.length === 0) return 0;
   const byUser = {};
   rows.forEach(r => { if (!byUser[r.username]) byUser[r.username] = 0; byUser[r.username]++; });
   const ranked = Object.entries(byUser).sort((a, b) => b[1] - a[1]);
   const summary = ranked.map(([username, count]) => `${username} (${count})`).join(', ');
-  const admins = db.listUsers().filter(u => u.role === 'admin');
-  admins.forEach(a => db.createNotification({ username: a.username, type: 'weekly_warning_digest', message: `Weekly task-warning summary: ${summary}.`, task_id: null }));
+  const admins = (await db.listUsers()).filter(u => u.role === 'admin');
+  for (const a of admins) await db.createNotification({ username: a.username, type: 'weekly_warning_digest', message: `Weekly task-warning summary: ${summary}.`, task_id: null });
   return admins.length;
 }
 setInterval(sendWeeklyWarningDigestToAdmin, WEEKLY_DIGEST_INTERVAL_HOURS * 60 * 60 * 1000).unref();
 
 // Manual triggers — for testing without waiting for the real interval.
-app.post('/api/tasks/send-reminders-now', auth(['admin']), (req, res) => {
-  res.json({ ok: true, remindersSent: sendTaskReminders(), escalationsSent: sendEscalatingTaskReminders(), deadlineRemindersSent: sendDeadlineReminders() });
+app.post('/api/tasks/send-reminders-now', auth(['admin']), async (req, res) => {
+  res.json({ ok: true, remindersSent: await sendTaskReminders(), escalationsSent: await sendEscalatingTaskReminders(), deadlineRemindersSent: await sendDeadlineReminders() });
 });
-app.post('/api/reports/check-period-awards-now', auth(['admin']), (req, res) => {
-  checkAndSnapshotPeriodAwards();
+app.post('/api/reports/check-period-awards-now', auth(['admin']), async (req, res) => {
+  await checkAndSnapshotPeriodAwards();
   res.json({ ok: true });
 });
-app.post('/api/tasks/send-warning-digest-now', auth(['admin']), (req, res) => {
-  res.json({ ok: true, adminsNotified: sendWeeklyWarningDigestToAdmin() });
+app.post('/api/tasks/send-warning-digest-now', auth(['admin']), async (req, res) => {
+  res.json({ ok: true, adminsNotified: await sendWeeklyWarningDigestToAdmin() });
 });
 
 // Safety net: an uncaught error thrown inside an `async (req, res) => {...}` route handler
@@ -2021,20 +2050,26 @@ app.use((err, req, res, next) => {
 // real port. Running the app normally (`node server.js` or `npm start`) behaves identically to
 // before, since require.main === module is exactly the condition that's true in that case.
 if (require.main === module) {
-  const server = app.listen(PORT, () => console.log(`MIHIR Task Manager server running on http://localhost:${PORT}`));
-  // Graceful shutdown: stop accepting new connections, let in-flight requests finish, then exit
-  // cleanly — important so a deploy/restart never cuts off someone mid-request (e.g. mid-approval).
-  function shutdown(signal) {
-    console.log(`\n${signal} received — shutting down gracefully...`);
-    server.close(() => {
-      console.log('Server closed, no longer accepting new connections.');
-      process.exit(0);
-    });
-    // Safety net: if something is stuck and close() never fires (e.g. a hung connection), force
-    // exit after 10s rather than leaving the process running forever on a signal it should honor.
-    setTimeout(() => { console.log('Forcing shutdown after 10s timeout.'); process.exit(1); }, 10000).unref();
-  }
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  (async () => {
+    // The database must be fully initialized (schema created, migrations applied, default
+    // accounts seeded) before the server starts accepting real traffic — otherwise the very
+    // first request could race against table-creation still in progress.
+    await db.init();
+    const server = app.listen(PORT, () => console.log(`MIHIR Task Manager server running on http://localhost:${PORT}`));
+    // Graceful shutdown: stop accepting new connections, let in-flight requests finish, then exit
+    // cleanly — important so a deploy/restart never cuts off someone mid-request (e.g. mid-approval).
+    function shutdown(signal) {
+      console.log(`\n${signal} received — shutting down gracefully...`);
+      server.close(() => {
+        console.log('Server closed, no longer accepting new connections.');
+        process.exit(0);
+      });
+      // Safety net: if something is stuck and close() never fires (e.g. a hung connection), force
+      // exit after 10s rather than leaving the process running forever on a signal it should honor.
+      setTimeout(() => { console.log('Forcing shutdown after 10s timeout.'); process.exit(1); }, 10000).unref();
+    }
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+  })().catch(e => { console.error('Fatal error during startup:', e); process.exit(1); });
 }
 module.exports = app;

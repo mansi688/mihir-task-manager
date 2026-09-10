@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('checking for a not-yet-generated report returns 200 (not a console-alarming 404)', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   await createMember(baseUrl, adminToken, 'bob', 'Bob');

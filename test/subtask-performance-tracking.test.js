@@ -1,10 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const Database = require('better-sqlite3');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('subtasks are tracked by escalation, warnings, and performance exactly like any other task', async (t) => {
-  const { baseUrl, dbPath, stop } = startTestServer();
+  const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const parentOwnerToken = await createMember(baseUrl, adminToken, 'parent_owner', 'Parent Owner', 'Estimation');
@@ -14,9 +13,9 @@ test('subtasks are tracked by escalation, warnings, and performance exactly like
   const sub = await api(baseUrl, '/api/tasks', { method: 'POST', token: parentOwnerToken, body: { title: 'A Real Subtask', priority: 'medium', deadline: futureDate(), assignedToList: ['sub_assignee'], parentTaskId: parent.data.id } });
 
   await t.test('a subtask left incomplete for 5+ days escalates exactly like a normal task', async () => {
-    const raw = new Database(dbPath);
-    raw.prepare('UPDATE task_assignees SET escalation_baseline_at=? WHERE task_id=?').run(new Date(Date.now() - 6 * 86400000).toISOString(), sub.data.id);
-    raw.close();
+    const raw = await getRawClient();
+    await raw.query('UPDATE task_assignees SET escalation_baseline_at=$1 WHERE task_id=$2', [new Date(Date.now() - 6 * 86400000).toISOString(), sub.data.id]);
+    await raw.end();
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
     const notifs = await api(baseUrl, '/api/notifications', { token: subAssigneeToken });
     assert.ok(notifs.data.items.some(n => n.type === 'task_flagged' && n.message.includes('A Real Subtask')), 'a subtask must trigger the same 5-day flag notification a regular task would');
@@ -39,7 +38,7 @@ test('subtasks are tracked by escalation, warnings, and performance exactly like
 });
 
 test('monthly leaderboard: ranks by rating, breaks ties sensibly, and top performers get real numeric ranks', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const fastToken = await createMember(baseUrl, adminToken, 'fast_worker', 'Fast Worker', 'Site Team');
@@ -64,9 +63,9 @@ test('monthly leaderboard: ranks by rating, breaks ties sensibly, and top perfor
   assert.equal(fastEntry.rank, 1, 'the top performer must be rank 1, a real number, not a placeholder');
   assert.ok(res.data.periodLabel, 'the response must state which period this leaderboard covers');
 
-  await t.test('a member (not just admin/director) can view the leaderboard — this is meant to be broadly visible', async () => {
+  await t.test('a member cannot view the leaderboard — admin only, per explicit request', async () => {
     const memberView = await api(baseUrl, '/api/reports/monthly-leaderboard', { token: slowToken });
-    assert.equal(memberView.status, 200, 'a regular member must be able to see the leaderboard too');
+    assert.equal(memberView.status, 403, 'only admin should be able to see the leaderboard');
   });
 
   await t.test('the weekly leaderboard uses the same ranking logic, scoped to this week', async () => {

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember } = require('../testlib/helpers');
 
 test('Send for Approval document workflow', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
 
   const adminToken = await login(baseUrl, 'admin', 'admin123');

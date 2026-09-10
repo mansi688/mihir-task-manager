@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('database integrity and malformed-input handling', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
 
   const adminToken = await login(baseUrl, 'admin', 'admin123');
@@ -75,7 +75,7 @@ test('database integrity and malformed-input handling', async (t) => {
 });
 
 test('attachment security', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
 
   const adminToken = await login(baseUrl, 'admin', 'admin123');

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('subtasks: a full task with a parent link, gating the parent\'s close, with notifications matching regular tasks', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const aliceToken = await createMember(baseUrl, adminToken, 'alice', 'Alice');

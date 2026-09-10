@@ -7,7 +7,7 @@ const { startTestServer, api, login, createMember, futureDate } = require('../te
 // submissions) at the real running server and measures success rate and timing — not a browser
 // test, but a genuine concurrent-throughput measurement, achievable without one.
 test('~100 simultaneous mixed requests: correctness and timing under real concurrent load', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
 
   const adminToken = await login(baseUrl, 'admin', 'admin123');

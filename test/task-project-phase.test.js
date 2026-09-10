@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('tasks can be created project-wise and phase-wise, and both are retrievable', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const bobToken = await createMember(baseUrl, adminToken, 'bob_phase', 'Bob Phase');

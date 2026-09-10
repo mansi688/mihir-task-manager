@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember } = require('../testlib/helpers');
 
 test('removing a whole department clears the team field but never deletes accounts', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
 
@@ -32,7 +32,7 @@ test('removing a whole department clears the team field but never deletes accoun
 });
 
 test('a non-admin cannot remove a department', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const memberToken = await createMember(baseUrl, adminToken, 'plainmember', 'Plain Member');
@@ -43,7 +43,7 @@ test('a non-admin cannot remove a department', async (t) => {
 });
 
 test('removing a nonexistent department returns a clean 404', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const res = await api(baseUrl, '/api/teams/NoSuchDepartment', { method: 'DELETE', token: adminToken });

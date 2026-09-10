@@ -43,7 +43,7 @@ function defaultUiState() {
     taskFormOpen: false, taskFormIsDrawing: false, taskFormTags: [],
     taskFormStages: [{ usernames: [] }], taskFormAutoRelease: false,
     followupFormTaskId: null, followupFormTags: [],
-    subtaskFormTaskId: null, subtaskFormTags: [],
+    subtaskFormTaskId: null, subtaskFormTags: [], individualDeadlineFormTaskId: null,
     cancelFormTaskId: null,
     addAssigneeFormTaskId: null, addAssigneeTags: [],
     taskSearchQuery: '', taskFilterProject: '', taskFilterPhase: '',
@@ -666,12 +666,13 @@ function bindLogin() {
   };
   const loginBtn = document.querySelector('[data-act="login"]');
   if (loginBtn) loginBtn.onclick = submit;
+  const userField = document.getElementById('lg-user');
+  if (userField) userField.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
   const passField = document.getElementById('lg-pass');
   if (passField) passField.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
   const forgotLink = document.querySelector('[data-act="toggle-forgot-password"]');
   if (forgotLink) forgotLink.onclick = (e) => { e.preventDefault(); ui.showForgotPassword = !ui.showForgotPassword; ui.forgotPasswordStage = 'request'; ui.forgotPasswordErr = ''; render(); };
-  const requestOtpBtn = document.querySelector('[data-act="request-otp"]');
-  if (requestOtpBtn) requestOtpBtn.onclick = async () => {
+  const requestOtp = async () => {
     const username = document.getElementById('fp-username').value.trim();
     if (!username) { ui.forgotPasswordErr = 'Enter your username first.'; render(); return; }
     try {
@@ -682,8 +683,11 @@ function bindLogin() {
       render();
     } catch (e) { ui.forgotPasswordErr = e.message; render(); }
   };
-  const submitOtpBtn = document.querySelector('[data-act="submit-otp-reset"]');
-  if (submitOtpBtn) submitOtpBtn.onclick = async () => {
+  const requestOtpBtn = document.querySelector('[data-act="request-otp"]');
+  if (requestOtpBtn) requestOtpBtn.onclick = requestOtp;
+  const fpUsernameField = document.getElementById('fp-username');
+  if (fpUsernameField) fpUsernameField.addEventListener('keydown', e => { if (e.key === 'Enter') requestOtp(); });
+  const submitOtpReset = async () => {
     const otp = document.getElementById('fp-otp').value.trim();
     const newPassword = document.getElementById('fp-new-password').value;
     if (!otp || !newPassword) { ui.forgotPasswordErr = 'Enter both the code and your new password.'; render(); return; }
@@ -695,6 +699,12 @@ function bindLogin() {
       render();
     } catch (e) { ui.forgotPasswordErr = e.message; render(); }
   };
+  const submitOtpBtn = document.querySelector('[data-act="submit-otp-reset"]');
+  if (submitOtpBtn) submitOtpBtn.onclick = submitOtpReset;
+  ['fp-otp', 'fp-new-password'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter') submitOtpReset(); });
+  });
 }
 function renderForcedPasswordChange() {
   return `
@@ -722,8 +732,7 @@ function renderForcedPasswordChange() {
 }
 function bindForcedPasswordChange() {
   bindPasswordToggles();
-  const submitBtn = document.querySelector('[data-act="submit-password-change"]');
-  if (submitBtn) submitBtn.onclick = async () => {
+  const submit = async () => {
     const newPassword = document.getElementById('pw-new').value;
     const confirmPassword = document.getElementById('pw-confirm').value;
     if (!newPassword || !confirmPassword) { ui.pwChangeErr = 'Both fields are required.'; render(); return; }
@@ -740,6 +749,12 @@ function bindForcedPasswordChange() {
       await afterLogin();
     } catch (e) { ui.pwChangeErr = e.message; render(); }
   };
+  const submitBtn = document.querySelector('[data-act="submit-password-change"]');
+  if (submitBtn) submitBtn.onclick = submit;
+  ['pw-new', 'pw-confirm'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  });
   const logoutLink = document.querySelector('[data-act="logout"]');
   if (logoutLink) logoutLink.onclick = (e) => { e.preventDefault(); logout(); };
   const dismissLink = document.querySelector('[data-act="dismiss-password-change"]');
@@ -839,10 +854,12 @@ async function refreshData(opts) {
     session = { ...session, email: me.email, phone: me.phone, team: me.team, designation: me.designation, isTeamLead: !!me.isTeamLead };
     localStorage.setItem('ls_session', JSON.stringify(session));
     const notif = await api('/api/notifications');
-    monthlyLeaderboard = await api('/api/reports/monthly-leaderboard');
-    weeklyLeaderboard = await api('/api/reports/weekly-leaderboard');
-    quarterAwards = (await api('/api/reports/period-awards?type=quarter')).awards;
-    yearAwards = (await api('/api/reports/period-awards?type=year')).awards;
+    if (session.role === 'admin') {
+      monthlyLeaderboard = await api('/api/reports/monthly-leaderboard');
+      weeklyLeaderboard = await api('/api/reports/weekly-leaderboard');
+      quarterAwards = (await api('/api/reports/period-awards?type=quarter')).awards;
+      yearAwards = (await api('/api/reports/period-awards?type=year')).awards;
+    }
     myNotifications = notif.items; unreadNotifCount = notif.unread;
     if (session.role === 'admin') allTasks = await api('/api/tasks');
     if (session.role === 'admin' || session.role === 'director') {
@@ -1101,6 +1118,19 @@ function renderTaskItem(t) {
       <button class="btn btn-sm" style="margin-top:8px;" data-close-task="${t.id}" data-fully-approved="${doneCount === assignees.length}" title="Only whoever created this task, or Admin, can close it">Close Task</button>
       <button class="btn btn-sm btn-danger" style="margin-top:8px;margin-left:6px;" data-act="toggle-cancel-form" data-task-id="${t.id}" title="For a task that was a mistake or is being abandoned, not completed">Cancel Task</button>
       ${doneCount < assignees.length ? `<span class="small muted" style="margin-left:8px;">Waiting on ${assignees.filter(a => !isApproved(a)).map(a => esc(a.username)).join(', ')}</span>` : ''}
+      <div style="margin-top:8px;">
+        <a href="#" class="small" data-act="toggle-individual-deadlines" data-task-id="${t.id}">${ui.individualDeadlineFormTaskId === t.id ? 'Hide' : 'Set'} individual deadlines per person</a>
+      </div>
+      ${ui.individualDeadlineFormTaskId === t.id ? `
+      <div class="card" style="background:var(--panel-2);margin-top:8px;padding:10px 14px;">
+        <div class="small muted" style="margin-bottom:8px;">Overrides this person's deadline just for their own part — leave blank to use the task's overall deadline instead. Works the same for subtasks.</div>
+        ${assignees.map(a => `
+          <div class="row" style="align-items:flex-end;margin-bottom:6px;">
+            <div class="col small" style="flex:0;min-width:100px;">${esc(a.username)}</div>
+            <div class="col"><input type="datetime-local" id="individual-deadline-${t.id}-${esc(a.username)}" value="${a.individual_deadline ? esc(a.individual_deadline.slice(0, 16)) : ''}"></div>
+            <div class="col" style="flex:0;"><button class="btn btn-sm" data-save-individual-deadline="${t.id}" data-username="${esc(a.username)}">Save</button></div>
+          </div>`).join('')}
+      </div>` : ''}
       ${ui.cancelFormTaskId === t.id ? `
         <div class="row" style="margin-top:8px;align-items:flex-end;">
           <div class="col"><label>Reason for cancelling (required)</label><input type="text" id="cancel-reason-${t.id}" placeholder="e.g. Duplicate of another task, project scope changed"></div>
@@ -1951,7 +1981,7 @@ function renderTodayFeed() {
       </div>
     </div>
   </div>
-  ${renderLeaderboardCard(monthlyLeaderboard, '🏆 Monthly Leaderboard', "Nobody has completed approved work yet this month.", 'today-monthly')}
+  ${session.role === 'admin' ? renderLeaderboardCard(monthlyLeaderboard, '🏆 Monthly Leaderboard', "Nobody has completed approved work yet this month.", 'today-monthly') : ''}
   ${renderLeaderboardCard(weeklyLeaderboard, '📅 This Week', "Nobody has completed approved work yet this week.", 'today-weekly')}
   <div class="card">
     <div class="card-title">Ongoing Tasks Progress</div>
@@ -3311,6 +3341,23 @@ function bindMyTasks() {
     ui.cancelFormTaskId = (ui.cancelFormTaskId === id) ? null : id;
     render();
   });
+  document.querySelectorAll('[data-act="toggle-individual-deadlines"]').forEach(link => link.onclick = (e) => {
+    e.preventDefault();
+    const id = link.dataset.taskId;
+    ui.individualDeadlineFormTaskId = (ui.individualDeadlineFormTaskId === id) ? null : id;
+    render();
+  });
+  document.querySelectorAll('[data-save-individual-deadline]').forEach(btn => btn.onclick = async () => {
+    const taskId = btn.dataset.saveIndividualDeadline;
+    const username = btn.dataset.username;
+    const input = document.getElementById(`individual-deadline-${taskId}-${username}`);
+    const deadline = input ? input.value.trim() : '';
+    try {
+      await api(`/api/tasks/${taskId}/assignees/${encodeURIComponent(username)}/deadline`, { method: 'POST', body: JSON.stringify({ deadline }) });
+      setBanner(deadline ? `Individual deadline set for ${username}.` : `Individual deadline cleared for ${username}.`, 'ok');
+      await refreshData();
+    } catch (e) { setBanner(e.message); render(); }
+  });
   document.querySelectorAll('[data-act="submit-cancel"]').forEach(btn => btn.onclick = async () => {
     const id = btn.dataset.taskId;
     const reasonEl = document.getElementById(`cancel-reason-${id}`);
@@ -3544,4 +3591,10 @@ function userIsActivelyTyping() {
   const isTextField = (tag === 'textarea') || (tag === 'input' && !['checkbox', 'file', 'radio', 'button', 'submit'].includes(active.type));
   return isTextField && !!active.value;
 }
-setInterval(() => { if (session && token && !session.mustChangePassword && !userIsActivelyTyping()) refreshData({ background: true }); }, 30000);
+// Reduced from 30s to 8s — the previous interval made updates from other people (or another of
+// your own tabs/devices) feel stale and out of sync; this app has no push/WebSocket channel, so
+// polling is the mechanism, and 8s is frequent enough to feel close to real-time without being
+// wasteful. A person's OWN actions (creating a task, approving, etc.) already refresh
+// immediately via their own explicit refreshData() call right after that action succeeds —
+// this interval only covers picking up everyone else's changes.
+setInterval(() => { if (session && token && !session.mustChangePassword && !userIsActivelyTyping()) refreshData({ background: true }); }, 8000);

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('the notification hook (push/WhatsApp dispatch) never disrupts normal task operations', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const bobToken = await createMember(baseUrl, adminToken, 'bob', 'Bob');

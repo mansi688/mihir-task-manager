@@ -8,7 +8,7 @@ const { startTestServer, api, login, createMember, futureDate } = require('../te
 // what, when, and reason — not that it matches a richer structured schema it was never built
 // with.
 test('audit log captures who/what/when/reason correctly for every major action', async (t) => {
-  const { baseUrl, stop } = startTestServer();
+  const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
 
   const adminToken = await login(baseUrl, 'admin', 'admin123');

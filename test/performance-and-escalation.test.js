@@ -1,10 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const Database = require('better-sqlite3');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
 test('day-5 escalation flags BOTH HR and Admin, and tells the person only that THEY are flagged for that task — never mentioning HR/Admin', async (t) => {
-  const { baseUrl, dbPath, stop } = startTestServer();
+  const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
   const hrToken = await createMember(baseUrl, adminToken, 'hr_escalation_test', 'HR Escalation Test', 'HR Department');
@@ -14,9 +13,9 @@ test('day-5 escalation flags BOTH HR and Admin, and tells the person only that T
   const id = create.data.id;
 
   // Backdate the task's escalation clock to 6 days ago, so the day-5 threshold has been crossed.
-  const raw = new Database(dbPath);
-  raw.prepare('UPDATE task_assignees SET escalation_baseline_at=? WHERE task_id=?').run(new Date(Date.now() - 6 * 86400000).toISOString(), id);
-  raw.close();
+  const raw = await getRawClient();
+  await raw.query('UPDATE task_assignees SET escalation_baseline_at=$1 WHERE task_id=$2', [new Date(Date.now() - 6 * 86400000).toISOString(), id]);
+  await raw.end();
 
   await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
 
@@ -47,7 +46,7 @@ test('day-5 escalation flags BOTH HR and Admin, and tells the person only that T
 });
 
 test('performance statistics use submission date, never approval date', async (t) => {
-  const { baseUrl, dbPath, stop } = startTestServer();
+  const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
 
   const adminToken = await login(baseUrl, 'admin', 'admin123');
@@ -62,10 +61,10 @@ test('performance statistics use submission date, never approval date', async (t
   // approval happens for real, right now, through the actual API. If completion stats were
   // (incorrectly) keyed on approval date, this would show up in "this month." The exact claim
   // being verified: it must NOT.
-  const raw = new Database(dbPath);
+  const raw = await getRawClient();
   const fortyDaysAgo = new Date(Date.now() - 40 * 86400000).toISOString();
-  raw.prepare('UPDATE task_assignees SET submitted_at=? WHERE task_id=? AND username=?').run(fortyDaysAgo, id, 'bob');
-  raw.close();
+  await raw.query('UPDATE task_assignees SET submitted_at=$1 WHERE task_id=$2 AND username=$3', [fortyDaysAgo, id, 'bob']);
+  await raw.end();
 
   await api(baseUrl, `/api/tasks/${id}/approve/bob`, { method: 'POST', token: aliceToken });
 
@@ -77,7 +76,7 @@ test('performance statistics use submission date, never approval date', async (t
 });
 
 test('response time excludes hold/block time — only counts from release to submission', async (t) => {
-  const { baseUrl, dbPath, stop } = startTestServer();
+  const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
 
   const adminToken = await login(baseUrl, 'admin', 'admin123');
@@ -93,10 +92,10 @@ test('response time excludes hold/block time — only counts from release to sub
   // Bob sits on Level 2, on hold, for a long time (simulated: the task was created 20 days ago),
   // then gets released and submits almost immediately. If response time were measured from task
   // creation instead of from release, this would wrongly show ~20 days. It must show ~0.
-  const raw = new Database(dbPath);
+  const raw = await getRawClient();
   const twentyDaysAgo = new Date(Date.now() - 20 * 86400000).toISOString();
-  raw.prepare('UPDATE tasks SET created_at=? WHERE id=?').run(twentyDaysAgo, id);
-  raw.close();
+  await raw.query('UPDATE tasks SET created_at=$1 WHERE id=$2', [twentyDaysAgo, id]);
+  await raw.end();
 
   await api(baseUrl, `/api/tasks/${id}/submit-mine`, { method: 'POST', token: aliceToken, body: { note: 'Level 1 done.' } });
   await api(baseUrl, `/api/tasks/${id}/approve/alice`, { method: 'POST', token: aliceToken });
@@ -111,7 +110,7 @@ test('response time excludes hold/block time — only counts from release to sub
 });
 
 test('escalation thresholds (3/5/7/12-day) fire at the right times and respect blocked/on-hold exemption', async (t) => {
-  const { baseUrl, dbPath, stop } = startTestServer();
+  const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
 
   const adminToken = await login(baseUrl, 'admin', 'admin123');
@@ -121,9 +120,9 @@ test('escalation thresholds (3/5/7/12-day) fire at the right times and respect b
   await t.test('a task 6 days old triggers the 3-day and 5-day flags, but not 7 or 12 yet', async () => {
     const create = await api(baseUrl, '/api/tasks', { method: 'POST', token: aliceToken, body: { title: 'Six Days Old', priority: 'low', deadline: futureDate(30), assignedToList: ['bob'] } });
     const id = create.data.id;
-    const raw = new Database(dbPath);
-    raw.prepare('UPDATE task_assignees SET escalation_baseline_at=? WHERE task_id=?').run(new Date(Date.now() - 6 * 86400000).toISOString(), id);
-    raw.close();
+    const raw = await getRawClient();
+    await raw.query('UPDATE task_assignees SET escalation_baseline_at=$1 WHERE task_id=$2', [new Date(Date.now() - 6 * 86400000).toISOString(), id]);
+    await raw.end();
 
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
 
@@ -139,10 +138,10 @@ test('escalation thresholds (3/5/7/12-day) fire at the right times and respect b
     const prereq = await api(baseUrl, '/api/tasks', { method: 'POST', token: aliceToken, body: { title: 'Prereq For Block Test', priority: 'low', deadline: futureDate(), assignedToList: ['bob'] } });
     const dependent = await api(baseUrl, '/api/tasks', { method: 'POST', token: aliceToken, body: { title: 'Blocked And Old', priority: 'high', deadline: futureDate(), assignedToList: ['alice'], dependsOnTaskId: prereq.data.id } });
 
-    const raw = new Database(dbPath);
-    raw.prepare('UPDATE tasks SET created_at=? WHERE id=?').run(new Date(Date.now() - 30 * 86400000).toISOString(), dependent.data.id);
-    raw.prepare('UPDATE task_assignees SET escalation_baseline_at=? WHERE task_id=?').run(new Date(Date.now() - 30 * 86400000).toISOString(), dependent.data.id);
-    raw.close();
+    const raw = await getRawClient();
+    await raw.query('UPDATE tasks SET created_at=$1 WHERE id=$2', [new Date(Date.now() - 30 * 86400000).toISOString(), dependent.data.id]);
+    await raw.query('UPDATE task_assignees SET escalation_baseline_at=$1 WHERE task_id=$2', [new Date(Date.now() - 30 * 86400000).toISOString(), dependent.data.id]);
+    await raw.end();
 
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
 
