@@ -2306,8 +2306,16 @@ function filterToWorkingHours(hours) {
 function renderHourlyCurveChart(hours, opts) {
   opts = opts || {};
   const width = 720, height = 190, padTop = 10, padBottom = 24, padX = 14;
+  // A genuinely real crash, found and fixed: if `hours` is ever empty — data not loaded yet,
+  // a failed fetch leaving the default empty array in place, or a working-hours filter that
+  // happens to match nothing — every line below assumes at least one point exists and throws
+  // "Cannot read properties of undefined" the moment it doesn't. Render a calm empty state
+  // instead of crashing the whole page.
+  if (!hours || hours.length === 0) {
+    return `<div class="empty" style="height:${height}px;display:flex;align-items:center;justify-content:center;">No activity data yet.</div>`;
+  }
   const maxTotal = Math.max(1, ...hours.map(h => h.total));
-  const stepX = (width - 2 * padX) / (hours.length - 1);
+  const stepX = hours.length > 1 ? (width - 2 * padX) / (hours.length - 1) : 0;
   const points = hours.map((h, i) => ({
     x: padX + i * stepX,
     y: height - padBottom - (h.total / maxTotal) * (height - padTop - padBottom),
@@ -3191,7 +3199,16 @@ function renderInner() {
 }
 function bindGlobal() {
   bindThemeToggle();
-  document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { ui.adminTab = b.dataset.tab; ui.sidebarOpen = false; localStorage.setItem('ls_last_tab', ui.adminTab); render(); });
+  document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => {
+    ui.adminTab = b.dataset.tab; ui.sidebarOpen = false; localStorage.setItem('ls_last_tab', ui.adminTab);
+    render();
+    // Switching tabs previously only re-rendered whatever was already in memory from login time
+    // or the last background poll — meaning a page like Accounts could show stale (or, on a
+    // slow/failed earlier fetch, still-empty) data even though the real data was one request
+    // away. A fresh, immediate fetch on every tab switch fixes that without waiting for the
+    // next poll cycle.
+    refreshData();
+  });
   const menuToggle = document.querySelector('[data-act="toggle-sidebar"]'); if (menuToggle) menuToggle.onclick = () => { ui.sidebarOpen = !ui.sidebarOpen; render(); };
   document.querySelectorAll('[data-act="close-sidebar"]').forEach(b => b.onclick = () => { ui.sidebarOpen = false; render(); });
   const logoutBtn = document.querySelector('[data-act="logout"]'); if (logoutBtn) logoutBtn.onclick = () => logout();
@@ -3523,7 +3540,7 @@ function bindAccounts() {
     try {
       await api('/api/users', { method: 'POST', body: JSON.stringify({ username, name, password, role, team, designation }) });
       setBanner('Account created.', 'ok'); await refreshData();
-    } catch (e) { setBanner(e.message); render(); }
+    } catch (e) { setBanner(e.message); await refreshData(); }
   };
   document.querySelectorAll('[data-name-for]').forEach(inp => inp.onblur = async () => {
     const name = inp.value.trim(); if (!name) { setBanner('Name cannot be empty.'); render(); return; }
