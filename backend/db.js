@@ -12,6 +12,26 @@ const bcrypt = require('bcrypt');
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false },
+  // Without these, a managed Postgres provider (Supabase, Render Postgres, etc.) silently
+  // dropping an idle connection — which they do routinely — has no bounded recovery: a new
+  // query can hang indefinitely waiting for a connection that will never come free, and a
+  // connection lost while idle has nowhere to report the error. connectionTimeoutMillis caps
+  // how long a query will ever wait for a pool slot before failing loudly instead of hanging.
+  max: 10,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000,
+});
+// THE critical missing piece: pg's Pool emits an 'error' event whenever an already-idle client
+// in the pool hits a connection-level problem (the remote database closing it, a network blip,
+// the provider recycling connections) — completely separate from any error a query itself might
+// raise. With no listener for this event, that error becomes an uncaught exception and **crashes
+// the entire Node process** — not a graceful failure, a hard crash. On a remote, managed database
+// this isn't a rare edge case; it happens routinely, and every time it does, the whole app goes
+// down and Render restarts it, producing exactly the kind of intermittent, hard-to-reproduce-
+// locally failure burst that shows up as a degraded (not zero) success rate in production. Log
+// it and move on — the pool itself recovers by opening a fresh connection on the next query.
+pool.on('error', (err) => {
+  console.error('Postgres pool error (idle client lost connection — this is expected occasionally on a remote database and does not need to crash the app):', err.message);
 });
 
 // Translates better-sqlite3-style `?` positional placeholders into Postgres's `$1, $2, ...` —
