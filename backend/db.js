@@ -531,6 +531,30 @@ module.exports = {
     await module.exports.bumpTaskVersion(id);
     return true;
   },
+  // Genuinely, permanently removes a task from the database — not a status change like close or
+  // cancel, an actual deletion. Recursively removes any subtasks first (a subtask can't sensibly
+  // outlive the parent it belongs to), and everything tied to each task along the way:
+  // assignees, checklist items, replies, follow-ups, and any notifications pointing at it. A
+  // task depending on this one (via depends_on_task_id) simply stops being blocked afterward —
+  // isTaskBlocked() already treats a missing dependency as "not blocked", so nothing extra is
+  // needed there. Returns the full list of every task ID actually deleted, so the caller can
+  // audit-log and notify accurately even when subtasks were swept up too.
+  async deleteTaskCompletely(id) {
+    const deletedIds = [];
+    async function deleteOne(taskId) {
+      const subtasks = await all('SELECT id FROM tasks WHERE parent_task_id=?', [taskId]);
+      for (const sub of subtasks) await deleteOne(sub.id);
+      await run('DELETE FROM notifications WHERE task_id=?', [taskId]);
+      await run('DELETE FROM task_replies WHERE task_id=?', [taskId]);
+      await run('DELETE FROM task_followups WHERE task_id=?', [taskId]);
+      await run('DELETE FROM task_checklist_items WHERE task_id=?', [taskId]);
+      await run('DELETE FROM task_assignees WHERE task_id=?', [taskId]);
+      const result = await run('DELETE FROM tasks WHERE id=?', [taskId]);
+      if (result.rowCount > 0) deletedIds.push(taskId);
+    }
+    await deleteOne(id);
+    return deletedIds;
+  },
   async isTaskBlocked(id) {
     const t = await get('SELECT depends_on_task_id FROM tasks WHERE id=?', [id]);
     if (!t || !t.depends_on_task_id) return false;

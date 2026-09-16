@@ -44,7 +44,7 @@ function defaultUiState() {
     taskFormStages: [{ usernames: [] }], taskFormAutoRelease: false,
     followupFormTaskId: null, followupFormTags: [],
     subtaskFormTaskId: null, subtaskFormTags: [], individualDeadlineFormTaskId: null, reshuffleLevelsFormTaskId: null,
-    levelEditKey: null, levelEditConfirmKey: null, levelEditConfirmValue: null,
+    levelEditKey: null, levelEditConfirmKey: null, levelEditConfirmValue: null, deleteTaskConfirmId: null,
     cancelFormTaskId: null,
     addAssigneeFormTaskId: null, addAssigneeTags: [],
     taskSearchQuery: '', taskFilterProject: '', taskFilterPhase: '',
@@ -654,6 +654,10 @@ function renderLoginPage() {
             ${passwordFieldHTML('fp-new-password', 'At least 6 characters')}
             <button class="btn btn-primary btn-sm" style="margin-top:8px;" data-act="submit-otp-reset">Reset Password</button>
             ${ui.forgotPasswordErr ? `<div class="err" style="margin-top:6px;">${esc(ui.forgotPasswordErr)}</div>` : ''}
+          ` : ui.forgotPasswordStage === 'email-not-configured' ? `
+            <p style="margin:0 0 8px;font-weight:700;">Email reset isn't set up on this server yet.</p>
+            <p class="small muted" style="margin:0 0 10px;">Nothing was sent — there's no email system connected here yet, so a code was never going to arrive. This isn't specific to your account. Please contact your <b>Admin</b> directly (in person, chat, or however you'd normally reach them) and ask them to reset your password from the <b>Accounts</b> page — it takes them a few seconds, no email required.</p>
+            <button class="btn btn-sm" data-act="back-to-forgot-request">← Try a different username</button>
           ` : `
             <label>Username</label>
             <input type="text" id="fp-username" placeholder="Your username">
@@ -694,13 +698,20 @@ function bindLogin() {
     try {
       const result = await api('/api/auth/forgot-password', { method: 'POST', body: JSON.stringify({ username }) });
       ui.forgotPasswordUsername = username;
-      ui.forgotPasswordStage = 'otp-sent';
+      // Previously this always moved straight to "check your email for a code" — even when no
+      // email was ever actually sent, because SMTP isn't configured on the server yet. That left
+      // whoever hit this genuinely stuck: told to wait for a code that would never arrive, with
+      // no indication why or what to do instead. Now it tells them plainly and gives them a real
+      // next step, instead of a silent dead end.
+      ui.forgotPasswordStage = result.emailConfigured ? 'otp-sent' : 'email-not-configured';
       ui.forgotPasswordErr = '';
       render();
     } catch (e) { ui.forgotPasswordErr = e.message; render(); }
   };
   const requestOtpBtn = document.querySelector('[data-act="request-otp"]');
   if (requestOtpBtn) requestOtpBtn.onclick = requestOtp;
+  const backToRequestBtn = document.querySelector('[data-act="back-to-forgot-request"]');
+  if (backToRequestBtn) backToRequestBtn.onclick = () => { ui.forgotPasswordStage = 'request'; ui.forgotPasswordErr = ''; render(); };
   const fpUsernameField = document.getElementById('fp-username');
   if (fpUsernameField) fpUsernameField.addEventListener('keydown', e => { if (e.key === 'Enter') requestOtp(); });
   const submitOtpReset = async () => {
@@ -1104,7 +1115,14 @@ function renderTaskItem(t) {
         <div class="row" style="margin-top:8px;align-items:flex-end;">
           <div class="col"><label>Reason for reopening (required)</label><input type="text" id="reopen-reason-${t.id}" placeholder="e.g. Missing site photos, needs redoing" required></div>
           <div class="col" style="flex:0;"><button class="btn btn-sm btn-danger" data-act="submit-reopen" data-task-id="${t.id}">Confirm Reopen</button></div>
-        </div>` : ''}` : ''}
+        </div>` : ''}
+        <div style="margin-top:8px;">
+          ${ui.deleteTaskConfirmId === t.id ? `
+            <span class="small" style="margin-right:8px;">Permanently delete this task${t.subtasks && t.subtasks.length > 0 ? ` and its ${t.subtasks.length} subtask(s)` : ''}? This cannot be undone.</span>
+            <button class="btn btn-sm btn-danger" data-act="confirm-delete-task" data-task-id="${t.id}">Yes, Delete Permanently</button>
+            <button class="btn btn-sm" data-act="cancel-delete-task">Cancel</button>
+          ` : `<button class="btn btn-sm btn-danger" data-act="toggle-delete-task" data-task-id="${t.id}" title="Permanently removes the task — not a status change">Delete Task</button>`}
+        </div>` : ''}
       </div>
     </details>`;
   }
@@ -1117,7 +1135,13 @@ function renderTaskItem(t) {
     </div>
     ${t.description ? `<div class="doc-note">${esc(t.description)}</div>` : ''}
     <div class="muted small" style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${taskSourceBadge(t)}<span>${fmtTime(t.created_at)}${t.deadline ? ` · Due ${fmtDate(t.deadline)}${overdue ? ' <span class="badge flag">OVERDUE</span>' : ''}` : ''}</span></div>
-    ${t.blocked ? `<div class="notice" style="border-color:var(--amber);margin-top:8px;">${icon('alertTriangle', 13)} Blocked — waiting on a prerequisite task to close first.</div>` : ''}
+    ${t.blocked ? `<div class="notice" style="border-color:var(--amber);margin-top:8px;">${icon('alertTriangle', 13)} Blocked — waiting on a prerequisite task to close first.
+      ${canForceClose ? (ui.deleteTaskConfirmId === t.id ? `
+        <span class="small" style="margin-left:6px;">Permanently delete this task${t.subtasks && t.subtasks.length > 0 ? ` and its ${t.subtasks.length} subtask(s)` : ''}? This cannot be undone.</span>
+        <button class="btn btn-sm btn-danger" data-act="confirm-delete-task" data-task-id="${t.id}">Yes, Delete Permanently</button>
+        <button class="btn btn-sm" data-act="cancel-delete-task">Cancel</button>
+      ` : `<button class="btn btn-sm btn-danger" style="margin-left:8px;" data-act="toggle-delete-task" data-task-id="${t.id}" title="Permanently removes the task — not a status change">Delete Task</button>`) : ''}
+    </div>` : ''}
     ${lazyAttachmentHTML(t.has_attachment, t.attachment_name, `/api/tasks/${t.id}/attachment`, `task-attach-${t.id}`)}
     <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
       ${groupedAssigneeBadgesHTML()}
@@ -1206,6 +1230,11 @@ function renderTaskItem(t) {
     ${t.status === 'open' && !t.blocked && canForceClose ? `
       <button class="btn btn-sm" style="margin-top:8px;" data-close-task="${t.id}" data-fully-approved="${doneCount === assignees.length}" title="Only whoever created this task, or Admin, can close it">Close Task</button>
       <button class="btn btn-sm btn-danger" style="margin-top:8px;margin-left:6px;" data-act="toggle-cancel-form" data-task-id="${t.id}" title="For a task that was a mistake or is being abandoned, not completed">Cancel Task</button>
+      ${ui.deleteTaskConfirmId === t.id ? `
+        <span class="small" style="margin-left:6px;">Permanently delete this task${t.subtasks && t.subtasks.length > 0 ? ` and its ${t.subtasks.length} subtask(s)` : ''}? This cannot be undone.</span>
+        <button class="btn btn-sm btn-danger" data-act="confirm-delete-task" data-task-id="${t.id}">Yes, Delete Permanently</button>
+        <button class="btn btn-sm" data-act="cancel-delete-task">Cancel</button>
+      ` : `<button class="btn btn-sm btn-danger" style="margin-top:8px;margin-left:6px;" data-act="toggle-delete-task" data-task-id="${t.id}" title="Permanently removes the task — not a status change">Delete Task</button>`}
       ${doneCount < assignees.length ? `<span class="small muted" style="margin-left:8px;">Waiting on ${assignees.filter(a => !isApproved(a)).map(a => esc(a.username)).join(', ')}</span>` : ''}
       <div style="margin-top:8px;">
         <a href="#" class="small" data-act="toggle-individual-deadlines" data-task-id="${t.id}">${ui.individualDeadlineFormTaskId === t.id ? 'Hide' : 'Set'} individual deadlines per person</a>
@@ -3514,6 +3543,23 @@ function bindMyTasks() {
     ui.levelEditKey = `${el.dataset.taskId}::${el.dataset.username}`;
     ui.levelEditConfirmKey = null;
     render();
+  });
+  document.querySelectorAll('[data-act="toggle-delete-task"]').forEach(btn => btn.onclick = () => {
+    ui.deleteTaskConfirmId = btn.dataset.taskId;
+    render();
+  });
+  document.querySelectorAll('[data-act="cancel-delete-task"]').forEach(btn => btn.onclick = () => {
+    ui.deleteTaskConfirmId = null;
+    render();
+  });
+  document.querySelectorAll('[data-act="confirm-delete-task"]').forEach(btn => btn.onclick = async () => {
+    const taskId = btn.dataset.taskId;
+    ui.deleteTaskConfirmId = null;
+    try {
+      await api(`/api/tasks/${taskId}`, { method: 'DELETE' });
+      setBanner('Task permanently deleted.', 'ok');
+      await refreshData();
+    } catch (e) { setBanner(e.message); render(); }
   });
   document.querySelectorAll('[data-act="cancel-level-edit"]').forEach(el => el.onclick = () => {
     ui.levelEditKey = null; ui.levelEditConfirmKey = null; ui.levelEditConfirmValue = null;

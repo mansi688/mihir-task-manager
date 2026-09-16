@@ -1850,6 +1850,30 @@ app.post('/api/tasks/:id/cancel', auth(ALL_ROLES), async (req, res) => {
   }
   res.json({ ok: true });
 });
+// Genuinely, permanently deletes a task — not a status change like cancel or close. Creator or
+// Admin only, and unlike cancel, this works regardless of the task's current status (open,
+// closed, or cancelled) since deleting is a cleanup action, not a workflow transition. Any
+// subtasks go with it — a subtask can't sensibly outlive a deleted parent — and everyone who
+// was tagged or following (across the task and any subtasks swept up with it) is notified
+// before their access to it disappears entirely.
+app.delete('/api/tasks/:id', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: 'Task not found.' });
+  const isCreator = task.created_by_username && task.created_by_username === req.user.username;
+  if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can delete it.' });
+
+  const notifyTargets = new Set([
+    ...(await db.listAssignees(task.id)).map(a => a.username),
+    ...(await db.listFollowups(task.id)).map(f => f.username),
+  ]);
+  const deletedIds = await db.deleteTaskCompletely(task.id);
+  const subtaskCount = deletedIds.length - 1;
+  await auditFromReq(req, 'task_deleted', `Permanently deleted "${task.title}" (${task.id})${subtaskCount > 0 ? ` and ${subtaskCount} subtask(s) with it` : ''}.`);
+  for (const u of notifyTargets) {
+    if (u !== req.user.username) await db.createNotification({ username: u, type: 'task_deleted', message: `${req.user.name} permanently deleted "${task.title}" — it's no longer on your task list.`, task_id: null });
+  }
+  res.json({ ok: true, deletedIds });
+});
 app.post('/api/tasks/:id/reopen', auth(ALL_ROLES), async (req, res) => {
   const task = await db.getTaskFull(req.params.id);
   if (!task || (task.status !== 'closed' && task.status !== 'cancelled')) return res.status(400).json({ error: 'Task is not closed or cancelled.' });
