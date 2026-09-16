@@ -62,6 +62,28 @@ async function sendOtpEmail(toEmail, otp, name) {
     text: `Hi ${name},\n\nYour password reset code is: ${otp}\n\nThis code expires in 10 minutes. If you didn't request this, you can ignore this email.`,
   });
 }
+// Lets an Admin verify SMTP is actually configured correctly — without needing to trigger a
+// real password reset and dig through logs to see if it worked. Sends a genuine test email to
+// the Admin's own registered address (never an arbitrary address someone types in, so this
+// can't be used to relay spam through the server) and returns the real underlying error message
+// on failure, since "email is not configured" and "your SMTP host rejected the login" need very
+// different fixes and a generic error would leave someone guessing.
+app.post('/api/admin/test-email', auth(['admin']), async (req, res) => {
+  if (!mailTransporter) return res.status(400).json({ error: 'SMTP is not configured on this server yet — set SMTP_HOST, SMTP_USER, and SMTP_PASS as environment variables first.' });
+  const adminUser = await db.getUser(req.user.username);
+  if (!adminUser.email) return res.status(400).json({ error: 'Add an email address to your own profile first, then try again — the test email sends there.' });
+  try {
+    await mailTransporter.sendMail({
+      from: MAIL_FROM,
+      to: adminUser.email,
+      subject: 'MIHIR Task Manager — Test Email',
+      text: `Hi ${adminUser.name},\n\nThis is a test email confirming your SMTP configuration is working correctly. Password reset emails will be sent using this same connection.`,
+    });
+    res.json({ ok: true, sentTo: adminUser.email });
+  } catch (e) {
+    res.status(502).json({ error: `SMTP is configured, but sending failed: ${e.message}` });
+  }
+});
 
 // ---- Push notifications (optional) ----
 // A real PWA/Web Push setup — works from the browser on both desktop and mobile, no App Store

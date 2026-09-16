@@ -44,6 +44,7 @@ function defaultUiState() {
     taskFormStages: [{ usernames: [] }], taskFormAutoRelease: false,
     followupFormTaskId: null, followupFormTags: [],
     subtaskFormTaskId: null, subtaskFormTags: [], individualDeadlineFormTaskId: null, reshuffleLevelsFormTaskId: null,
+    levelEditKey: null, levelEditConfirmKey: null, levelEditConfirmValue: null,
     cancelFormTaskId: null,
     addAssigneeFormTaskId: null, addAssigneeTags: [],
     taskSearchQuery: '', taskFilterProject: '', taskFilterPhase: '',
@@ -858,37 +859,88 @@ async function refreshData(opts) {
   if (!token || !session) return;
   const background = !!(opts && opts.background);
   try {
-    myTasks = await api('/api/tasks/mine');
-    userDirectory = await api('/api/users/directory');
-    teamsList = await api('/api/teams');
-    projectsList = await api('/api/projects');
-    sectionsList = await api('/api/drawing-sections');
-    phasesList = await api('/api/task-phases');
-    openTaskTitles = await api('/api/tasks/open-titles');
-    const me = await api('/api/auth/me');
-    session = { ...session, email: me.email, phone: me.phone, team: me.team, designation: me.designation, isTeamLead: !!me.isTeamLead };
+    // Rewritten from 24 SEQUENTIAL awaits to genuinely parallel requests — none of these calls'
+    // URLs or logic ever depended on another call's result (the role-based branches below use
+    // session.role, which is already known from login, not derived from anything fetched here),
+    // so awaiting them one at a time was pure wasted latency: even at a fast ~25ms per call
+    // locally, 24 in a row adds up to well over half a second of visible delay after every
+    // single action, before the UI shows anything changed — real, felt lag on a slower
+    // connection. Running them concurrently drops the wait to roughly the one slowest call.
+    const isAdmin = session.role === 'admin';
+    const isAdminOrDirector = isAdmin || session.role === 'director';
+    const isHR = isHRTeamName(session.team);
+
+    const calls = {
+      myTasks: api('/api/tasks/mine'),
+      userDirectory: api('/api/users/directory'),
+      teamsList: api('/api/teams'),
+      projectsList: api('/api/projects'),
+      sectionsList: api('/api/drawing-sections'),
+      phasesList: api('/api/task-phases'),
+      openTaskTitles: api('/api/tasks/open-titles'),
+      me: api('/api/auth/me'),
+      notif: api('/api/notifications'),
+      myApprovalRequests: api('/api/approvals/mine'),
+      myDashboardData: api(`/api/reports/my-dashboard${isAdmin && ui.dashboardViewUser && ui.dashboardViewUser !== session.username ? `?username=${encodeURIComponent(ui.dashboardViewUser)}` : ''}`),
+    };
+    if (isAdmin) {
+      calls.monthlyLeaderboard = api('/api/reports/monthly-leaderboard');
+      calls.weeklyLeaderboard = api('/api/reports/weekly-leaderboard');
+      calls.quarterAwardsResp = api('/api/reports/period-awards?type=quarter');
+      calls.yearAwardsResp = api('/api/reports/period-awards?type=year');
+      calls.allTasks = api('/api/tasks');
+      calls.allApprovalRequests = api('/api/approvals');
+      calls.reportsTaskList = api('/api/reports/tasks-list');
+      calls.auditLogEntries = api('/api/audit-log');
+    }
+    if (isAdminOrDirector) {
+      calls.completionStats = api('/api/reports/completion');
+      calls.approvalStats = api('/api/reports/approvals');
+      calls.peakHoursData = api(`/api/reports/peak-hours?username=${encodeURIComponent(ui.peakHoursUser || 'all')}`);
+      calls.ratingsResp = api('/api/reports/ratings');
+      calls.approvalDecisionsDetail = api('/api/reports/approval-decisions');
+    }
+    if (isAdmin || isHR) {
+      calls.hrRosterResp = api('/api/reports/hr-roster');
+    }
+
+    const keys = Object.keys(calls);
+    const results = await Promise.all(keys.map(k => calls[k]));
+    const r = {};
+    keys.forEach((k, i) => { r[k] = results[i]; });
+
+    myTasks = r.myTasks;
+    userDirectory = r.userDirectory;
+    teamsList = r.teamsList;
+    projectsList = r.projectsList;
+    sectionsList = r.sectionsList;
+    phasesList = r.phasesList;
+    openTaskTitles = r.openTaskTitles;
+    session = { ...session, email: r.me.email, phone: r.me.phone, team: r.me.team, designation: r.me.designation, isTeamLead: !!r.me.isTeamLead };
     localStorage.setItem('ls_session', JSON.stringify(session));
-    const notif = await api('/api/notifications');
-    if (session.role === 'admin') {
-      monthlyLeaderboard = await api('/api/reports/monthly-leaderboard');
-      weeklyLeaderboard = await api('/api/reports/weekly-leaderboard');
-      quarterAwards = (await api('/api/reports/period-awards?type=quarter')).awards;
-      yearAwards = (await api('/api/reports/period-awards?type=year')).awards;
+    myNotifications = r.notif.items; unreadNotifCount = r.notif.unread;
+    myApprovalRequests = r.myApprovalRequests;
+    myDashboardData = r.myDashboardData;
+    if (isAdmin) {
+      monthlyLeaderboard = r.monthlyLeaderboard;
+      weeklyLeaderboard = r.weeklyLeaderboard;
+      quarterAwards = r.quarterAwardsResp.awards;
+      yearAwards = r.yearAwardsResp.awards;
+      allTasks = r.allTasks;
+      allApprovalRequests = r.allApprovalRequests;
+      reportsTaskList = r.reportsTaskList;
+      auditLogEntries = r.auditLogEntries;
     }
-    myNotifications = notif.items; unreadNotifCount = notif.unread;
-    if (session.role === 'admin') allTasks = await api('/api/tasks');
-    if (session.role === 'admin' || session.role === 'director') {
-      completionStats = await api('/api/reports/completion');
-      approvalStats = await api('/api/reports/approvals');
-      peakHoursData = await api(`/api/reports/peak-hours?username=${encodeURIComponent(ui.peakHoursUser || 'all')}`);
-      ratingsData = (await api('/api/reports/ratings')).ratings;
-      approvalDecisionsDetail = await api('/api/reports/approval-decisions');
+    if (isAdminOrDirector) {
+      completionStats = r.completionStats;
+      approvalStats = r.approvalStats;
+      peakHoursData = r.peakHoursData;
+      ratingsData = r.ratingsResp.ratings;
+      approvalDecisionsDetail = r.approvalDecisionsDetail;
     }
-    if (session.role === 'admin') { allApprovalRequests = await api('/api/approvals'); reportsTaskList = await api('/api/reports/tasks-list'); }
-    if (session.role === 'admin') auditLogEntries = await api('/api/audit-log');
-    myApprovalRequests = await api('/api/approvals/mine');
-    myDashboardData = await api(`/api/reports/my-dashboard${session.role === 'admin' && ui.dashboardViewUser && ui.dashboardViewUser !== session.username ? `?username=${encodeURIComponent(ui.dashboardViewUser)}` : ''}`);
-    if (session.role === 'admin' || isHRTeamName(session.team)) { const hrRosterResp = await api('/api/reports/hr-roster'); hrRosterData = hrRosterResp.roster; hrTotalTasksCompleted = hrRosterResp.totalTasksCompleted; }
+    if (isAdmin || isHR) {
+      hrRosterData = r.hrRosterResp.roster; hrTotalTasksCompleted = r.hrRosterResp.totalTasksCompleted;
+    }
     if (background) {
       // Every field a currently-visible page could actually display must be included here —
       // otherwise a background poll could silently fetch fresh data for, say, Performance
@@ -976,7 +1028,29 @@ function renderTaskItem(t) {
     else if (repliedUsernames.has(a.username)) { cls = 'po_pending'; title = 'Commented, not yet submitted'; }
     const canRemove = t.status === 'open' && canApproveHere && !a.submitted_at && !a.completed_at && assignees.length > 1;
     const removeControl = canRemove ? `<span data-remove-assignee="${t.id}" data-username="${esc(a.username)}" title="Remove — they haven't submitted or been approved yet" style="cursor:pointer;font-weight:700;margin-left:4px;">✕</span>` : '';
-    return `<span class="badge ${cls}" title="${title}">${label}${removeControl}</span>`;
+    const badgeHtml = `<span class="badge ${cls}" title="${title}">${label}${removeControl}</span>`;
+
+    // Hover-to-edit level, right on the badge itself — no need to open the full reshuffle
+    // panel for a quick single change. Same authority and same rules as that panel: creator or
+    // Admin only, task must be open, and someone already completed+approved can't be touched.
+    const canEditLevel = t.status === 'open' && canForceClose && !(a.decision === 'approve' && a.completed_at);
+    if (!canEditLevel) return `<span class="level-hover-wrap">${badgeHtml}</span>`;
+    const key = `${t.id}::${a.username}`;
+    let editUi = `<span class="level-hover-edit" data-act="show-level-edit" data-task-id="${t.id}" data-username="${esc(a.username)}" title="Change ${esc(a.username)}'s level">✎ L${a.stage}</span>`;
+    if (ui.levelEditKey === key) {
+      editUi = `<span class="level-edit-inline">
+        <input type="number" min="1" step="1" id="level-edit-input-${t.id}-${esc(a.username)}" value="${a.stage}">
+        <button class="btn btn-sm" data-act="request-level-edit" data-task-id="${t.id}" data-username="${esc(a.username)}">Save</button>
+        <button class="btn btn-sm" data-act="cancel-level-edit">✕</button>
+      </span>`;
+    } else if (ui.levelEditConfirmKey === key) {
+      editUi = `<span class="level-edit-confirm">
+        <span class="small">Save changes: move ${esc(a.username)} to Level ${ui.levelEditConfirmValue}?</span>
+        <button class="btn btn-sm btn-primary" data-act="confirm-level-edit" data-task-id="${t.id}" data-username="${esc(a.username)}">Save Changes</button>
+        <button class="btn btn-sm" data-act="cancel-level-edit">Cancel</button>
+      </span>`;
+    }
+    return `<span class="level-hover-wrap">${badgeHtml}${editUi}</span>`;
   };
   // Tagged people shown grouped by Level, not as one flat mixed list — a "|" divider marks
   // where one level ends and the next begins, so it's visually clear who has to finish before
@@ -3005,6 +3079,12 @@ function bindPerformanceView() {
 function renderAccountsView() {
   return `
   <div class="card">
+    <div class="card-title">Email Setup (for Forgot Password)</div>
+    <p class="small muted">Password-reset codes are sent by email, which requires real SMTP credentials set as environment variables on your server (SMTP_HOST, SMTP_USER, SMTP_PASS). Once set, send yourself a test email here to confirm it's genuinely working, before relying on it for real password resets.</p>
+    <button class="btn btn-sm" data-act="send-test-email">Send Test Email to My Own Address</button>
+    <div id="test-email-result" style="margin-top:8px;"></div>
+  </div>
+  <div class="card">
     <div class="card-title">Departments</div>
     <p class="small muted">The list everyone picks a department from when adding or editing an account. Typing a brand-new department name into any Team field also adds it here automatically.</p>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
@@ -3425,6 +3505,40 @@ function bindMyTasks() {
       await refreshData();
     } catch (e) { setBanner(e.message); render(); }
   });
+  // Hover-to-edit level: click the small "✎ L{n}" affordance that appears on hovering an
+  // assignee's badge → an inline number input opens right there → clicking Save doesn't call
+  // the API immediately, it opens a confirmation step first ("Save changes: move X to Level Y?")
+  // → only THAT confirmation actually commits the change, using the exact same endpoint and
+  // exact same notify/audit behavior as the full Reshuffle panel.
+  document.querySelectorAll('[data-act="show-level-edit"]').forEach(el => el.onclick = () => {
+    ui.levelEditKey = `${el.dataset.taskId}::${el.dataset.username}`;
+    ui.levelEditConfirmKey = null;
+    render();
+  });
+  document.querySelectorAll('[data-act="cancel-level-edit"]').forEach(el => el.onclick = () => {
+    ui.levelEditKey = null; ui.levelEditConfirmKey = null; ui.levelEditConfirmValue = null;
+    render();
+  });
+  document.querySelectorAll('[data-act="request-level-edit"]').forEach(el => el.onclick = () => {
+    const taskId = el.dataset.taskId, username = el.dataset.username;
+    const input = document.getElementById(`level-edit-input-${taskId}-${username}`);
+    const level = input ? input.value.trim() : '';
+    if (!level) { setBanner('Enter a level number first.'); render(); return; }
+    ui.levelEditKey = null;
+    ui.levelEditConfirmKey = `${taskId}::${username}`;
+    ui.levelEditConfirmValue = level;
+    render();
+  });
+  document.querySelectorAll('[data-act="confirm-level-edit"]').forEach(el => el.onclick = async () => {
+    const taskId = el.dataset.taskId, username = el.dataset.username;
+    const level = ui.levelEditConfirmValue;
+    ui.levelEditKey = null; ui.levelEditConfirmKey = null; ui.levelEditConfirmValue = null;
+    try {
+      const result = await api(`/api/tasks/${taskId}/assignees/${encodeURIComponent(username)}/level`, { method: 'POST', body: JSON.stringify({ level: parseInt(level, 10) }) });
+      setBanner(`${username} moved to Level ${result.newLevel}${result.isReleased ? ' and released to start now.' : ' (on hold for now).'}`, 'ok');
+      await refreshData();
+    } catch (e) { setBanner(e.message); render(); }
+  });
   document.querySelectorAll('[data-act="submit-cancel"]').forEach(btn => btn.onclick = async () => {
     const id = btn.dataset.taskId;
     const reasonEl = document.getElementById(`cancel-reason-${id}`);
@@ -3559,6 +3673,17 @@ function bindMyTasks() {
 }
 function bindAccounts() {
   bindPasswordToggles();
+  const testEmailBtn = document.querySelector('[data-act="send-test-email"]');
+  if (testEmailBtn) testEmailBtn.onclick = async () => {
+    const resultEl = document.getElementById('test-email-result');
+    if (resultEl) resultEl.innerHTML = '<span class="small muted">Sending…</span>';
+    try {
+      const result = await api('/api/admin/test-email', { method: 'POST' });
+      if (resultEl) resultEl.innerHTML = `<div class="notice" style="border-color:var(--teal);">✓ Sent to ${esc(result.sentTo)} — check that inbox to confirm it arrived.</div>`;
+    } catch (e) {
+      if (resultEl) resultEl.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+    }
+  };
   const submitDept = document.querySelector('[data-act="submit-new-department"]');
   if (submitDept) submitDept.onclick = async () => {
     const inp = document.getElementById('new-dept-name');

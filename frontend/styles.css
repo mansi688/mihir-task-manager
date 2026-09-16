@@ -581,6 +581,17 @@ html[data-theme="dark"] .modal-bg{background:rgba(8,9,11,0.7);}
    overlap or stacking-context issue a tiny absolutely-positioned icon could have. Hidden on
    desktop (the sidebar isn't an overlay there, so there's nothing to close). */
 .sidebar-close-bar{display:none;width:100%;padding:14px;background:var(--panel-2);border:none;border-bottom:1px solid var(--line);color:var(--ink);font-family:var(--body);font-weight:700;font-size:14px;cursor:pointer;text-align:center;-webkit-tap-highlight-color:rgba(0,0,0,0.1);touch-action:manipulation;}
+
+/* ---- Hover-to-edit level, right on the assignee badge ---- */
+.level-hover-wrap{display:inline-flex;align-items:center;gap:4px;position:relative;}
+.level-hover-edit{display:none;font-size:11px;color:var(--muted);cursor:pointer;padding:2px 6px;border-radius:6px;background:var(--panel-2);white-space:nowrap;}
+.level-hover-wrap:hover .level-hover-edit{display:inline-block;}
+.level-hover-edit:hover{color:var(--ink);background:var(--line);}
+/* Touch devices have no real ":hover" — always show the edit affordance there so the feature
+   isn't hidden behind an interaction that doesn't meaningfully exist on a touchscreen. */
+@media (hover: none){ .level-hover-edit{display:inline-block;} }
+.level-edit-inline, .level-edit-confirm{display:inline-flex;align-items:center;gap:6px;background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:4px 8px;white-space:nowrap;}
+.level-edit-inline input{width:56px;padding:2px 6px;}
 .flex-between{display:flex;justify-content:space-between;align-items:center;}
 .tag-code{font-family:var(--mono);background:var(--panel-2);border:1px dashed var(--amber);color:var(--amber-dim);padding:10px 14px;border-radius:6px;font-size:15px;letter-spacing:2px;display:inline-block;}
 .small{font-size:12px;}
