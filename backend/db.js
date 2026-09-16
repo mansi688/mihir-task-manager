@@ -296,6 +296,14 @@ async function init() {
   await ensureColumn('tasks', 'phase', 'TEXT');
   await ensureColumn('task_assignees', 'deadline_reminder_sent_at', 'TEXT');
   await ensureColumn('task_assignees', 'deadline_overdue_notified_at', 'TEXT');
+  await ensureColumn('task_assignees', 'last_recurring_reminder_at', 'TEXT');
+  await ensureColumn('task_assignees', 'warning_48hr_sent_at', 'TEXT');
+  await ensureColumn('task_assignees', 'flagged_60hr_sent_at', 'TEXT');
+  await ensureColumn('task_assignees', 'individual_deadline_set_at', 'TEXT');
+  await ensureColumn('task_assignees', 'deadline_reminder_24h_sent_at', 'TEXT');
+  await ensureColumn('task_assignees', 'deadline_reminder_12h_sent_at', 'TEXT');
+  await ensureColumn('task_assignees', 'deadline_reminder_6h_sent_at', 'TEXT');
+  await ensureColumn('task_assignees', 'deadline_reminder_2h_sent_at', 'TEXT');
 
   const existingTeams = await all("SELECT DISTINCT team FROM users WHERE team IS NOT NULL AND team != ''");
   for (const r of existingTeams) {
@@ -424,7 +432,14 @@ module.exports = {
       [taskId, username, team || null, stage || 1, (isReleased === false ? 0 : 1), new Date().toISOString(), individualDeadline || null]);
   },
   async setIndividualDeadline(taskId, username, deadline) {
-    await run('UPDATE task_assignees SET individual_deadline=? WHERE task_id=? AND username=?', [deadline || null, taskId, username]);
+    // Tracks WHEN this specific deadline was actually assigned, separate from the deadline value
+    // itself — and resets every tiered reminder flag, since a NEW or CHANGED individual deadline
+    // means the whole reminder cycle should restart from scratch rather than silently inheriting
+    // stale "already reminded" state from a previous deadline that no longer applies.
+    await run(`UPDATE task_assignees SET individual_deadline=?, individual_deadline_set_at=?,
+                deadline_reminder_sent_at=NULL, deadline_reminder_24h_sent_at=NULL, deadline_reminder_12h_sent_at=NULL,
+                deadline_reminder_6h_sent_at=NULL, deadline_reminder_2h_sent_at=NULL, deadline_overdue_notified_at=NULL
+                WHERE task_id=? AND username=?`, [deadline || null, deadline ? new Date().toISOString() : null, taskId, username]);
   },
   async isStageFullyApproved(taskId, stage) {
     const rows = await all('SELECT decision, completed_at FROM task_assignees WHERE task_id=? AND stage=?', [taskId, stage]);
@@ -444,6 +459,26 @@ module.exports = {
   async releaseStage(taskId, stage, releasedByName) {
     const result = await run('UPDATE task_assignees SET is_released=1, released_at=?, released_by=?, escalation_baseline_at=? WHERE task_id=? AND stage=? AND is_released=0',
       [new Date().toISOString(), releasedByName || null, new Date().toISOString(), taskId, stage]);
+    if (result.rowCount === 0) return false;
+    await module.exports.bumpTaskVersion(taskId);
+    return true;
+  },
+  // Reshuffles one assignee to a different level (stage) on an existing task. `isReleased`
+  // reflects whatever the caller has already determined about the new stage (released
+  // immediately if it's Level 1 or the level below it is already fully approved, on hold
+  // otherwise) — this function just applies it. When moving someone INTO a released state, their
+  // escalation clock restarts from this exact moment, same principle as a normal stage release:
+  // their warning/flagging countdown must count from when they actually became free to act at
+  // THIS new level, never from whenever they were originally tagged at their old one. Moving
+  // someone to an on-hold level clears their release info so they correctly stop being counted
+  // as "released" until their new level's turn comes.
+  async changeAssigneeStage(taskId, username, newStage, isReleased, changedByName) {
+    const now = new Date().toISOString();
+    const result = isReleased
+      ? await run('UPDATE task_assignees SET stage=?, is_released=1, released_at=?, released_by=?, escalation_baseline_at=? WHERE task_id=? AND username=?',
+          [newStage, now, changedByName || null, now, taskId, username])
+      : await run('UPDATE task_assignees SET stage=?, is_released=0, released_at=NULL, released_by=NULL WHERE task_id=? AND username=?',
+          [newStage, taskId, username]);
     if (result.rowCount === 0) return false;
     await module.exports.bumpTaskVersion(taskId);
     return true;
@@ -586,6 +621,7 @@ module.exports = {
   async listIncompleteAssigneesForEscalation() {
     return all(`
       SELECT ta.task_id, ta.username, ta.reminder_3day_sent_at, ta.warning_5day_sent_at, ta.warning_7day_sent_at, ta.warning_12day_sent_at, ta.is_released,
+             ta.last_recurring_reminder_at, ta.warning_48hr_sent_at, ta.flagged_60hr_sent_at,
              COALESCE(ta.escalation_baseline_at, t.created_at) as escalation_baseline_at,
              t.title, t.created_at, t.created_by, t.created_by_username
       FROM task_assignees ta JOIN tasks t ON t.id = ta.task_id
@@ -593,7 +629,8 @@ module.exports = {
     `);
   },
   async markEscalationStage(taskId, username, stage) {
-    const col = stage === 3 ? 'reminder_3day_sent_at' : (stage === 5 ? 'warning_5day_sent_at' : (stage === 7 ? 'warning_7day_sent_at' : 'warning_12day_sent_at'));
+    const columnMap = { 3: 'reminder_3day_sent_at', 5: 'warning_5day_sent_at', 7: 'warning_7day_sent_at', 12: 'warning_12day_sent_at', recurring: 'last_recurring_reminder_at', 48: 'warning_48hr_sent_at', 60: 'flagged_60hr_sent_at' };
+    const col = columnMap[stage] || 'warning_12day_sent_at';
     await run(`UPDATE task_assignees SET ${col}=? WHERE task_id=? AND username=?`, [new Date().toISOString(), taskId, username]);
   },
   async listAdminUsernames() { const rows = await all("SELECT username FROM users WHERE role='admin'"); return rows.map(r => r.username); },
@@ -621,11 +658,18 @@ module.exports = {
   async markDeadlineOverdueNotified(id) { await run('UPDATE tasks SET deadline_overdue_notified=1 WHERE id=?', [id]); },
   async listIncompleteAssigneesForDeadlineCheck() {
     return all(`
-      SELECT ta.task_id, ta.username, ta.individual_deadline, ta.deadline_reminder_sent_at, ta.deadline_overdue_notified_at, ta.is_released,
+      SELECT ta.task_id, ta.username, ta.individual_deadline, ta.individual_deadline_set_at, ta.deadline_reminder_sent_at, ta.deadline_overdue_notified_at, ta.is_released,
+             ta.deadline_reminder_24h_sent_at, ta.deadline_reminder_12h_sent_at, ta.deadline_reminder_6h_sent_at, ta.deadline_reminder_2h_sent_at,
              t.title, t.deadline as task_deadline
       FROM task_assignees ta JOIN tasks t ON t.id = ta.task_id
       WHERE t.status='open' AND ta.completed_at IS NULL
     `);
+  },
+  async markAssigneeDeadlineTierSent(taskId, username, tier) {
+    const columnMap = { 24: 'deadline_reminder_24h_sent_at', 12: 'deadline_reminder_12h_sent_at', 6: 'deadline_reminder_6h_sent_at', 2: 'deadline_reminder_2h_sent_at' };
+    const col = columnMap[tier];
+    if (!col) return;
+    await run(`UPDATE task_assignees SET ${col}=? WHERE task_id=? AND username=?`, [new Date().toISOString(), taskId, username]);
   },
   async markAssigneeDeadlineReminderSent(taskId, username) { await run('UPDATE task_assignees SET deadline_reminder_sent_at=? WHERE task_id=? AND username=?', [new Date().toISOString(), taskId, username]); },
   async markAssigneeDeadlineOverdueNotified(taskId, username) { await run('UPDATE task_assignees SET deadline_overdue_notified_at=? WHERE task_id=? AND username=?', [new Date().toISOString(), taskId, username]); },
@@ -809,9 +853,14 @@ module.exports = {
     return rows.map(r => (new Date(r.submitted_at) - new Date(r.escalation_baseline_at)) / 86400000).filter(d => d >= 0);
   },
   async getWarningCountsByUser() {
+    // Reflects the current hour-based thresholds (48hr urgent warning, 60hr admin flag) — the
+    // old 5/7/12-day columns are kept in the schema for historical data but are no longer
+    // written to going forward, so counting them here would silently undercount everyone whose
+    // lateness happened after this system changed.
     const rows = await all(`
       SELECT username, COUNT(*) as c FROM task_assignees
       WHERE warning_5day_sent_at IS NOT NULL OR warning_7day_sent_at IS NOT NULL OR warning_12day_sent_at IS NOT NULL
+         OR warning_48hr_sent_at IS NOT NULL OR flagged_60hr_sent_at IS NOT NULL
       GROUP BY username
     `);
     const map = {};

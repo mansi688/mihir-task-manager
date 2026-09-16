@@ -43,7 +43,7 @@ function defaultUiState() {
     taskFormOpen: false, taskFormIsDrawing: false, taskFormTags: [],
     taskFormStages: [{ usernames: [] }], taskFormAutoRelease: false,
     followupFormTaskId: null, followupFormTags: [],
-    subtaskFormTaskId: null, subtaskFormTags: [], individualDeadlineFormTaskId: null,
+    subtaskFormTaskId: null, subtaskFormTags: [], individualDeadlineFormTaskId: null, reshuffleLevelsFormTaskId: null,
     cancelFormTaskId: null,
     addAssigneeFormTaskId: null, addAssigneeTags: [],
     taskSearchQuery: '', taskFilterProject: '', taskFilterPhase: '',
@@ -298,6 +298,20 @@ function deadlineDate(isoDeadline) {
   if (!isoDeadline) return null;
   return new Date(hasDeadlineTime(isoDeadline) ? isoDeadline : isoDeadline + 'T00:00:00');
 }
+// A genuine bug fix, not a style choice: deadlineDate() parses a date-only deadline ("2026-09-15")
+// to MIDNIGHT AT THE START of that day — comparing that directly against "now" would mark a task
+// due today as overdue for the entire day, the instant it turns midnight, rather than only once
+// that whole day has actually passed. A deadline that includes a specific time is compared
+// exactly as given; a date-only deadline is only overdue once its entire day has elapsed (i.e.
+// from the start of the NEXT day).
+function isOverdue(isoDeadline, now) {
+  if (!isoDeadline) return false;
+  now = now || new Date();
+  if (hasDeadlineTime(isoDeadline)) return deadlineDate(isoDeadline) < now;
+  const endOfDeadlineDay = new Date(isoDeadline + 'T00:00:00');
+  endOfDeadlineDay.setDate(endOfDeadlineDay.getDate() + 1);
+  return endOfDeadlineDay <= now;
+}
 function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function resizeImage(file, cb) {
   const reader = new FileReader();
@@ -529,12 +543,13 @@ function renderSidebar() {
   return `
   ${ui.sidebarOpen ? `<div class="sidebar-backdrop" data-act="close-sidebar"></div>` : ''}
   <aside class="sidebar ${ui.sidebarOpen ? 'open' : ''}" id="sidebar">
+    <button class="sidebar-close-bar" data-act="close-sidebar" type="button">✕ Close Menu</button>
     <div class="sidebar-header">
       <div class="brand-plate">
         <div class="brand-mark">${falconMark()}</div>
         <div><div class="brand-name">MIHIR</div><div class="brand-sub">Task Manager</div></div>
       </div>
-      <button class="close-x sidebar-close-btn" data-act="close-sidebar" title="Close menu">✕</button>
+      <button class="close-x sidebar-close-btn" data-act="close-sidebar" type="button" title="Close menu">✕</button>
       <div class="sidebar-role">
         <b>${esc(session.name)}</b>
         <span>${esc(session.designation || ROLE_LABEL[session.role] || session.role)}${session.team ? ` · ${esc(session.team)}` : ''}</span>
@@ -940,7 +955,7 @@ function renderTaskItem(t) {
   // A blocked task never shows as OVERDUE, however late its deadline is — the person waiting
   // on a prerequisite has no way to act, so flagging them as overdue would mark them unfairly
   // for someone else's delay.
-  const overdue = t.status === 'open' && !t.blocked && t.deadline && deadlineDate(t.deadline) < new Date();
+  const overdue = t.status === 'open' && !t.blocked && isOverdue(t.deadline);
   const checklist = t.checklist || [];
   const checklistDone = checklist.filter(c => c.is_checked).length;
   const isCreator = t.created_by_username === session.username;
@@ -1131,6 +1146,20 @@ function renderTaskItem(t) {
             <div class="col" style="flex:0;"><button class="btn btn-sm" data-save-individual-deadline="${t.id}" data-username="${esc(a.username)}">Save</button></div>
           </div>`).join('')}
       </div>` : ''}
+      ${assignees.length > 0 && new Set(assignees.map(a => a.stage)).size >= 1 ? `
+      <div style="margin-top:8px;">
+        <a href="#" class="small" data-act="toggle-reshuffle-levels" data-task-id="${t.id}">${ui.reshuffleLevelsFormTaskId === t.id ? 'Hide' : 'Reshuffle'} levels per person</a>
+      </div>
+      ${ui.reshuffleLevelsFormTaskId === t.id ? `
+      <div class="card" style="background:var(--panel-2);margin-top:8px;padding:10px 14px;">
+        <div class="small muted" style="margin-bottom:8px;">Moves someone to a different level — they're notified immediately, and released right away if the level below theirs is already fully approved (or if you move them to Level 1). Someone already completed and approved at their current level can't be reshuffled.</div>
+        ${assignees.map(a => `
+          <div class="row" style="align-items:flex-end;margin-bottom:6px;">
+            <div class="col small" style="flex:0;min-width:100px;">${esc(a.username)} <span class="small muted">(L${a.stage})</span></div>
+            <div class="col"><input type="number" min="1" step="1" id="reshuffle-level-${t.id}-${esc(a.username)}" placeholder="New level" ${a.decision === 'approve' && a.completed_at ? 'disabled title="Already completed and approved — cannot be reshuffled"' : ''}></div>
+            <div class="col" style="flex:0;"><button class="btn btn-sm" data-save-reshuffle-level="${t.id}" data-username="${esc(a.username)}" ${a.decision === 'approve' && a.completed_at ? 'disabled' : ''}>Move</button></div>
+          </div>`).join('')}
+      </div>` : ''}` : ''}
       ${ui.cancelFormTaskId === t.id ? `
         <div class="row" style="margin-top:8px;align-items:flex-end;">
           <div class="col"><label>Reason for cancelling (required)</label><input type="text" id="cancel-reason-${t.id}" placeholder="e.g. Duplicate of another task, project scope changed"></div>
@@ -1492,7 +1521,8 @@ function bindTaskForm() {
       if (warnEl) warnEl.innerHTML = result.warning ? `<div class="notice" style="border-color:var(--amber);">⚠️ ${esc(result.warning)}</div>` : `<div class="small muted">No historical concern found for this deadline.</div>`;
     } catch (e) { if (warnEl) warnEl.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
   };
-  document.querySelector('[data-act="submit-task"]').onclick = async () => {
+  const submitTaskBtn = document.querySelector('[data-act="submit-task"]');
+  if (submitTaskBtn) submitTaskBtn.onclick = async () => {
     const titleEl = document.getElementById('new-task-title');
     const deadlineEl = document.getElementById('new-task-deadline');
     const title = titleEl.value.trim();
@@ -1536,11 +1566,13 @@ function bindTaskForm() {
       await refreshData();
     } catch (e) { setBanner(e.message); render(); }
   };
-  document.querySelector('[data-act="cancel-task-form"]').onclick = () => {
+  const cancelTaskFormBtn = document.querySelector('[data-act="cancel-task-form"]');
+  if (cancelTaskFormBtn) cancelTaskFormBtn.onclick = () => {
     ui.taskFormOpen = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false;
     ui.pendingTaskFile = null; ui.pendingTaskFileName = null; render();
   };
-  document.getElementById('new-task-file').onchange = (ev) => {
+  const newTaskFileInput = document.getElementById('new-task-file');
+  if (newTaskFileInput) newTaskFileInput.onchange = (ev) => {
     const f = ev.target.files[0]; if (!f) return;
     readAnyFile(f, dataUrl => {
       ui.pendingTaskFile = dataUrl; ui.pendingTaskFileName = f.name;
@@ -1938,7 +1970,7 @@ function renderTodayFeed() {
   const openTasks = myTasks.filter(t => t.status === 'open');
   // Blocked tasks never count as overdue here either — same fairness reasoning as the per-task
   // OVERDUE badge: someone waiting on a prerequisite hasn't been given a fair chance yet.
-  const overdue = openTasks.filter(t => !t.blocked && t.deadline && deadlineDate(t.deadline) < now);
+  const overdue = openTasks.filter(t => !t.blocked && isOverdue(t.deadline, now));
   const dueToday = openTasks.filter(t => t.deadline && !isNaN(deadlineDate(t.deadline)) && isSameDay(deadlineDate(t.deadline), now));
   // "Today's relevant tasks" = anything due today OR finished today, deduped by id, so a task
   // that was due today and got closed today only counts once toward the progress bar.
@@ -3372,6 +3404,24 @@ function bindMyTasks() {
     try {
       await api(`/api/tasks/${taskId}/assignees/${encodeURIComponent(username)}/deadline`, { method: 'POST', body: JSON.stringify({ deadline }) });
       setBanner(deadline ? `Individual deadline set for ${username}.` : `Individual deadline cleared for ${username}.`, 'ok');
+      await refreshData();
+    } catch (e) { setBanner(e.message); render(); }
+  });
+  document.querySelectorAll('[data-act="toggle-reshuffle-levels"]').forEach(link => link.onclick = (e) => {
+    e.preventDefault();
+    const id = link.dataset.taskId;
+    ui.reshuffleLevelsFormTaskId = (ui.reshuffleLevelsFormTaskId === id) ? null : id;
+    render();
+  });
+  document.querySelectorAll('[data-save-reshuffle-level]').forEach(btn => btn.onclick = async () => {
+    const taskId = btn.dataset.saveReshuffleLevel;
+    const username = btn.dataset.username;
+    const input = document.getElementById(`reshuffle-level-${taskId}-${username}`);
+    const level = input ? input.value.trim() : '';
+    if (!level) { setBanner('Enter a level number first.'); render(); return; }
+    try {
+      const result = await api(`/api/tasks/${taskId}/assignees/${encodeURIComponent(username)}/level`, { method: 'POST', body: JSON.stringify({ level: parseInt(level, 10) }) });
+      setBanner(`${username} moved to Level ${result.newLevel}${result.isReleased ? ' and released to start now.' : ' (on hold for now).'}`, 'ok');
       await refreshData();
     } catch (e) { setBanner(e.message); render(); }
   });

@@ -318,6 +318,19 @@ function parseDeadline(deadline) {
   const d = new Date(iso);
   return isNaN(d) ? null : d;
 }
+// Same fix as the frontend's isOverdue(): a date-only deadline parses to midnight at the START
+// of that day, so comparing it directly against "now" would mark something due today as overdue
+// the instant it turns midnight — before the day it's actually due has even begun to pass. A
+// deadline with a specific time is compared exactly as given; a date-only one is only overdue
+// once its entire day has elapsed.
+function isDeadlinePassed(deadlineStr, now) {
+  if (!deadlineStr) return false;
+  now = now || new Date();
+  if (deadlineStr.includes('T')) { const d = parseDeadline(deadlineStr); return d && d <= now; }
+  const endOfDeadlineDay = new Date(deadlineStr + 'T00:00:00');
+  endOfDeadlineDay.setDate(endOfDeadlineDay.getDate() + 1);
+  return endOfDeadlineDay <= now;
+}
 // Shared involvement check: assignee, follow-up person, creator, or Admin. Used to gate both
 // commenting/attaching AND viewing a task's attachments — closes a real gap where the reply
 // endpoint previously had no server-side check at all (only the UI hid the box), so anyone
@@ -1709,6 +1722,42 @@ app.post('/api/tasks/:id/release-stage/:stageNum', auth(ALL_ROLES), async (req, 
   }
   res.json({ ok: true });
 });
+// Reshuffles a tagged person to a different level (stage) on an existing task — creator/Admin
+// only, same authority level as adding people or releasing a stage in the first place. Someone
+// who has already completed and been approved at their current level can't be reshuffled (their
+// work is done; moving them would leave the task in an inconsistent state), and moving them
+// changes their release/on-hold status and escalation clock exactly like a normal stage release
+// would, since from their perspective this IS effectively a fresh assignment at a new level.
+app.post('/api/tasks/:id/assignees/:username/level', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: 'Task not found.' });
+  if (task.status !== 'open') return res.status(400).json({ error: 'Task is not open.' });
+  const isCreator = task.created_by_username && task.created_by_username === req.user.username;
+  if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can change someone\'s level.' });
+
+  const assignees = await db.listAssignees(task.id);
+  const target = assignees.find(a => a.username === req.params.username);
+  if (!target) return res.status(404).json({ error: 'That person is not tagged on this task.' });
+  if (target.decision === 'approve' && target.completed_at) {
+    return res.status(400).json({ error: `${req.params.username} has already completed and been approved at their current level — can't be reshuffled.` });
+  }
+
+  const newLevel = parseInt((req.body || {}).level, 10);
+  if (!Number.isInteger(newLevel) || newLevel < 1) return res.status(400).json({ error: 'Level must be a positive whole number.' });
+  if (newLevel === target.stage) return res.status(400).json({ error: `${req.params.username} is already at Level ${newLevel}.` });
+
+  const isReleased = newLevel === 1 || await db.isStageFullyApproved(task.id, newLevel - 1);
+  const didChange = await db.changeAssigneeStage(task.id, req.params.username, newLevel, isReleased, req.user.name);
+  if (!didChange) return res.status(400).json({ error: 'Could not change level — please try again.' });
+
+  await db.createNotification({
+    username: req.params.username, type: 'level_changed',
+    message: `Your level is now changed to Level ${newLevel} for "${task.title}"${isReleased ? ' — you can start now.' : ` — you're on hold until Level ${newLevel - 1} finishes their part.`}`,
+    task_id: task.id,
+  });
+  await auditFromReq(req, 'assignee_level_changed', `Moved ${req.params.username} to Level ${newLevel} on "${task.title}".`);
+  res.json({ ok: true, newLevel, isReleased });
+});
 app.post('/api/tasks/:id/reject/:username', auth(ALL_ROLES), async (req, res) => {
   const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
@@ -1877,57 +1926,56 @@ async function sendEscalatingTaskReminders() {
   const allEscalationRows = await db.listIncompleteAssigneesForEscalation();
   const escalationBlockedFlags = await Promise.all(allEscalationRows.map(r => db.isTaskBlocked(r.task_id)));
   const rows = allEscalationRows.filter((r, idx) => !escalationBlockedFlags[idx] && r.is_released);
-  const msPerDay = 86400000;
+  const msPerHour = 3600000;
   const adminUsernames = await db.listAdminUsernames();
   const hrUsernames = (await db.listUsers()).filter(u => isHRTeam(u.team)).map(u => u.username);
   let sent = 0;
   for (const r of rows) {
-    const ageDays = (Date.now() - new Date(r.escalation_baseline_at).getTime()) / msPerDay;
+    // Every clock here starts from escalation_baseline_at specifically — set the moment someone
+    // is actually assigned AND released to act (task creation for a Level 1 person, or the exact
+    // release moment for anyone in a later stage) — never from when the task itself was created,
+    // so someone on hold for days before their stage releases is never penalized for time they
+    // couldn't have acted during.
+    const hoursElapsed = (Date.now() - new Date(r.escalation_baseline_at).getTime()) / msPerHour;
     const creatorUsername = r.created_by_username;
     const creatorDiffersFromAssignee = creatorUsername && creatorUsername !== r.username;
-    // Day 3: a reminder to the person themselves — not yet a flag to anyone else.
-    if (ageDays >= 3 && !r.reminder_3day_sent_at) {
-      await db.createNotification({ username: r.username, type: 'task_reminder_3day', message: `Still open after 3 days — your part of "${r.title}" needs finishing.`, task_id: r.task_id });
-      await db.markEscalationStage(r.task_id, r.username, 3);
+
+    // Every 6 hours: a recurring nudge to the person themselves — not a flag to anyone else yet,
+    // just repeated until they act. Recurring (not one-time), so it checks time since the LAST
+    // reminder, not time since the baseline.
+    const lastReminder = r.last_recurring_reminder_at ? new Date(r.last_recurring_reminder_at).getTime() : new Date(r.escalation_baseline_at).getTime();
+    const hoursSinceLastReminder = (Date.now() - lastReminder) / msPerHour;
+    if (hoursElapsed >= 6 && hoursSinceLastReminder >= 6) {
+      await db.createNotification({ username: r.username, type: 'task_reminder_recurring', message: `Reminder — your part of "${r.title}" is still not done.`, task_id: r.task_id });
+      await db.markEscalationStage(r.task_id, r.username, 'recurring');
       sent++;
     }
-    // Day 5: flags BOTH Admin and HR — a distinct notification from the creator-facing warnings
-    // below, so both audiences see late people even on tasks they didn't create themselves. The
-    // person themselves is deliberately told only that THEY are flagged for THIS task, not that
-    // HR/Admin specifically were notified — that visibility detail is intentionally not surfaced
-    // to the person being flagged.
-    if (ageDays >= 5 && !r.warning_5day_sent_at) {
+
+    // 48 hours: an urgent warning — explicitly tells them a flag to Admin is coming if they
+    // don't act, but doesn't yet involve anyone else.
+    if (hoursElapsed >= 48 && !r.warning_48hr_sent_at) {
+      await db.createNotification({ username: r.username, type: 'task_warning_urgent', message: `Urgent — "${r.title}" has been open 48 hours with your part not done. Complete it now, or you will be flagged to Admin.`, task_id: r.task_id });
+      if (creatorDiffersFromAssignee) {
+        await db.createNotification({ username: creatorUsername, type: 'task_warning_creator', message: `${r.username} has not completed their part of "${r.title}" in 48 hours.`, task_id: r.task_id });
+      }
+      await db.markEscalationStage(r.task_id, r.username, 48);
+      sent++;
+    }
+
+    // 60 hours: flags BOTH Admin and HR, naming the task and when it was assigned — a distinct
+    // notification from the creator-facing warnings above. The person themselves is deliberately
+    // told only that THEY are flagged for THIS task, never that HR/Admin specifically were
+    // notified — that visibility detail is intentionally not surfaced to the person being flagged.
+    if (hoursElapsed >= 60 && !r.flagged_60hr_sent_at) {
+      const assignedDateStr = new Date(r.escalation_baseline_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
       const notifiedAlready = new Set([r.username]);
       for (const a of adminUsernames.concat(hrUsernames)) {
         if (notifiedAlready.has(a)) continue;
         notifiedAlready.add(a);
-        await db.createNotification({ username: a, type: 'admin_late_flag', message: `${r.username} has not completed their part of "${r.title}" in 5 days.`, task_id: r.task_id });
+        await db.createNotification({ username: a, type: 'admin_late_flag', message: `${r.username} has not completed "${r.title}" (assigned ${assignedDateStr}) — still incomplete after 60 hours.`, task_id: r.task_id });
       }
       await db.createNotification({ username: r.username, type: 'task_flagged', message: `You are flagged for incompletion of "${r.title}".`, task_id: r.task_id });
-      await db.markEscalationStage(r.task_id, r.username, 5);
-      sent++;
-    }
-    // Day 7: warn the person, notify the creator (existing), and flag Admin+HR again.
-    if (ageDays >= 7 && !r.warning_7day_sent_at) {
-      await db.createNotification({ username: r.username, type: 'task_warning', message: `Warning — "${r.title}" has been open 7 days with your part not done.`, task_id: r.task_id });
-      if (creatorDiffersFromAssignee) {
-        await db.createNotification({ username: creatorUsername, type: 'task_warning_creator', message: `${r.username} has not completed their part of "${r.title}" in 7 days.`, task_id: r.task_id });
-      }
-      for (const a of adminUsernames.concat(hrUsernames)) {
-        if (a !== r.username && a !== creatorUsername) await db.createNotification({ username: a, type: 'admin_late_flag', message: `Still flagged — ${r.username} has not completed their part of "${r.title}" in 7 days.`, task_id: r.task_id });
-      }
-      await db.markEscalationStage(r.task_id, r.username, 7);
-      sent++;
-    }
-    // Day 12: notify the creator again (existing), and flag Admin+HR a third time.
-    if (ageDays >= 12 && !r.warning_12day_sent_at) {
-      if (creatorDiffersFromAssignee) {
-        await db.createNotification({ username: creatorUsername, type: 'task_warning_creator', message: `Still not done — ${r.username} has now not completed their part of "${r.title}" in 12 days.`, task_id: r.task_id });
-      }
-      for (const a of adminUsernames.concat(hrUsernames)) {
-        if (a !== r.username && a !== creatorUsername) await db.createNotification({ username: a, type: 'admin_late_flag', message: `Still flagged — ${r.username} has not completed their part of "${r.title}" in 12 days.`, task_id: r.task_id });
-      }
-      await db.markEscalationStage(r.task_id, r.username, 12);
+      await db.markEscalationStage(r.task_id, r.username, 60);
       sent++;
     }
   }
@@ -1949,7 +1997,7 @@ async function sendDeadlineReminders() {
     const deadlineDate = parseDeadline(t.deadline);
     if (!deadlineDate) continue;
     if (await db.isTaskBlocked(t.id)) continue; // blocked tasks stay exempt from all reminder types
-    if (!t.deadline_overdue_notified && deadlineDate <= now) {
+    if (!t.deadline_overdue_notified && isDeadlinePassed(t.deadline, now)) {
       if (t.created_by_username) await db.createNotification({ username: t.created_by_username, type: 'deadline_passed', message: `"${t.title}" has passed its deadline and is still open.`, task_id: t.id });
       await db.markDeadlineOverdueNotified(t.id);
       sent++;
@@ -1967,12 +2015,25 @@ async function sendDeadlineReminders() {
     if (!effectiveDeadlineStr) continue;
     const deadlineDate = parseDeadline(effectiveDeadlineStr);
     if (!deadlineDate) continue;
-    if (!r.deadline_reminder_sent_at && deadlineDate > now && (deadlineDate.getTime() - now.getTime()) <= 24 * 3600000) {
-      await db.createNotification({ username: r.username, type: 'deadline_soon', message: `"${r.title}" is due soon (${effectiveDeadlineStr}).`, task_id: r.task_id });
-      await db.markAssigneeDeadlineReminderSent(r.task_id, r.username);
-      sent++;
+    // Increasingly frequent reminders as the deadline actually nears, replacing the old single
+    // "within 24 hours" notice — each tier fires once, independently of the others, so someone
+    // who's been on this task for a while still gets a fresh nudge at each real milestone rather
+    // than one lone reminder a full day out and then silence until it's overdue.
+    const hoursRemaining = (deadlineDate.getTime() - now.getTime()) / 3600000;
+    const tiers = [
+      { hours: 24, sentAt: r.deadline_reminder_24h_sent_at, label: '24 hours' },
+      { hours: 12, sentAt: r.deadline_reminder_12h_sent_at, label: '12 hours' },
+      { hours: 6, sentAt: r.deadline_reminder_6h_sent_at, label: '6 hours' },
+      { hours: 2, sentAt: r.deadline_reminder_2h_sent_at, label: '2 hours' },
+    ];
+    for (const tier of tiers) {
+      if (!tier.sentAt && hoursRemaining > 0 && hoursRemaining <= tier.hours) {
+        await db.createNotification({ username: r.username, type: 'deadline_soon', message: `"${r.title}" is due in about ${tier.label} (${effectiveDeadlineStr}).`, task_id: r.task_id });
+        await db.markAssigneeDeadlineTierSent(r.task_id, r.username, tier.hours);
+        sent++;
+      }
     }
-    if (!r.deadline_overdue_notified_at && deadlineDate <= now) {
+    if (!r.deadline_overdue_notified_at && isDeadlinePassed(effectiveDeadlineStr, now)) {
       const whoseDeadline = r.individual_deadline ? 'your individual deadline' : 'its deadline';
       await db.createNotification({ username: r.username, type: 'deadline_passed', message: `"${r.title}" has passed ${whoseDeadline} and is still open.`, task_id: r.task_id });
       await db.markAssigneeDeadlineOverdueNotified(r.task_id, r.username);

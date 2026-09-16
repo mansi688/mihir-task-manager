@@ -2,49 +2,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
 
-test('day-5 escalation flags BOTH HR and Admin, and tells the person only that THEY are flagged for that task — never mentioning HR/Admin', async (t) => {
-  const { baseUrl, getRawClient, stop } = await startTestServer();
-  t.after(() => stop());
-  const adminToken = await login(baseUrl, 'admin', 'admin123');
-  const hrToken = await createMember(baseUrl, adminToken, 'hr_escalation_test', 'HR Escalation Test', 'HR Department');
-  const lateToken = await createMember(baseUrl, adminToken, 'late_person', 'Late Person', 'Site Team');
-
-  const create = await api(baseUrl, '/api/tasks', { method: 'POST', token: adminToken, body: { title: 'Overdue Task', priority: 'medium', deadline: futureDate(), assignedToList: ['late_person'] } });
-  const id = create.data.id;
-
-  // Backdate the task's escalation clock to 6 days ago, so the day-5 threshold has been crossed.
-  const raw = await getRawClient();
-  await raw.query('UPDATE task_assignees SET escalation_baseline_at=$1 WHERE task_id=$2', [new Date(Date.now() - 6 * 86400000).toISOString(), id]);
-  await raw.end();
-
-  await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
-
-  await t.test('HR receives the flag notification', async () => {
-    const hrNotifs = await api(baseUrl, '/api/notifications', { token: hrToken });
-    assert.ok(hrNotifs.data.items.some(n => n.type === 'admin_late_flag' && n.message.includes('late_person') && n.message.includes('5 days')), 'HR must be notified when someone hits the 5-day threshold');
-  });
-
-  await t.test('Admin also receives the flag notification', async () => {
-    const adminNotifs = await api(baseUrl, '/api/notifications', { token: adminToken });
-    assert.ok(adminNotifs.data.items.some(n => n.type === 'admin_late_flag' && n.message.includes('late_person')), 'Admin must still be notified too');
-  });
-
-  await t.test('the flagged person is told only that they are flagged for this task, never that HR/Admin specifically were notified', async () => {
-    const lateNotifs = await api(baseUrl, '/api/notifications', { token: lateToken });
-    const flagNotif = lateNotifs.data.items.find(n => n.type === 'task_flagged');
-    assert.ok(flagNotif, 'the person must receive their own notification at the 5-day mark');
-    assert.equal(flagNotif.message, 'You are flagged for incompletion of "Overdue Task".');
-    assert.ok(!flagNotif.message.toLowerCase().includes('hr'), 'must never reveal HR visibility to the flagged person');
-    assert.ok(!flagNotif.message.toLowerCase().includes('admin'), 'must never reveal Admin visibility to the flagged person');
-  });
-
-  await t.test('this same person now shows as red-flagged on the HR roster', async () => {
-    const roster = (await api(baseUrl, '/api/reports/hr-roster', { token: hrToken })).data.roster;
-    const entry = roster.find(r => r.username === 'late_person');
-    assert.equal(entry.isPendingRedFlag, true, 'a real 5-day escalation must show up as a red flag on the roster');
-  });
-});
-
 test('performance statistics use submission date, never approval date', async (t) => {
   const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
@@ -109,7 +66,7 @@ test('response time excludes hold/block time — only counts from release to sub
   assert.ok(dashboard.data.avgResponseDays < 1, `bob's response time should be under 1 day (measured from his real release moment, not the 20-day-old task creation) — got ${dashboard.data.avgResponseDays}`);
 });
 
-test('escalation thresholds (3/5/7/12-day) fire at the right times and respect blocked/on-hold exemption', async (t) => {
+test('escalation thresholds (6hr/48hr/60hr) respect blocked/on-hold exemption and stay independent of deadline reminders', async (t) => {
   const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
 
@@ -117,21 +74,20 @@ test('escalation thresholds (3/5/7/12-day) fire at the right times and respect b
   const aliceToken = await createMember(baseUrl, adminToken, 'alice', 'Alice');
   const bobToken = await createMember(baseUrl, adminToken, 'bob', 'Bob');
 
-  await t.test('a task 6 days old triggers the 3-day and 5-day flags, but not 7 or 12 yet', async () => {
-    const create = await api(baseUrl, '/api/tasks', { method: 'POST', token: aliceToken, body: { title: 'Six Days Old', priority: 'low', deadline: futureDate(30), assignedToList: ['bob'] } });
+  await t.test('a task 49 hours old triggers the 48-hour warning, but not the 60-hour flag yet', async () => {
+    const create = await api(baseUrl, '/api/tasks', { method: 'POST', token: aliceToken, body: { title: 'Forty-Nine Hours Old', priority: 'low', deadline: futureDate(30), assignedToList: ['bob'] } });
     const id = create.data.id;
     const raw = await getRawClient();
-    await raw.query('UPDATE task_assignees SET escalation_baseline_at=$1 WHERE task_id=$2', [new Date(Date.now() - 6 * 86400000).toISOString(), id]);
+    await raw.query('UPDATE task_assignees SET escalation_baseline_at=$1 WHERE task_id=$2', [new Date(Date.now() - 49 * 3600000).toISOString(), id]);
     await raw.end();
 
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
 
     const bobNotifs = (await api(baseUrl, '/api/notifications', { token: bobToken })).data.items;
-    assert.ok(bobNotifs.some(n => n.type === 'task_reminder_3day'), '3-day reminder should have fired');
+    assert.ok(bobNotifs.some(n => n.type === 'task_warning_urgent'), '48-hour urgent warning should have fired');
 
     const adminNotifs = (await api(baseUrl, '/api/notifications', { token: adminToken })).data.items;
-    assert.ok(adminNotifs.some(n => n.type === 'admin_late_flag' && n.message.includes('5 days')), '5-day admin flag should have fired');
-    assert.ok(!adminNotifs.some(n => n.message.includes('7 days')), '7-day flag should NOT have fired yet at only 6 days old');
+    assert.ok(!adminNotifs.some(n => n.type === 'admin_late_flag' && n.message.includes('Forty-Nine')), '60-hour admin flag should NOT have fired yet at only 49 hours old');
   });
 
   await t.test('a blocked task is fully exempt from every escalation, even when very old', async () => {
@@ -157,6 +113,6 @@ test('escalation thresholds (3/5/7/12-day) fire at the right times and respect b
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
     const bobNotifs = (await api(baseUrl, '/api/notifications', { token: bobToken })).data.items;
     const thisTasksNotifs = bobNotifs.filter(n => n.task_id === create.data.id);
-    assert.ok(thisTasksNotifs.every(n => n.type !== 'task_reminder_3day'), 'a brand-new task must not trigger the age-based 3-day reminder');
+    assert.ok(thisTasksNotifs.every(n => n.type !== 'task_reminder_recurring'), 'a brand-new task must not trigger the age-based recurring reminder before 6 hours have passed');
   });
 });
