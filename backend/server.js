@@ -62,29 +62,6 @@ async function sendOtpEmail(toEmail, otp, name) {
     text: `Hi ${name},\n\nYour password reset code is: ${otp}\n\nThis code expires in 10 minutes. If you didn't request this, you can ignore this email.`,
   });
 }
-// Lets an Admin verify SMTP is actually configured correctly — without needing to trigger a
-// real password reset and dig through logs to see if it worked. Sends a genuine test email to
-// the Admin's own registered address (never an arbitrary address someone types in, so this
-// can't be used to relay spam through the server) and returns the real underlying error message
-// on failure, since "email is not configured" and "your SMTP host rejected the login" need very
-// different fixes and a generic error would leave someone guessing.
-app.post('/api/admin/test-email', auth(['admin']), async (req, res) => {
-  if (!mailTransporter) return res.status(400).json({ error: 'SMTP is not configured on this server yet — set SMTP_HOST, SMTP_USER, and SMTP_PASS as environment variables first.' });
-  const adminUser = await db.getUser(req.user.username);
-  if (!adminUser.email) return res.status(400).json({ error: 'Add an email address to your own profile first, then try again — the test email sends there.' });
-  try {
-    await mailTransporter.sendMail({
-      from: MAIL_FROM,
-      to: adminUser.email,
-      subject: 'MIHIR Task Manager — Test Email',
-      text: `Hi ${adminUser.name},\n\nThis is a test email confirming your SMTP configuration is working correctly. Password reset emails will be sent using this same connection.`,
-    });
-    res.json({ ok: true, sentTo: adminUser.email });
-  } catch (e) {
-    res.status(502).json({ error: `SMTP is configured, but sending failed: ${e.message}` });
-  }
-});
-
 // ---- Push notifications (optional) ----
 // A real PWA/Web Push setup — works from the browser on both desktop and mobile, no App Store
 // submission needed, and no paid third-party service (browsers' own push services, run by
@@ -293,6 +270,15 @@ function getISTHour(isoString) {
   const utcMs = new Date(isoString).getTime();
   if (isNaN(utcMs)) return NaN;
   return new Date(utcMs + IST_OFFSET_MS).getUTCHours();
+}
+// Same IST conversion as getISTHour, but for the CALENDAR DATE rather than the hour — needed so
+// Peak Hours can be scoped to today specifically, in the same timezone its hour buckets already
+// use. Without this, the chart was silently mixing today's activity with every previous day's,
+// since only the hour-of-day was ever extracted and the actual date was discarded entirely.
+function getISTDateString(isoString) {
+  const utcMs = new Date(isoString).getTime();
+  if (isNaN(utcMs)) return null;
+  return new Date(utcMs + IST_OFFSET_MS).toISOString().slice(0, 10);
 }
 function genId(prefix) { return prefix + '-' + Math.random().toString(36).slice(2, 8).toUpperCase(); }
 function isDataUrl(v) { return typeof v === 'string' && v.startsWith('data:'); }
@@ -795,6 +781,11 @@ app.get('/api/reports/peak-hours', auth(['admin', 'director']), async (req, res)
   }
   const data = await db.getAllActivityTimestamps();
   const hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, taskCreated: 0, replies: 0, submissions: 0, approvals: 0, logins: 0, total: 0 }));
+  // Scoped to TODAY specifically (in IST, matching the hour extraction below) — this used to
+  // aggregate activity across the site's ENTIRE history into these same 24 buckets, silently
+  // mixing today's pattern with every previous day's. A real, meaningful accuracy bug: "peak
+  // hours" should mean today's actual rhythm, not an all-time blur that never changes shape.
+  const todayIST = getISTDateString(new Date().toISOString());
   // "total" (and therefore the "busiest hour") only counts genuine work — creating a task,
   // commenting, submitting, approving. A login isn't doing anything; someone who just opens the
   // app and looks around shouldn't register as "an activity" the same as someone who actually
@@ -802,6 +793,7 @@ app.get('/api/reports/peak-hours', auth(['admin', 'director']), async (req, res)
   const bucket = (rows, key, countsAsWork) => rows.forEach(r => {
     if (username && username !== 'all' && r.username !== username) return;
     if (allowedUsernames && !allowedUsernames.has(r.username)) return;
+    if (getISTDateString(r.created_at) !== todayIST) return;
     const h = getISTHour(r.created_at);
     if (isNaN(h)) return;
     hours[h][key]++;
@@ -1618,6 +1610,13 @@ app.post('/api/tasks/:id/assignees/:username/deadline', auth(ALL_ROLES), async (
   const deadline = str((req.body || {}).deadline).trim();
   if (deadline && !parseDeadline(deadline)) return res.status(400).json({ error: 'Not a valid date.' });
   await db.setIndividualDeadline(task.id, req.params.username, deadline || null);
+  if (req.params.username !== req.user.username) {
+    await db.createNotification({
+      username: req.params.username, type: 'individual_deadline_set',
+      message: deadline ? `${req.user.name} set your individual deadline for "${task.title}" to ${deadline}.` : `${req.user.name} cleared your individual deadline for "${task.title}" — the task's overall deadline applies again.`,
+      task_id: task.id,
+    });
+  }
   res.json({ ok: true });
 });
 app.delete('/api/tasks/:id/assignees/:username', auth(ALL_ROLES), async (req, res) => {
@@ -1795,7 +1794,7 @@ app.post('/api/tasks/:id/reject/:username', auth(ALL_ROLES), async (req, res) =>
   if (!(await db.resetAssigneeSubmission(task.id, req.params.username))) return res.status(400).json({ error: 'This submission was already handled — probably by someone else just now.' });
   await db.addReply(task.id, { by_username: req.user.username, by_name: req.user.name, message: `Rejected ${req.params.username}'s submission: ${reason} — needs to be redone and resubmitted.` });
   if (req.params.username !== req.user.username) {
-    await db.createNotification({ username: req.params.username, type: 'task_reply', message: `${req.user.name} rejected your part of "${task.title}": ${reason} — please redo and resubmit.`, task_id: task.id });
+    await db.createNotification({ username: req.params.username, type: 'task_rejected', message: `${req.user.name} rejected your part of "${task.title}": ${reason} — please redo and resubmit.`, task_id: task.id });
   }
   res.json({ ok: true });
 });
@@ -1986,12 +1985,12 @@ async function sendEscalatingTaskReminders() {
     const creatorUsername = r.created_by_username;
     const creatorDiffersFromAssignee = creatorUsername && creatorUsername !== r.username;
 
-    // Every 6 hours: a recurring nudge to the person themselves — not a flag to anyone else yet,
+    // Every 3 hours: a recurring nudge to the person themselves — not a flag to anyone else yet,
     // just repeated until they act. Recurring (not one-time), so it checks time since the LAST
     // reminder, not time since the baseline.
     const lastReminder = r.last_recurring_reminder_at ? new Date(r.last_recurring_reminder_at).getTime() : new Date(r.escalation_baseline_at).getTime();
     const hoursSinceLastReminder = (Date.now() - lastReminder) / msPerHour;
-    if (hoursElapsed >= 6 && hoursSinceLastReminder >= 6) {
+    if (hoursElapsed >= 3 && hoursSinceLastReminder >= 3) {
       await db.createNotification({ username: r.username, type: 'task_reminder_recurring', message: `Reminder — your part of "${r.title}" is still not done.`, task_id: r.task_id });
       await db.markEscalationStage(r.task_id, r.username, 'recurring');
       sent++;

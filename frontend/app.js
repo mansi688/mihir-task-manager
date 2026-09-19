@@ -799,67 +799,11 @@ async function afterLogin() { await refreshData(); }
 
 // ---- Push notifications (PWA) ----
 // Registering the service worker is harmless and done unconditionally (needed for the app to be
-// installable at all) — but actually subscribing to push, which triggers a real browser
-// permission prompt, only ever happens when the person explicitly clicks "Enable" in My Profile.
+// installable at all). The subscribe/unsubscribe UI that used to live in My Profile was removed
+// on request; the service worker registration itself stays, since it's what makes the app
+// installable as a PWA at all, independent of push notifications specifically.
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/service-worker.js').catch(() => { /* fine on browsers without support */ });
-}
-function urlBase64ToUint8Array(base64String) {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = atob(base64);
-  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
-}
-async function updatePushStatusUI() {
-  const statusEl = document.getElementById('push-status-text');
-  const enableBtn = document.getElementById('enable-push-btn');
-  const disableBtn = document.getElementById('disable-push-btn');
-  if (!statusEl) return;
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    statusEl.textContent = "This browser doesn't support push notifications.";
-    return;
-  }
-  try {
-    const { publicKey } = await api('/api/push/vapid-public-key');
-    if (!publicKey) {
-      statusEl.textContent = "Push notifications aren't set up on this server yet — ask your Admin.";
-      return;
-    }
-    const reg = await navigator.serviceWorker.ready;
-    const existing = await reg.pushManager.getSubscription();
-    if (existing) {
-      statusEl.textContent = 'Push notifications are ON for this device.';
-      if (disableBtn) disableBtn.style.display = 'inline-block';
-    } else {
-      statusEl.textContent = 'Push notifications are OFF for this device.';
-      if (enableBtn) enableBtn.style.display = 'inline-block';
-    }
-  } catch (e) { statusEl.textContent = 'Could not check push notification status.'; }
-}
-async function enablePushNotifications() {
-  try {
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') { setBanner('Notification permission was not granted.'); render(); return; }
-    const { publicKey } = await api('/api/push/vapid-public-key');
-    if (!publicKey) { setBanner("Push notifications aren't configured on this server yet."); render(); return; }
-    const reg = await navigator.serviceWorker.ready;
-    const subscription = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) });
-    await api('/api/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: subscription.toJSON() }) });
-    setBanner('Push notifications enabled on this device.', 'ok');
-    render();
-  } catch (e) { setBanner('Could not enable push notifications: ' + e.message); render(); }
-}
-async function disablePushNotifications() {
-  try {
-    const reg = await navigator.serviceWorker.ready;
-    const subscription = await reg.pushManager.getSubscription();
-    if (subscription) {
-      await api('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: subscription.endpoint }) });
-      await subscription.unsubscribe();
-    }
-    setBanner('Push notifications turned off on this device.', 'ok');
-    render();
-  } catch (e) { setBanner('Could not turn off push notifications: ' + e.message); render(); }
 }
 let lastDataFingerprint = null;
 // opts.background=true marks a silent 30s poll rather than a response to something the person
@@ -1628,6 +1572,7 @@ function bindTaskForm() {
   if (submitTaskBtn) submitTaskBtn.onclick = async () => {
     const titleEl = document.getElementById('new-task-title');
     const deadlineEl = document.getElementById('new-task-deadline');
+    if (!titleEl || !deadlineEl) { setBanner('Something went wrong finding the form fields — try closing and reopening the New Task form.'); render(); return; }
     const title = titleEl.value.trim();
     const description = document.getElementById('new-task-desc').value.trim();
     const project = document.getElementById('new-task-project').value.trim();
@@ -1746,6 +1691,7 @@ function bindApprovalForm() {
   const submitBtn = document.querySelector('[data-act="submit-approval"]');
   if (submitBtn) submitBtn.onclick = async () => {
     const titleEl = document.getElementById('new-approval-title');
+    if (!titleEl) { setBanner('Something went wrong finding the form — try again.'); render(); return; }
     const title = titleEl.value.trim();
     const description = document.getElementById('new-approval-desc').value.trim();
     const reviewers = tagPicker.getSelected();
@@ -1921,7 +1867,13 @@ function renderCalendarMonthView() {
   const sourceTasks = withDeadlines;
   const tasksByDate = new Map();
   sourceTasks.forEach(t => {
-    const dateKey = t.deadline.slice(0, 10); // strip time-of-day, if any — bucketing is by day here
+    // Uses the effective deadline AS IT APPLIES TO THE PERSON VIEWING the calendar — if they're
+    // tagged on this task with their own individual deadline set, that's the date that actually
+    // matters to them, not the task's overall one. Previously this always used the task's
+    // overall deadline regardless, so changing someone's individual deadline never moved
+    // anything on the calendar at all — a real, meaningful gap between what was set and what
+    // was shown.
+    const dateKey = effectiveDeadlineFor(t).slice(0, 10); // strip time-of-day, if any — bucketing is by day here
     if (!tasksByDate.has(dateKey)) tasksByDate.set(dateKey, []);
     tasksByDate.get(dateKey).push(t);
   });
@@ -1968,6 +1920,10 @@ function renderCalendarMonthView() {
 // Week view: tasks with a deadline TIME are positioned like calendar events at that hour;
 // tasks with only a date (no time) show in an "all-day" strip at the top of that day's column —
 // same distinction Google Calendar makes between timed events and all-day events.
+function effectiveDeadlineFor(task) {
+  const myAssigneeRow = (task.assignees || []).find(a => a.username === session.username);
+  return (myAssigneeRow && myAssigneeRow.individual_deadline) || task.deadline;
+}
 function renderCalendarWeekView() {
   const weekStart = ui.calendarWeekStart || startOfWeekIso(toISODateLocal(new Date()));
   const startDate = new Date(weekStart + 'T00:00:00');
@@ -1979,8 +1935,8 @@ function renderCalendarWeekView() {
   const hourRows = []; for (let h = WEEK_VIEW_START_HOUR; h <= WEEK_VIEW_END_HOUR; h++) hourRows.push(h);
   const dayData = days.map(d => {
     const iso = toISODateLocal(d);
-    const dayTasks = sourceTasks.filter(t => t.deadline.slice(0, 10) === iso);
-    return { date: d, iso, allDay: dayTasks.filter(t => !hasDeadlineTime(t.deadline)), timed: dayTasks.filter(t => hasDeadlineTime(t.deadline)) };
+    const dayTasks = sourceTasks.filter(t => effectiveDeadlineFor(t).slice(0, 10) === iso);
+    return { date: d, iso, allDay: dayTasks.filter(t => !hasDeadlineTime(effectiveDeadlineFor(t))), timed: dayTasks.filter(t => hasDeadlineTime(effectiveDeadlineFor(t))) };
   });
   const selectedTask = ui.calendarWeekSelectedTaskId ? sourceTasks.find(t => t.id === ui.calendarWeekSelectedTaskId) : null;
   return `
@@ -2183,18 +2139,6 @@ function renderProfileView() {
     <button class="btn btn-primary btn-sm" style="margin-top:8px;" data-act="save-profile-email">Save Email</button>
   </div>
   <div class="card">
-    <div class="card-title">Phone (WhatsApp Notifications)</div>
-    <p class="small muted">Optional — if your Admin has WhatsApp notifications set up on this server, task notifications will also be sent here. Include your country code, e.g. +919876543210.</p>
-    <label>Phone Number</label><input type="text" id="profile-phone" value="${esc(session.phone || '')}" placeholder="+919876543210">
-    <button class="btn btn-primary btn-sm" style="margin-top:8px;" data-act="save-profile-phone">Save Phone</button>
-  </div>
-  <div class="card">
-    <div class="card-title">Push Notifications</div>
-    <p class="small muted" id="push-status-text">Checking this device's notification status…</p>
-    <button class="btn btn-primary btn-sm" data-act="enable-push" id="enable-push-btn" style="display:none;">Enable Push Notifications On This Device</button>
-    <button class="btn btn-sm" data-act="disable-push" id="disable-push-btn" style="display:none;">Turn Off Push Notifications On This Device</button>
-  </div>
-  <div class="card">
     <div class="card-title">Change Password</div>
     <label>New Password (min 6 characters)</label>
     ${passwordFieldHTML('profile-pw-new', 'Choose a new password')}
@@ -2231,21 +2175,6 @@ function bindProfile() {
       setBanner('Email updated.', 'ok'); render();
     } catch (e) { setBanner(e.message); render(); }
   };
-  const savePhone = document.querySelector('[data-act="save-profile-phone"]');
-  if (savePhone) savePhone.onclick = async () => {
-    const phone = document.getElementById('profile-phone').value.trim();
-    try {
-      const data = await api('/api/auth/update-phone', { method: 'POST', body: JSON.stringify({ phone }) });
-      session = { ...session, phone: data.phone };
-      localStorage.setItem('ls_session', JSON.stringify(session));
-      setBanner('Phone number updated.', 'ok'); render();
-    } catch (e) { setBanner(e.message); render(); }
-  };
-  updatePushStatusUI();
-  const enablePushBtn = document.getElementById('enable-push-btn');
-  if (enablePushBtn) enablePushBtn.onclick = enablePushNotifications;
-  const disablePushBtn = document.getElementById('disable-push-btn');
-  if (disablePushBtn) disablePushBtn.onclick = disablePushNotifications;
   const savePassword = document.querySelector('[data-act="save-profile-password"]');
   if (savePassword) savePassword.onclick = async () => {
     const newPassword = document.getElementById('profile-pw-new').value;
@@ -2409,6 +2338,7 @@ function bindDrawingsView() {
   const submitBtn = document.querySelector('[data-act="submit-drawing"]');
   if (submitBtn) submitBtn.onclick = async () => {
     const projectEl = document.getElementById('new-drawing-project');
+    if (!projectEl) { setBanner('Something went wrong finding the form — try again.'); render(); return; }
     const project = projectEl.value.trim();
     const section = document.getElementById('new-drawing-section').value.trim();
     const title = document.getElementById('new-drawing-title').value.trim();
@@ -2434,7 +2364,7 @@ function fmtHourLabel12(h) { const period = h < 12 ? 'AM' : 'PM'; const h12 = h 
 // early morning stretch (1am-8am) when nobody is working and the line just sits flat at zero,
 // wasting chart space. Preserves each entry's real `hour` value (needed for click-to-select and
 // axis labels), just reorders/filters which ones are shown, left (9am) to right (midnight).
-const WORKING_HOURS_ORDER = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0];
+const WORKING_HOURS_ORDER = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22];
 function filterToWorkingHours(hours) {
   return WORKING_HOURS_ORDER.map(h => hours.find(x => x.hour === h)).filter(Boolean);
 }
@@ -3108,12 +3038,6 @@ function bindPerformanceView() {
 function renderAccountsView() {
   return `
   <div class="card">
-    <div class="card-title">Email Setup (for Forgot Password)</div>
-    <p class="small muted">Password-reset codes are sent by email, which requires real SMTP credentials set as environment variables on your server (SMTP_HOST, SMTP_USER, SMTP_PASS). Once set, send yourself a test email here to confirm it's genuinely working, before relying on it for real password resets.</p>
-    <button class="btn btn-sm" data-act="send-test-email">Send Test Email to My Own Address</button>
-    <div id="test-email-result" style="margin-top:8px;"></div>
-  </div>
-  <div class="card">
     <div class="card-title">Departments</div>
     <p class="small muted">The list everyone picks a department from when adding or editing an account. Typing a brand-new department name into any Team field also adds it here automatically.</p>
     <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">
@@ -3629,6 +3553,7 @@ function bindMyTasks() {
     if (btn.disabled) return;
     const id = btn.dataset.replyTask;
     const field = document.getElementById(`task-reply-${id}`);
+    if (!field) { setBanner('Something went wrong finding the reply box — try again.'); render(); return; }
     const message = field.value.trim();
     const pending = (ui.pendingReplyFiles || {})[id];
     if (!message && !pending) { alert('Write a message or attach a file.'); return; }
@@ -3685,7 +3610,8 @@ function bindMyTasks() {
   document.querySelectorAll('[data-act="submit-reopen"]').forEach(btn => btn.onclick = async () => {
     const id = btn.dataset.taskId;
     const reasonEl = document.getElementById(`reopen-reason-${id}`);
-    const reason = reasonEl ? reasonEl.value.trim() : '';
+    if (!reasonEl) { setBanner('Something went wrong finding the reason field — try reopening the form again.'); render(); return; }
+    const reason = reasonEl.value.trim();
     if (!reasonEl.reportValidity()) return;
     if (reason.length < 5) { alert('A reason (at least 5 characters) is required to reopen a task.'); return; }
     try {
@@ -3707,6 +3633,7 @@ function bindMyTasks() {
   document.querySelectorAll('[data-add-checklist]').forEach(btn => btn.onclick = async () => {
     const id = btn.dataset.addChecklist;
     const inp = document.getElementById(`checklist-new-${id}`);
+    if (!inp) { setBanner('Something went wrong finding the checklist field — try again.'); render(); return; }
     const text = inp.value.trim();
     if (!text) return;
     try { await api(`/api/tasks/${id}/checklist`, { method: 'POST', body: JSON.stringify({ text }) }); setBanner('Added.', 'ok'); await refreshData(); }
@@ -3719,20 +3646,10 @@ function bindMyTasks() {
 }
 function bindAccounts() {
   bindPasswordToggles();
-  const testEmailBtn = document.querySelector('[data-act="send-test-email"]');
-  if (testEmailBtn) testEmailBtn.onclick = async () => {
-    const resultEl = document.getElementById('test-email-result');
-    if (resultEl) resultEl.innerHTML = '<span class="small muted">Sending…</span>';
-    try {
-      const result = await api('/api/admin/test-email', { method: 'POST' });
-      if (resultEl) resultEl.innerHTML = `<div class="notice" style="border-color:var(--teal);">✓ Sent to ${esc(result.sentTo)} — check that inbox to confirm it arrived.</div>`;
-    } catch (e) {
-      if (resultEl) resultEl.innerHTML = `<div class="err">${esc(e.message)}</div>`;
-    }
-  };
   const submitDept = document.querySelector('[data-act="submit-new-department"]');
   if (submitDept) submitDept.onclick = async () => {
     const inp = document.getElementById('new-dept-name');
+    if (!inp) { setBanner('Something went wrong finding the form field — try again.'); render(); return; }
     const name = inp.value.trim();
     if (!name) { setBanner('Enter a department name.'); render(); return; }
     try { await api('/api/teams', { method: 'POST', body: JSON.stringify({ name }) }); setBanner('Department added.', 'ok'); await refreshData(); }
