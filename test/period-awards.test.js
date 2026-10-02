@@ -12,11 +12,15 @@ test('Employee of the Quarter/Year: snapshots the period that just ended, never 
   await api(baseUrl, `/api/tasks/${create.data.id}/submit-mine`, { method: 'POST', token: starToken, body: { note: 'Done.' } });
   await api(baseUrl, `/api/tasks/${create.data.id}/approve/star_performer`, { method: 'POST', token: adminToken });
 
-  // Backdate the submission into the PREVIOUS calendar quarter (roughly 4 months back is safely
-  // always in a genuinely different quarter than "now", regardless of what month tests run in).
+  // Backdate the submission into the quarter that JUST ENDED — the one the awards job snapshots.
+  // 30 days before the current quarter's first day is always inside it, whatever today's date.
+  // (The old "120 days ago" landed two quarters back on some dates, e.g. 1 October → 3 June,
+  // so this test failed on the first days of every quarter.)
   const raw = await getRawClient();
-  const fourMonthsAgo = new Date(Date.now() - 120 * 86400000).toISOString();
-  await raw.query('UPDATE task_assignees SET submitted_at=$1 WHERE task_id=$2', [fourMonthsAgo, create.data.id]);
+  const now = new Date();
+  const quarterStart = Date.UTC(now.getUTCFullYear(), Math.floor(now.getUTCMonth() / 3) * 3, 1);
+  const inPreviousQuarter = new Date(quarterStart - 30 * 86400000).toISOString();
+  await raw.query('UPDATE task_assignees SET submitted_at=$1 WHERE task_id=$2', [inPreviousQuarter, create.data.id]);
   await raw.end();
 
   await api(baseUrl, '/api/reports/check-period-awards-now', { method: 'POST', token: adminToken });

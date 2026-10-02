@@ -17,9 +17,13 @@ const pool = new Pool({
   // query can hang indefinitely waiting for a connection that will never come free, and a
   // connection lost while idle has nowhere to report the error. connectionTimeoutMillis caps
   // how long a query will ever wait for a pool slot before failing loudly instead of hanging.
-  max: 10,
+  max: Number(process.env.DB_POOL_MAX) || 10,
   connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000,
+  // No single query may run longer than this — a stuck query fails fast instead of holding a pool
+  // slot for minutes while every other request queues behind it (the 15–140s request durations).
+  statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS) || 25000,
+  query_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS) + 5000 || 30000,
 });
 // THE critical missing piece: pg's Pool emits an 'error' event whenever an already-idle client
 // in the pool hits a connection-level problem (the remote database closing it, a network blip,
@@ -41,9 +45,42 @@ function q(sql, params) {
   let i = 0;
   return { text: sql.replace(/\?/g, () => `$${++i}`), values: params || [] };
 }
-async function run(sql, params) { return pool.query(q(sql, params)); }
-async function get(sql, params) { const r = await pool.query(q(sql, params)); return r.rows[0]; }
-async function all(sql, params) { const r = await pool.query(q(sql, params)); return r.rows; }
+// ---- instrumentation + change tracking ----
+// DB_SIMULATED_LATENCY_MS (tests/benchmarks only) adds a fixed delay to every query, to reproduce
+// production, where the app server (Render, Oregon) and the database (Supabase, Tokyo) are an
+// ocean apart and EVERY query pays a ~100–150ms round trip. Query count is what matters there.
+const SIMULATED_LATENCY_MS = Number(process.env.DB_SIMULATED_LATENCY_MS) || 0;
+let queryCount = 0;
+// dataVersion goes up whenever anything users can see is written. Clients poll it (cheap, no
+// database) and only re-download data when it changed; server-side caches are keyed on it.
+let dataVersion = 0;
+const writeListeners = [];
+const USER_CACHE_TTL_MS = 60000;
+const userRowCache = new Map();
+let userListCache = null;
+let usersVersion = 0;
+writeListeners.push((table) => { if (table === 'users') { usersVersion++; userRowCache.clear(); userListCache = null; } });
+// Writes that don't change anything shown to users (login bookkeeping, the audit trail).
+const UNTRACKED_TABLES = new Set(['sessions', 'audit_log']);
+function noteWrite(text) {
+  const m = /^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?(\w+)/i.exec(text);
+  if (!m) return;
+  const table = m[1].toLowerCase();
+  if (UNTRACKED_TABLES.has(table)) return;
+  dataVersion++;
+  for (const fn of writeListeners) { try { fn(table); } catch (e) { /* listeners must never break a write */ } }
+}
+async function query(executor, sql, params) {
+  queryCount++;
+  if (SIMULATED_LATENCY_MS) await new Promise(r => setTimeout(r, SIMULATED_LATENCY_MS));
+  const qq = q(sql, params);
+  const r = await executor.query(qq);
+  noteWrite(qq.text);
+  return r;
+}
+async function run(sql, params) { return query(pool, sql, params); }
+async function get(sql, params) { const r = await query(pool, sql, params); return r.rows[0]; }
+async function all(sql, params) { const r = await query(pool, sql, params); return r.rows; }
 
 // The Postgres equivalent of better-sqlite3's synchronous `db.transaction(fn)()` wrapper — one
 // dedicated client from the pool so BEGIN/COMMIT/ROLLBACK all happen on the same connection, and
@@ -53,21 +90,31 @@ async function runInTransaction(fn) {
   try {
     await client.query('BEGIN');
     const tx = {
-      run: async (sql, params) => client.query(q(sql, params)),
-      get: async (sql, params) => (await client.query(q(sql, params))).rows[0],
-      all: async (sql, params) => (await client.query(q(sql, params))).rows,
+      run: async (sql, params) => query(client, sql, params),
+      get: async (sql, params) => (await query(client, sql, params)).rows[0],
+      all: async (sql, params) => (await query(client, sql, params)).rows,
     };
     const result = await fn(tx);
     await client.query('COMMIT');
     return result;
   } catch (e) {
     await client.query('ROLLBACK');
+    dataVersion++;
     throw e;
   } finally {
     client.release();
   }
 }
 
+let _taskListColumns = null;
+// Every tasks column except the (potentially many-MB) attachment data — used by the list
+// endpoints so loading thousands of tasks never drags every attached file across the network.
+async function taskListColumns() {
+  if (_taskListColumns) return _taskListColumns;
+  const rows = await all("SELECT column_name FROM information_schema.columns WHERE table_name='tasks' AND table_schema=current_schema() ORDER BY ordinal_position");
+  _taskListColumns = rows.map(r => r.column_name).filter(c => c !== 'attachment').map(c => `t."${c}"`).join(', ');
+  return _taskListColumns;
+}
 async function ensureColumn(table, column, decl) {
   // Postgres supports "IF NOT EXISTS" directly on ADD COLUMN (SQLite never did, which is why
   // this used to manually check information_schema.columns first) — that manual check had a
@@ -304,18 +351,57 @@ async function init() {
   await ensureColumn('task_assignees', 'deadline_reminder_12h_sent_at', 'TEXT');
   await ensureColumn('task_assignees', 'deadline_reminder_6h_sent_at', 'TEXT');
   await ensureColumn('task_assignees', 'deadline_reminder_2h_sent_at', 'TEXT');
+  // Permanent key from an imported schedule row (e.g. "EQX-1A-3F9C21") — lets re-uploading an
+  // updated schedule change the deadlines of tasks already imported, instead of duplicating them.
+  await ensureColumn('tasks', 'import_key', 'TEXT');
+  // The deadline this row had in the file when last imported — so a re-upload only changes a
+  // deadline when the FILE changed, never undoing a change someone made inside the app.
+  await ensureColumn('tasks', 'import_deadline', 'TEXT');
+  // Completed tasks "removed from the site" (hidden from task screens, heavy data deleted) but
+  // kept as a summary for history exports, schedule timestamps and reports.
+  await ensureColumn('tasks', 'archived_at', 'TEXT');
+  await ensureColumn('tasks', 'archive_summary', 'TEXT');
+  // The last uploaded copy of each schedule file — "download it again with timestamps filled in".
+  await run(`CREATE TABLE IF NOT EXISTS import_files(
+    id SERIAL PRIMARY KEY, file_name TEXT NOT NULL, data TEXT NOT NULL, uploaded_by TEXT, uploaded_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_tasks_import_key ON tasks(import_key)');
+  await run('CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)');
+  await run('CREATE INDEX IF NOT EXISTS idx_task_assignees_user ON task_assignees(username)');
+  await run('CREATE INDEX IF NOT EXISTS idx_task_replies_task ON task_replies(task_id)');
+  await run('CREATE INDEX IF NOT EXISTS idx_task_checklist_task ON task_checklist_items(task_id)');
+  await run('CREATE INDEX IF NOT EXISTS idx_task_followups_task ON task_followups(task_id)');
+  _taskListColumns = null;
 
   const existingTeams = await all("SELECT DISTINCT team FROM users WHERE team IS NOT NULL AND team != ''");
   for (const r of existingTeams) {
     await run('INSERT INTO teams(name, created_at) VALUES(?, ?) ON CONFLICT (name) DO NOTHING', [r.team, new Date().toISOString()]);
   }
 
+  // Starter accounts are created ONLY on a brand-new, empty database. They used to be re-created
+  // on EVERY server start whenever missing — and Render's free plan restarts the server many times
+  // a day (it sleeps when idle), so accounts Admin deliberately removed kept coming back, with the
+  // default password. Once the company has its own users, the app never adds accounts by itself.
   const userCountRow = await get('SELECT COUNT(*) c FROM users');
   if (Number(userCountRow.c) === 0) {
     const hash = bcrypt.hashSync('admin123', 10);
     await run(`INSERT INTO users(username,password_hash,role,name,team,is_team_lead,must_change_password,created_at)
                 VALUES('admin',?,'admin','Mihir Sabadra',NULL,1,1,?)`, [hash, new Date().toISOString()]);
     console.log('First run: created default account admin / admin123 — you will be asked to set a real password on first login.');
+    const STARTER_ACCOUNTS = [
+      { name: 'Rohit Kamble', username: 'rohit.k', team: 'Estimation Department', designation: 'Estimate', teamLead: false },
+      { name: 'Suraj Kathale', username: 'suraj_kathale', team: 'Estimation Department', designation: 'Estimate Head', teamLead: true },
+      { name: 'Tanishq Mutha', username: 'tanishq.m', team: 'Purchase Department', designation: 'Purchase Lead', teamLead: true },
+      { name: 'Tejas', username: 'tejas.l', team: 'Estimation Department', designation: '', teamLead: false },
+      { name: 'Yuvraj Patil', username: 'yuvraj.p', team: 'Purchase Department', designation: 'Purchase', teamLead: false },
+    ];
+    const starterHash = bcrypt.hashSync('MHR123456', 10);
+    for (const acc of STARTER_ACCOUNTS) {
+      await run(`INSERT INTO users(username,password_hash,role,name,team,designation,is_team_lead,must_change_password,created_at)
+                  VALUES(?,?,?,?,?,?,?,1,?) ON CONFLICT (username) DO NOTHING`,
+        [acc.username, starterHash, 'member', acc.name, acc.team, acc.designation || null, acc.teamLead ? 1 : 0, new Date().toISOString()]);
+      await run('INSERT INTO teams(name, created_at) VALUES(?, ?) ON CONFLICT (name) DO NOTHING', [acc.team, new Date().toISOString()]);
+      console.log(`First run: created starter account ${acc.username} (${acc.name}) — temporary password MHR123456, must be changed on first login.`);
+    }
   } else {
     const existingAdmin = await get("SELECT username FROM users WHERE username='admin' AND name='Admin'");
     if (existingAdmin) {
@@ -323,33 +409,29 @@ async function init() {
       console.log('Renamed the default admin account\'s display name to "Mihir Sabadra".');
     }
   }
-
-  const AUTO_SEED_ACCOUNTS = [
-    { name: 'Rohit Kamble', username: 'rohit.k', team: 'Estimation Department', designation: 'Estimate', teamLead: false },
-    { name: 'Suraj Kathale', username: 'suraj_kathale', team: 'Estimation Department', designation: 'Estimate Head', teamLead: true },
-    { name: 'Tanishq Mutha', username: 'tanishq.m', team: 'Purchase Department', designation: 'Purchase Lead', teamLead: true },
-    { name: 'Tejas', username: 'tejas.l', team: 'Estimation Department', designation: '', teamLead: false },
-    { name: 'Yuvraj Patil', username: 'yuvraj.p', team: 'Purchase Department', designation: 'Purchase', teamLead: false },
-  ];
-  const autoSeedHash = bcrypt.hashSync('MHR123456', 10);
-  for (const acc of AUTO_SEED_ACCOUNTS) {
-    const exists = await get('SELECT 1 FROM users WHERE username=?', [acc.username]);
-    if (exists) continue;
-    await run(`INSERT INTO users(username,password_hash,role,name,team,designation,is_team_lead,must_change_password,created_at)
-                VALUES(?,?,?,?,?,?,?,1,?)`,
-      [acc.username, autoSeedHash, 'member', acc.name, acc.team, acc.designation || null, acc.teamLead ? 1 : 0, new Date().toISOString()]);
-    await run('INSERT INTO teams(name, created_at) VALUES(?, ?) ON CONFLICT (name) DO NOTHING', [acc.team, new Date().toISOString()]);
-    console.log(`Auto-created account: ${acc.username} (${acc.name}) — temporary password MHR123456, must be changed on first login.`);
-  }
 }
 
 module.exports = {
   init,
   pool, // exposed for a clean shutdown (pool.end()) and for /ready health checks
   runInTransaction,
+  getDataVersion() { return dataVersion; },
+  bumpDataVersion() { dataVersion++; },
+  onWrite(fn) { writeListeners.push(fn); },
+  getQueryCount() { return queryCount; },
 
   // ---- users ----
-  async getUser(username) { return get('SELECT * FROM users WHERE username=?', [username]); },
+  // Users are read on EVERY request (auth) and several times inside reports — each a full round
+  // trip to the database. Cached in memory, dropped the instant anything writes to the users
+  // table (login lockouts, password/role changes, deletions…), and never older than a minute.
+  async getUser(username) {
+    const hit = userRowCache.get(username);
+    if (hit && Date.now() - hit.at < USER_CACHE_TTL_MS) return hit.row ? { ...hit.row } : undefined;
+    const version = usersVersion;
+    const row = await get('SELECT * FROM users WHERE username=?', [username]);
+    if (version === usersVersion) userRowCache.set(username, { at: Date.now(), row: row || null });
+    return row;
+  },
   async recordFailedLogin(username) {
     const user = await get('SELECT failed_login_count FROM users WHERE username=?', [username]);
     if (!user) return;
@@ -359,7 +441,16 @@ module.exports = {
   },
   async clearFailedLogins(username) { await run('UPDATE users SET failed_login_count=0, locked_until=NULL WHERE username=?', [username]); },
   async bumpTokenVersion(username) { await run('UPDATE users SET token_version=COALESCE(token_version,0)+1 WHERE username=?', [username]); },
-  async listUsers() { return all('SELECT username,role,name,email,phone,team,designation,is_team_lead,visible_departments,must_change_password,created_at FROM users ORDER BY name'); },
+  // Uncached read for security decisions (login, reset codes, password changes) — these must see
+  // the database exactly as it is, even if something changed it outside the app.
+  async getUserFresh(username) { return get('SELECT * FROM users WHERE username=?', [username]); },
+  async listUsers() {
+    if (userListCache && Date.now() - userListCache.at < USER_CACHE_TTL_MS) return userListCache.rows.map(r => ({ ...r }));
+    const version = usersVersion;
+    const rows = await all('SELECT username,role,name,email,phone,team,designation,is_team_lead,visible_departments,must_change_password,created_at FROM users ORDER BY name');
+    if (version === usersVersion) userListCache = { at: Date.now(), rows };
+    return rows.map(r => ({ ...r }));
+  },
   async updateOwnPhone(username, phone) { await run('UPDATE users SET phone=? WHERE username=?', [phone || null, username]); },
   async setVisibleDepartments(username, departmentsCsv) { await run('UPDATE users SET visible_departments=? WHERE username=?', [departmentsCsv || null, username]); },
   async createUser({ username, password_hash, role, name, team, designation, must_change_password }) {
@@ -369,6 +460,164 @@ module.exports = {
     if (team) await module.exports.addTeam(team);
   },
   async deleteUser(username) { await run('DELETE FROM users WHERE username=?', [username]); },
+  // What removing an account would wipe out — shown to Admin before they confirm, so a removal
+  // is never a surprise. Mirrors exactly what deleteUserCompletely() below deletes.
+  async getAccountDeletionImpact(username) {
+    const n = async (sql, params) => Number((await get(sql, params)).c);
+    return {
+      tasksCreated: await n('SELECT COUNT(*) c FROM tasks WHERE created_by_username=?', [username]),
+      openTasksCreated: await n("SELECT COUNT(*) c FROM tasks WHERE created_by_username=? AND status='open'", [username]),
+      soleAssigneeTasks: await n(`SELECT COUNT(*) c FROM task_assignees ta JOIN tasks t ON t.id=ta.task_id
+        WHERE ta.username=? AND t.created_by_username IS DISTINCT FROM ?
+          AND NOT EXISTS (SELECT 1 FROM task_assignees o WHERE o.task_id=ta.task_id AND o.username<>ta.username)`, [username, username]),
+      sharedTasks: await n(`SELECT COUNT(*) c FROM task_assignees ta JOIN tasks t ON t.id=ta.task_id
+        WHERE ta.username=? AND t.created_by_username IS DISTINCT FROM ?
+          AND EXISTS (SELECT 1 FROM task_assignees o WHERE o.task_id=ta.task_id AND o.username<>ta.username)`, [username, username]),
+      followups: await n('SELECT COUNT(*) c FROM task_followups WHERE username=?', [username]),
+      replies: await n('SELECT COUNT(*) c FROM task_replies WHERE by_username=?', [username]),
+      approvalsCreated: await n('SELECT COUNT(*) c FROM approval_requests WHERE created_by_username=?', [username]),
+      approvalReviews: await n('SELECT COUNT(*) c FROM approval_reviewers WHERE username=?', [username]),
+      drawings: await n('SELECT COUNT(*) c FROM drawings WHERE uploaded_by_username=?', [username]),
+      notifications: await n('SELECT COUNT(*) c FROM notifications WHERE username=?', [username]),
+    };
+  },
+  // Permanently removes an account AND everything tied to it, in one transaction (all or
+  // nothing — a failure halfway can never leave half-deleted data behind):
+  //   - every task they created (with its subtasks, tags, checklist, replies, notifications)
+  //   - every task where they were the ONLY person tagged (nothing meaningful is left of it)
+  //   - their tag on shared tasks — those tasks are then repaired: levels renumbered so no
+  //     level is left waiting on an empty one, the next level released if due, and the task
+  //     closed if everyone still on it was already approved
+  //   - their follow-ups, replies, notifications, sessions, push subscriptions, period awards
+  //   - approval requests they sent; their reviewer slot on others' requests (a request left
+  //     with no reviewers is removed; one where everyone left has approved becomes approved)
+  //   - drawings they uploaded, only if deleteDrawings is true (project documents — Admin chooses)
+  // The audit log is deliberately kept: it's the company's record of who did what, including
+  // this removal itself.
+  // Returns details the caller needs to notify people and release dependent tasks.
+  async deleteUserCompletely(username, { deleteDrawings = false } = {}) {
+    return runInTransaction(async (tx) => {
+      const now = new Date().toISOString();
+      const user = await tx.get('SELECT username, name FROM users WHERE username=?', [username]);
+      if (!user) return null;
+      const deletedTaskIds = new Set();
+      const orphanedOpenTasks = []; // tasks someone else created that were deleted because only this person was on them
+      async function deleteTaskTree(taskId) {
+        if (deletedTaskIds.has(taskId)) return;
+        const subs = await tx.all('SELECT id FROM tasks WHERE parent_task_id=?', [taskId]);
+        for (const s of subs) await deleteTaskTree(s.id);
+        for (const table of ['notifications', 'task_replies', 'task_followups', 'task_checklist_items', 'task_assignees']) {
+          await tx.run(`DELETE FROM ${table} WHERE task_id=?`, [taskId]);
+        }
+        const r = await tx.run('DELETE FROM tasks WHERE id=?', [taskId]);
+        if (r.rowCount > 0) deletedTaskIds.add(taskId);
+      }
+
+      // 1. Tasks they created.
+      for (const t of await tx.all('SELECT id FROM tasks WHERE created_by_username=?', [username])) await deleteTaskTree(t.id);
+      const tasksCreated = deletedTaskIds.size;
+
+      // 2. Tasks where they were the only person tagged.
+      const sole = await tx.all(`SELECT t.id, t.title, t.status, t.created_by_username FROM task_assignees ta JOIN tasks t ON t.id=ta.task_id
+        WHERE ta.username=? AND NOT EXISTS (SELECT 1 FROM task_assignees o WHERE o.task_id=ta.task_id AND o.username<>ta.username)`, [username]);
+      for (const t of sole) {
+        if (deletedTaskIds.has(t.id)) continue;
+        await deleteTaskTree(t.id);
+        if (t.status === 'open' && t.created_by_username && t.created_by_username !== username) orphanedOpenTasks.push({ id: t.id, title: t.title, created_by_username: t.created_by_username });
+      }
+
+      // 3. Untag them from every remaining (shared) task, then repair each open one.
+      const shared = await tx.all(`SELECT DISTINCT t.id, t.title, t.status, t.auto_release_stages, t.created_by_username
+        FROM task_assignees ta JOIN tasks t ON t.id=ta.task_id WHERE ta.username=?`, [username]);
+      await tx.run('DELETE FROM task_assignees WHERE username=?', [username]);
+      const repairedTasks = [];
+      for (const t of shared) {
+        if (t.status !== 'open') continue;
+        const rows = await tx.all('SELECT username, stage, is_released, decision, completed_at FROM task_assignees WHERE task_id=? ORDER BY stage', [t.id]);
+        // Renumber levels 1..n with no gaps (removing the only person on Level 1 would otherwise
+        // leave Level 2 on hold forever, waiting for a level that no longer has anyone in it).
+        const stages = Array.from(new Set(rows.map(r => r.stage || 1))).sort((a, b) => a - b);
+        for (const [idx, oldStage] of stages.entries()) {
+          if (oldStage !== idx + 1) await tx.run('UPDATE task_assignees SET stage=? WHERE task_id=? AND stage=?', [idx + 1, t.id, oldStage]);
+        }
+        const fresh = await tx.all('SELECT username, stage, is_released, decision, completed_at FROM task_assignees WHERE task_id=?', [t.id]);
+        const inStage = s => fresh.filter(r => (r.stage || 1) === s);
+        const approved = r => r.decision === 'approve' && r.completed_at;
+        const released = [];
+        const release = async (s) => {
+          await tx.run('UPDATE task_assignees SET is_released=1, released_at=?, released_by=?, escalation_baseline_at=? WHERE task_id=? AND stage=? AND is_released=0',
+            [now, 'System (account removed)', now, t.id, s]);
+          for (const r of inStage(s)) if (!r.is_released) { released.push(r.username); r.is_released = 1; }
+        };
+        if (inStage(1).some(r => !r.is_released)) await release(1);
+        for (let s = 1; s < stages.length; s++) {
+          if (!inStage(s).every(approved)) break;
+          if (t.auto_release_stages && inStage(s + 1).some(r => !r.is_released)) await release(s + 1);
+          else break;
+        }
+        let closed = false;
+        if (fresh.length > 0 && fresh.every(approved)) {
+          const r = await tx.run("UPDATE tasks SET status='closed', closed_at=?, closed_by=? WHERE id=? AND status='open'", [now, 'System (account removed)', t.id]);
+          if (r.rowCount > 0) { closed = true; await tx.run('DELETE FROM notifications WHERE task_id=?', [t.id]); }
+        }
+        await tx.run('UPDATE tasks SET version = COALESCE(version, 1) + 1 WHERE id=?', [t.id]);
+        repairedTasks.push({ id: t.id, title: t.title, created_by_username: t.created_by_username, closed, released });
+      }
+
+      // 4. Everything else personally tied to the account.
+      const count = async (sql, params) => (await tx.run(sql, params)).rowCount;
+      const followups = await count('DELETE FROM task_followups WHERE username=?', [username]);
+      const replies = await count('DELETE FROM task_replies WHERE by_username=?', [username]);
+      const notifications = await count('DELETE FROM notifications WHERE username=?', [username]);
+      await tx.run('DELETE FROM sessions WHERE username=?', [username]);
+      await tx.run('DELETE FROM push_subscriptions WHERE username=?', [username]);
+      await tx.run('DELETE FROM period_awards WHERE username=?', [username]);
+
+      // 5. Approvals.
+      const ownApprovals = await tx.all('SELECT id FROM approval_requests WHERE created_by_username=?', [username]);
+      for (const a of ownApprovals) {
+        await tx.run('DELETE FROM approval_reviewers WHERE request_id=?', [a.id]);
+        await tx.run('DELETE FROM approval_history WHERE request_id=?', [a.id]);
+        await tx.run('DELETE FROM approval_requests WHERE id=?', [a.id]);
+      }
+      const reviewedRequests = await tx.all('SELECT request_id FROM approval_reviewers WHERE username=?', [username]);
+      await tx.run('DELETE FROM approval_reviewers WHERE username=?', [username]);
+      await tx.run('DELETE FROM approval_history WHERE actor_username=?', [username]);
+      const approvalsCompleted = [];
+      for (const { request_id } of reviewedRequests) {
+        const req = await tx.get('SELECT id, title, status, created_by_username FROM approval_requests WHERE id=?', [request_id]);
+        if (!req) continue;
+        const left = await tx.all('SELECT decision FROM approval_reviewers WHERE request_id=?', [request_id]);
+        if (left.length === 0) {
+          await tx.run('DELETE FROM approval_history WHERE request_id=?', [request_id]);
+          await tx.run('DELETE FROM approval_requests WHERE id=?', [request_id]);
+        } else if (req.status === 'pending' && left.every(r => r.decision === 'approved')) {
+          await tx.run("UPDATE approval_requests SET status='approved', resolved_at=? WHERE id=?", [now, request_id]);
+          await tx.run('INSERT INTO approval_history(request_id,actor_username,actor_name,event_text,created_at) VALUES(?,?,?,?,?)',
+            [request_id, null, null, 'Fully approved by everyone tagged (a reviewer\'s account was removed)', now]);
+          approvalsCompleted.push({ id: req.id, title: req.title, created_by_username: req.created_by_username });
+        }
+      }
+
+      // 6. Drawings (only if Admin chose to).
+      const drawings = deleteDrawings ? await count('DELETE FROM drawings WHERE uploaded_by_username=?', [username]) : 0;
+
+      // 7. Tasks that depended on a deleted task are no longer blocked by it.
+      if (deletedTaskIds.size) {
+        await tx.run('UPDATE tasks SET depends_on_task_id=NULL WHERE depends_on_task_id = ANY(?::text[])', [Array.from(deletedTaskIds)]);
+      }
+
+      await tx.run('DELETE FROM users WHERE username=?', [username]);
+      return {
+        user,
+        summary: {
+          tasksDeleted: deletedTaskIds.size, tasksCreated, sharedTasksUntagged: shared.length,
+          replies, followups, notifications, approvalsCreated: ownApprovals.length, approvalReviews: reviewedRequests.length, drawings,
+        },
+        orphanedOpenTasks, repairedTasks, approvalsCompleted,
+      };
+    });
+  },
   async setUserTeam(username, team) {
     await run('UPDATE users SET team=? WHERE username=?', [team || null, username]);
     if (team) await module.exports.addTeam(team);
@@ -555,6 +804,23 @@ module.exports = {
     await deleteOne(id);
     return deletedIds;
   },
+  // Every open task currently waiting on an open prerequisite — one query, for the background
+  // reminder jobs (they used to ask per row, all at once, flooding the connection pool hourly).
+  async listBlockedTaskIds() {
+    return new Set((await all(`SELECT t.id FROM tasks t JOIN tasks d ON d.id = t.depends_on_task_id
+      WHERE t.status = 'open' AND d.status = 'open'`)).map(r => r.id));
+  },
+  // Response durations (tagged → submitted, in days) for everyone at once, keyed by username.
+  async getResponseDurationsByUser() {
+    const rows = await all(`SELECT username, escalation_baseline_at, submitted_at FROM task_assignees
+      WHERE decision='approve' AND submitted_at IS NOT NULL AND escalation_baseline_at IS NOT NULL`);
+    const byUser = {};
+    for (const r of rows) {
+      const d = (new Date(r.submitted_at) - new Date(r.escalation_baseline_at)) / 86400000;
+      if (d >= 0) (byUser[r.username] = byUser[r.username] || []).push(d);
+    }
+    return byUser;
+  },
   async isTaskBlocked(id) {
     const t = await get('SELECT depends_on_task_id FROM tasks WHERE id=?', [id]);
     if (!t || !t.depends_on_task_id) return false;
@@ -562,16 +828,214 @@ module.exports = {
     return dep ? dep.status === 'open' : false;
   },
   async listTasksForUser(username) {
+    // EXISTS instead of an inner JOIN: a task with nobody tagged yet (allowed now) has no
+    // task_assignees rows at all, and the old JOIN silently hid it from its own creator.
     return all(`
-      SELECT DISTINCT t.* FROM tasks t
-      JOIN task_assignees ta ON ta.task_id = t.id
-      WHERE ta.username = ? OR t.created_by_username = ?
+      SELECT t.* FROM tasks t
+      WHERE t.created_by_username = ? OR EXISTS (SELECT 1 FROM task_assignees ta WHERE ta.task_id = t.id AND ta.username = ?)
       ORDER BY t.created_at DESC
     `, [username, username]);
   },
+  // Lightweight id/title/status list (no attachments) — used to resolve "Depends On" / "Parent Task" references during bulk import.
+  async listTaskRefs() { return all('SELECT id, title, status FROM tasks'); },
   async listAllTasks() { return all('SELECT * FROM tasks ORDER BY created_at DESC LIMIT 5000'); },
-  async addChecklistItem(taskId, text, sortOrder) {
-    await run('INSERT INTO task_checklist_items(task_id,text,is_checked,sort_order,created_at) VALUES(?,?,0,?,?)', [taskId, text, sortOrder || 0, new Date().toISOString()]);
+  // Same result shape as calling getTaskFullLight() once per task, but in a fixed 7 queries no
+  // matter how many tasks — the per-task version cost ~9 queries EACH, which at a few thousand
+  // tasks (a full imported schedule) meant tens of thousands of queries on every 8-second refresh.
+  async listTasksFullLight(scope, username) {
+    const cols = await taskListColumns();
+    const tasks = scope === 'user'
+      ? await all(`SELECT ${cols}, (t.attachment IS NOT NULL) AS has_attachment FROM tasks t
+          WHERE t.archived_at IS NULL AND (t.created_by_username = ? OR EXISTS (SELECT 1 FROM task_assignees ta WHERE ta.task_id = t.id AND ta.username = ?))
+          ORDER BY t.created_at DESC`, [username, username])
+      : await all(`SELECT ${cols}, (t.attachment IS NOT NULL) AS has_attachment FROM tasks t WHERE t.archived_at IS NULL ORDER BY t.created_at DESC LIMIT 5000`);
+    if (tasks.length === 0) return [];
+    const ids = tasks.map(t => t.id);
+    const group = (rows) => { const m = new Map(); for (const r of rows) { if (!m.has(r.task_id)) m.set(r.task_id, []); m.get(r.task_id).push(r); } return m; };
+    const assignees = group(await all('SELECT * FROM task_assignees WHERE task_id = ANY(?::text[])', [ids]));
+    const followups = group(await all('SELECT * FROM task_followups WHERE task_id = ANY(?::text[])', [ids]));
+    const checklist = group(await all('SELECT * FROM task_checklist_items WHERE task_id = ANY(?::text[]) ORDER BY sort_order, id', [ids]));
+    const replies = group(await all(`SELECT id, task_id, by_username, by_name, message, attachment_name, created_at, (attachment IS NOT NULL) AS has_attachment
+      FROM task_replies WHERE task_id = ANY(?::text[]) ORDER BY created_at`, [ids]));
+    const subs = await all('SELECT id, title, status, priority, deadline, parent_task_id FROM tasks WHERE parent_task_id = ANY(?::text[]) ORDER BY created_at ASC', [ids]);
+    const subsByParent = new Map();
+    for (const sub of subs) {
+      const { parent_task_id, ...rest } = sub;
+      if (!subsByParent.has(parent_task_id)) subsByParent.set(parent_task_id, []);
+      subsByParent.get(parent_task_id).push(rest);
+    }
+    const depIds = Array.from(new Set(tasks.map(t => t.depends_on_task_id).filter(Boolean)));
+    const depStatus = new Map((depIds.length ? await all('SELECT id, status FROM tasks WHERE id = ANY(?::text[])', [depIds]) : []).map(d => [d.id, d.status]));
+    return tasks.map(t => {
+      const subtasks = subsByParent.get(t.id) || [];
+      return {
+        ...t,
+        blocked: t.depends_on_task_id ? depStatus.get(t.depends_on_task_id) === 'open' : false,
+        assignees: assignees.get(t.id) || [],
+        followups: followups.get(t.id) || [],
+        checklist: checklist.get(t.id) || [],
+        replies: replies.get(t.id) || [],
+        subtasks,
+        subtaskCount: subtasks.length,
+        openSubtaskCount: subtasks.filter(x => x.status === 'open').length,
+      };
+    });
+  },
+  // Changes the task's own (overall) deadline. Resets every "already reminded" flag tied to the
+  // old date — on the task and on each person without an individual deadline of their own (they
+  // follow the task deadline) — so reminders restart cleanly for the new date.
+  async updateTaskDeadline(id, deadline, tx) {
+    const runner = tx ? tx.run : run;
+    const r = await runner("UPDATE tasks SET deadline=?, deadline_reminder_sent=0, deadline_overdue_notified=0, version=COALESCE(version,1)+1 WHERE id=? AND status='open'", [deadline, id]);
+    if (r.rowCount === 0) return false;
+    await runner(`UPDATE task_assignees SET deadline_reminder_sent_at=NULL, deadline_reminder_24h_sent_at=NULL, deadline_reminder_12h_sent_at=NULL,
+      deadline_reminder_6h_sent_at=NULL, deadline_reminder_2h_sent_at=NULL, deadline_overdue_notified_at=NULL
+      WHERE task_id=? AND individual_deadline IS NULL`, [id]);
+    return true;
+  },
+  // Many deadline changes at once (re-uploading a shifted schedule) — same effect as calling
+  // updateTaskDeadline() per task, in two queries per chunk.
+  async bulkUpdateDeadlines(tx, updates) {
+    for (let i = 0; i < updates.length; i += 5000) {
+      const chunk = updates.slice(i, i + 5000);
+      const values = chunk.map(() => '(?, ?)').join(',');
+      await tx.run(`UPDATE tasks SET deadline = v.deadline, import_deadline = v.deadline, deadline_reminder_sent = 0, deadline_overdue_notified = 0, version = COALESCE(tasks.version, 1) + 1
+        FROM (VALUES ${values}) AS v(id, deadline) WHERE tasks.id = v.id AND tasks.status = 'open'`, chunk.flatMap(u => [u.id, u.deadline]));
+      await tx.run(`UPDATE task_assignees SET deadline_reminder_sent_at=NULL, deadline_reminder_24h_sent_at=NULL, deadline_reminder_12h_sent_at=NULL,
+        deadline_reminder_6h_sent_at=NULL, deadline_reminder_2h_sent_at=NULL, deadline_overdue_notified_at=NULL
+        WHERE task_id = ANY(?::text[]) AND individual_deadline IS NULL`, [chunk.map(u => u.id)]);
+    }
+  },
+  // One query each instead of one per open task (dashboard counts).
+  async listAssigneeRowsForOpenTasks() {
+    return all("SELECT ta.is_released, ta.decision, ta.completed_at FROM task_assignees ta JOIN tasks t ON t.id = ta.task_id WHERE t.status = 'open'");
+  },
+  async getMyOpenTaskStateCounts(username) {
+    const openCount = Number((await get(`SELECT COUNT(*) c FROM tasks t WHERE t.status='open' AND (t.created_by_username = ? OR EXISTS (SELECT 1 FROM task_assignees ta WHERE ta.task_id = t.id AND ta.username = ?))`, [username, username])).c);
+    const rows = await all("SELECT ta.is_released, ta.decision, ta.completed_at FROM task_assignees ta JOIN tasks t ON t.id = ta.task_id WHERE t.status='open' AND ta.username = ?", [username]);
+    return { openCount, rows };
+  },
+  async listOpenTaskTitles() { return all("SELECT id, title, deadline FROM tasks WHERE status='open' ORDER BY created_at DESC"); },
+  // ---------- History export, master schedules, archiving ----------
+  // Every open/closed/cancelled/archived task with its tagged people, for the history export and for
+  // writing timestamps back into a schedule spreadsheet. Never loads attachment data.
+  // mode 'completed' → closed or cancelled within [from, to]; mode 'all' → created up to `to`.
+  async getTaskHistory({ from, to, mode = 'completed', project, keys, titles } = {}) {
+    const cols = await taskListColumns();
+    const where = []; const params = [];
+    if (keys) { where.push('t.import_key = ANY(?::text[])'); params.push(keys); }
+    else if (titles) { where.push('LOWER(t.title) = ANY(?::text[])'); params.push(titles.map(x => x.toLowerCase())); }
+    else if (mode === 'completed') {
+      where.push("t.status IN ('closed','cancelled')");
+      if (from) { where.push("COALESCE(t.closed_at, t.cancelled_at) >= ?"); params.push(from); }
+      if (to) { where.push("COALESCE(t.closed_at, t.cancelled_at) <= ?"); params.push(to); }
+    } else {
+      if (from) { where.push('t.created_at >= ?'); params.push(from); }
+      if (to) { where.push('t.created_at <= ?'); params.push(to); }
+    }
+    if (project) { where.push('t.project = ?'); params.push(project); }
+    const tasks = await all(`SELECT ${cols} FROM tasks t ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY t.created_at ASC`, params);
+    if (!tasks.length) return [];
+    const ids = tasks.map(t => t.id);
+    const byTask = new Map();
+    for (const a of await all('SELECT task_id, username, stage, is_released, released_at, escalation_baseline_at, submitted_at, submission_note, completed_at, completed_by, decision, individual_deadline FROM task_assignees WHERE task_id = ANY(?::text[]) ORDER BY stage, username', [ids])) {
+      if (!byTask.has(a.task_id)) byTask.set(a.task_id, []); byTask.get(a.task_id).push(a);
+    }
+    const replies = new Map();
+    for (const r of await all('SELECT task_id, by_name, by_username, message, attachment_name, created_at FROM task_replies WHERE task_id = ANY(?::text[]) ORDER BY created_at', [ids])) {
+      if (!replies.has(r.task_id)) replies.set(r.task_id, []); replies.get(r.task_id).push(r);
+    }
+    const names = new Map((await all('SELECT username, name FROM users')).map(u => [u.username, u.name]));
+    return tasks.map(t => {
+      let summary = null; try { summary = t.archive_summary ? JSON.parse(t.archive_summary) : null; } catch (e) { summary = null; }
+      return { ...t, assignees: (byTask.get(t.id) || []).map(a => ({ ...a, name: names.get(a.username) || a.username })),
+        replies: replies.get(t.id) || (summary && summary.replies) || [] };
+    });
+  },
+  async saveImportFile(fileName, data, username) {
+    const now = new Date().toISOString();
+    const existing = await get('SELECT id FROM import_files WHERE file_name = ?', [fileName]);
+    if (existing) { await run('UPDATE import_files SET data=?, uploaded_by=?, uploaded_at=? WHERE id=?', [data, username, now, existing.id]); return existing.id; }
+    const r = await get('INSERT INTO import_files(file_name, data, uploaded_by, uploaded_at) VALUES(?,?,?,?) RETURNING id', [fileName, data, username, now]);
+    return r.id;
+  },
+  async listImportFiles() { return all('SELECT id, file_name, uploaded_by, uploaded_at, LENGTH(data) AS size FROM import_files ORDER BY uploaded_at DESC'); },
+  async getImportFile(id) { return get('SELECT * FROM import_files WHERE id = ?', [id]); },
+  async deleteImportFile(id) { return (await run('DELETE FROM import_files WHERE id = ?', [id])).rowCount; },
+  // Completed (closed/cancelled) tasks, finished on or before `before`, not yet archived, with no
+  // open subtask (a closed parent whose subtask is still being worked on stays visible).
+  async listArchivableTaskIds(before) {
+    return (await all(`SELECT t.id FROM tasks t WHERE t.status IN ('closed','cancelled') AND t.archived_at IS NULL
+      AND COALESCE(t.closed_at, t.cancelled_at) <= ?
+      AND NOT EXISTS (SELECT 1 FROM tasks s WHERE s.parent_task_id = t.id AND s.status = 'open')`, [before])).map(r => r.id);
+  },
+  // "Remove from the site": the task disappears from every task screen and its heavy data goes
+  // (attachments, comment thread, checklist, follow-ups, notifications) — but a one-row summary
+  // stays, with the tagged-people rows, so exports, spreadsheet timestamps, performance numbers,
+  // leaderboards and reports are unchanged, and re-uploading the schedule never re-creates it.
+  // The comment thread is kept as plain text inside the summary so exports still show it.
+  async archiveTasks(ids) {
+    if (!ids.length) return 0;
+    return runInTransaction(async (tx) => {
+      const now = new Date().toISOString();
+      let count = 0;
+      for (let i = 0; i < ids.length; i += 1000) {
+        const chunk = ids.slice(i, i + 1000);
+        const replies = await tx.all('SELECT task_id, by_name, by_username, message, attachment_name, created_at FROM task_replies WHERE task_id = ANY(?::text[]) ORDER BY created_at', [chunk]);
+        const checklist = await tx.all('SELECT task_id, text, is_checked FROM task_checklist_items WHERE task_id = ANY(?::text[]) ORDER BY sort_order, id', [chunk]);
+        const followups = await tx.all('SELECT task_id, username FROM task_followups WHERE task_id = ANY(?::text[])', [chunk]);
+        const summaries = new Map(chunk.map(id => [id, { replies: [], checklist: [], followups: [] }]));
+        replies.forEach(r => summaries.get(r.task_id).replies.push({ by_name: r.by_name, by_username: r.by_username, message: r.message, attachment_name: r.attachment_name, created_at: r.created_at }));
+        checklist.forEach(c => summaries.get(c.task_id).checklist.push({ text: c.text, done: !!c.is_checked }));
+        followups.forEach(f => summaries.get(f.task_id).followups.push(f.username));
+        const values = chunk.map(() => '(?, ?)').join(',');
+        const r = await tx.run(`UPDATE tasks SET archived_at = ?, archive_summary = v.summary, attachment = NULL, report_data = NULL, ai_summary = NULL
+          FROM (VALUES ${values}) AS v(id, summary) WHERE tasks.id = v.id AND tasks.archived_at IS NULL`,
+          [now, ...chunk.flatMap(id => [id, JSON.stringify(summaries.get(id))])]);
+        count += r.rowCount;
+        for (const table of ['task_replies', 'task_checklist_items', 'task_followups', 'notifications']) {
+          await tx.run(`DELETE FROM ${table} WHERE task_id = ANY(?::text[])`, [chunk]);
+        }
+      }
+      return count;
+    });
+  },
+  async countArchivedTasks() { return Number((await get('SELECT COUNT(*) c FROM tasks WHERE archived_at IS NOT NULL')).c); },
+  async getTasksByImportKeys(keys) {
+    if (!keys.length) return [];
+    return all('SELECT id, title, status, deadline, import_key, import_deadline FROM tasks WHERE import_key = ANY(?::text[])', [keys]);
+  },
+  // Bulk version of createTask + addTaskAssignee + addChecklistItem + addFollowup for imports:
+  // multi-row INSERTs in chunks, so thousands of rows take a handful of queries instead of ~10
+  // round-trips each (which on a remote database meant many minutes for a full schedule).
+  async bulkInsertTasks(tx, { tasks, assignees, checklist, followups }) {
+    const now = new Date().toISOString();
+    async function insertChunks(table, columns, rows, suffix) {
+      const size = Math.max(1, Math.floor(30000 / columns.length));
+      for (let i = 0; i < rows.length; i += size) {
+        const chunk = rows.slice(i, i + size);
+        const placeholders = chunk.map(() => `(${columns.map(() => '?').join(',')})`).join(',');
+        await tx.run(`INSERT INTO ${table}(${columns.join(',')}) VALUES ${placeholders} ${suffix || ''}`, chunk.flat());
+      }
+    }
+    const projects = Array.from(new Set(tasks.map(t => t.project).filter(Boolean)));
+    const phases = Array.from(new Set(tasks.map(t => t.phase).filter(Boolean)));
+    if (projects.length) await insertChunks('projects', ['name', 'created_at'], projects.map(p => [p, now]), 'ON CONFLICT (name) DO NOTHING');
+    if (phases.length) await insertChunks('task_phases', ['name', 'created_at'], phases.map(p => [p, now]), 'ON CONFLICT (name) DO NOTHING');
+    if (tasks.length) await insertChunks('tasks',
+      ['id', 'title', 'description', 'priority', 'deadline', 'status', 'created_by', 'created_by_username', 'depends_on_task_id', 'is_drawing_request', 'parent_task_id', 'project', 'phase', 'auto_release_stages', 'import_key', 'import_deadline', 'created_at'],
+      tasks.map(t => [t.id, t.title, t.description || null, t.priority, t.deadline, 'open', t.created_by, t.created_by_username, t.depends_on_task_id || null, 0, t.parent_task_id || null, t.project || null, t.phase || null, t.auto_release_stages ? 1 : 0, t.import_key || null, t.import_key ? t.deadline : null, now]));
+    if (assignees.length) await insertChunks('task_assignees',
+      ['task_id', 'username', 'team', 'stage', 'is_released', 'escalation_baseline_at', 'individual_deadline'],
+      assignees.map(a => [a.task_id, a.username, a.team || null, a.stage, a.is_released ? 1 : 0, now, a.individual_deadline || null]), 'ON CONFLICT (task_id, username) DO NOTHING');
+    if (checklist.length) await insertChunks('task_checklist_items', ['task_id', 'text', 'is_checked', 'sort_order', 'created_at'],
+      checklist.map(c => [c.task_id, c.text, 0, c.sort_order, now]));
+    if (followups.length) await insertChunks('task_followups', ['task_id', 'username', 'tagged_by', 'created_at'],
+      followups.map(f => [f.task_id, f.username, f.tagged_by, now]), 'ON CONFLICT (task_id, username) DO NOTHING');
+  },
+  async addChecklistItem(taskId, text, sortOrder, tx) {
+    const runner = tx ? tx.run : run;
+    await runner('INSERT INTO task_checklist_items(task_id,text,is_checked,sort_order,created_at) VALUES(?,?,0,?,?)', [taskId, text, sortOrder || 0, new Date().toISOString()]);
   },
   async toggleChecklistItem(id, checked) { await run('UPDATE task_checklist_items SET is_checked=? WHERE id=?', [checked ? 1 : 0, id]); },
   async deleteChecklistItem(id) { await run('DELETE FROM task_checklist_items WHERE id=?', [id]); },
@@ -584,8 +1048,9 @@ module.exports = {
   async listReplies(taskId) { return all('SELECT * FROM task_replies WHERE task_id=? ORDER BY created_at', [taskId]); },
 
   // ---- follow-ups ----
-  async addFollowup(taskId, username, taggedBy) {
-    await run('INSERT INTO task_followups(task_id,username,tagged_by,created_at) VALUES(?,?,?,?) ON CONFLICT (task_id, username) DO NOTHING', [taskId, username, taggedBy || null, new Date().toISOString()]);
+  async addFollowup(taskId, username, taggedBy, tx) {
+    const runner = tx ? tx.run : run;
+    await runner('INSERT INTO task_followups(task_id,username,tagged_by,created_at) VALUES(?,?,?,?) ON CONFLICT (task_id, username) DO NOTHING', [taskId, username, taggedBy || null, new Date().toISOString()]);
   },
   async listFollowups(taskId) { return all('SELECT * FROM task_followups WHERE task_id=?', [taskId]); },
 
@@ -954,6 +1419,10 @@ module.exports = {
   async removePushSubscription(endpoint) { await run('DELETE FROM push_subscriptions WHERE endpoint=?', [endpoint]); },
   async listPushSubscriptionsForUser(username) { return all('SELECT * FROM push_subscriptions WHERE username=?', [username]); },
   async deleteNotificationsForTask(taskId) { await run('DELETE FROM notifications WHERE task_id=?', [taskId]); },
+  async getLatestNotificationId(username) { const r = await get('SELECT MAX(id) m FROM notifications WHERE username=?', [username]); return Number(r.m) || 0; },
+  async listUnreadNotificationsAfter(username, afterId, limit) {
+    return all('SELECT id, message, task_id, created_at FROM notifications WHERE username=? AND id > ? AND read=0 ORDER BY id ASC LIMIT ?', [username, afterId, limit]);
+  },
   async listNotifications(username) { return all('SELECT * FROM notifications WHERE username=? ORDER BY created_at DESC LIMIT 100', [username]); },
   async markNotificationRead(id, username) { await run('UPDATE notifications SET read=1 WHERE id=? AND username=?', [id, username]); },
   async markAllNotificationsRead(username) { await run('UPDATE notifications SET read=1 WHERE username=?', [username]); },

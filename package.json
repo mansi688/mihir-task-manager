@@ -12,10 +12,13 @@
   "dependencies": {
     "bcrypt": "^6.0.0",
     "better-sqlite3": "^11.3.0",
+    "compression": "^1.8.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.2",
     "nodemailer": "^9.1.0",
     "pg": "^8.23.0",
     "web-push": "^3.6.7"
@@ -28,6 +31,7 @@
     "node": "22.x"
   },
   "overrides": {
-    "qs": "^6.16.0"
+    "qs": "^6.16.0",
+    "uuid": "^11.1.1"
   }
 }

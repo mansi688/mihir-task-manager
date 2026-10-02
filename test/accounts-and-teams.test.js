@@ -53,12 +53,14 @@ test('authentication, account management, and delegated team-lead permissions', 
     assert.equal(res.status, 403);
   });
 
-  await t.test('removing an account with open tasks is blocked; removing one with none succeeds', async () => {
+  await t.test('removing an account with open tasks now succeeds and removes their tasks too', async () => {
     const busyToken = await createMember(baseUrl, adminToken, 'busy_person', 'Busy Person', 'Site Team');
     await api(baseUrl, '/api/tasks', { method: 'POST', token: adminToken, body: { title: 'Keeps busy_person busy', priority: 'low', deadline: futureDate(), assignedToList: ['busy_person'] } });
 
     const blockedRemoval = await api(baseUrl, '/api/users/busy_person', { method: 'DELETE', token: adminToken });
-    assert.equal(blockedRemoval.status, 400, 'an account still involved in an open task must not be removable');
+    assert.equal(blockedRemoval.status, 200, JSON.stringify(blockedRemoval.data));
+    const tasks = await api(baseUrl, '/api/tasks', { token: adminToken });
+    assert.ok(!tasks.data.some(t => t.title === 'Keeps busy_person busy'), 'a task whose only tagged person was removed should be removed with them');
 
     await createMember(baseUrl, adminToken, 'free_person', 'Free Person', 'Site Team');
     const freeRemoval = await api(baseUrl, '/api/users/free_person', { method: 'DELETE', token: adminToken });

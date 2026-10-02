@@ -13,15 +13,17 @@ test('task lifecycle, permissions, and idempotency', async (t) => {
   const bobToken = await createMember(baseUrl, adminToken, 'bob', 'Bob Test');
   assert.ok(aliceToken && bobToken, 'member accounts should be created and able to log in');
 
-  await t.test('task creation requires title, deadline, and at least one tagged person', async () => {
+  await t.test('task creation requires title and deadline; tagging people is optional', async () => {
     const noTitle = await api(baseUrl, '/api/tasks', { method: 'POST', token: aliceToken, body: { deadline: futureDate(), assignedToList: ['bob'] } });
     assert.equal(noTitle.status, 400);
 
     const noDeadline = await api(baseUrl, '/api/tasks', { method: 'POST', token: aliceToken, body: { title: 'X', assignedToList: ['bob'] } });
     assert.equal(noDeadline.status, 400);
 
-    const noAssignee = await api(baseUrl, '/api/tasks', { method: 'POST', token: aliceToken, body: { title: 'X', deadline: futureDate(), assignedToList: [] } });
-    assert.equal(noAssignee.status, 400);
+    const noAssignee = await api(baseUrl, '/api/tasks', { method: 'POST', token: aliceToken, body: { title: 'Untagged X', deadline: futureDate(), assignedToList: [] } });
+    assert.equal(noAssignee.status, 200, 'a task can be created with nobody tagged yet');
+    const mine = await api(baseUrl, '/api/tasks/mine', { token: aliceToken });
+    assert.ok(mine.data.some(t => t.id === noAssignee.data.id), 'an untagged task must still show up in its creator\'s own list');
   });
 
   let taskId;
