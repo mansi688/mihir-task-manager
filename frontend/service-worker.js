@@ -13,8 +13,11 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
+      icon: '/app-icon-192.png',  // company logo
+      badge: '/badge-96.png',     // white logo silhouette for Android's status bar
+      tag: data.taskId ? 'task-' + data.taskId : undefined, // updates about one task replace each other
+      renotify: !!data.taskId,
+      vibrate: [120, 60, 120],
       data: { taskId: data.taskId },
     })
   );

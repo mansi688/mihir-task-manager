@@ -5,6 +5,8 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const db = require('./db');
+const taskImport = require('./task-import');
+const taskExport = require('./task-export');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -72,7 +74,7 @@ const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
 const pushConfigured = !!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
 if (pushConfigured) {
-  webpush.setVapidDetails('mailto:admin@example.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+  webpush.setVapidDetails(process.env.VAPID_SUBJECT || process.env.APP_BASE_URL || 'https://mihir-task-manager.onrender.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 }
 async function sendPushToUser(username, title, body, taskId) {
   if (!pushConfigured) return;
@@ -81,7 +83,10 @@ async function sendPushToUser(username, title, body, taskId) {
     try {
       await webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-        JSON.stringify({ title, body, taskId: taskId || null })
+        JSON.stringify({ title, body, taskId: taskId || null }),
+        // high urgency = delivered promptly even when the phone is in battery-saving (Doze) mode;
+        // TTL = if the phone is off/offline, the push service keeps trying for a day.
+        { TTL: 86400, urgency: 'high', timeout: 15000 }
       );
     } catch (e) {
       // A 404/410 means the browser itself has invalidated this subscription (uninstalled,
@@ -188,6 +193,18 @@ app.use(cors({
   // this isn't a classic CSRF vector, but a real deployment should still set this explicitly.
   origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()) : true,
 }));
+// gzip every response — task lists are highly repetitive JSON and shrink ~10x, which matters once
+// a full imported schedule (thousands of tasks) is refreshed every few seconds.
+app.use(require('compression')());
+// Benchmarks only: report how many database queries each request made (sequential requests).
+if (process.env.EXPOSE_QUERY_COUNT) {
+  app.use((req, res, next) => {
+    const start = db.getQueryCount();
+    const json = res.json.bind(res);
+    res.json = (body) => { res.setHeader('X-Queries', String(db.getQueryCount() - start)); return json(body); };
+    next();
+  });
+}
 app.use(express.json({ limit: '160mb' }));
 // Baseline security headers — conservative choices that don't require auditing the frontend's
 // inline scripts/styles (a strict Content-Security-Policy was deliberately NOT added here without
@@ -200,7 +217,15 @@ app.use((req, res, next) => {
   res.setHeader('Permissions-Policy', 'geolocation=(), camera=(), microphone=()');
   next();
 });
-app.use(express.static(path.join(__dirname, '..', 'frontend')));
+// "no-cache" = the browser may keep a copy but must check with the server (a cheap ETag check)
+// before using it. Without it, browsers guess how long to reuse app.js/styles.css, so after a
+// deploy one machine can keep running an old cached app.js against the new server and break
+// while every other device works fine. Images can still be cached normally.
+app.use(express.static(path.join(__dirname, '..', 'frontend'), {
+  setHeaders(res, filePath) {
+    if (/\.(html|js|css|json)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+  },
+}));
 // General-purpose IP-based rate limiter — a simple in-memory sliding window. HONEST LIMITATION,
 // matching what real production hardening requires: this only works correctly with a single
 // server instance/process — if this app is ever scaled to multiple concurrent instances behind
@@ -391,14 +416,97 @@ function auth(roles) {
     if (!token) return res.status(401).json({ error: 'Not logged in.' });
     let payload;
     try { payload = jwt.verify(token, JWT_SECRET); } catch (e) { return res.status(401).json({ error: 'Session expired — please log in again.' }); }
+    // Phone-app device tokens can ONLY read that person's notifications (below) — never anything else.
+    if (payload.scope === 'device') return res.status(401).json({ error: 'Not logged in.' });
     const user = await db.getUser(payload.username);
     if (!user) return res.status(401).json({ error: 'Session invalid — please log in again.' });
     if ((user.token_version || 0) !== (payload.tv || 0)) return res.status(401).json({ error: 'Session revoked — please log in again.' });
     if (!roles.includes(user.role)) return res.status(403).json({ error: 'Not permitted for this role.' });
     req.user = { username: user.username, role: user.role, name: user.name, sid: payload.sid };
+    if (req.method === 'GET' && CACHED_GET_PATHS.some(rx => rx.test(req.path))) return cacheMiddleware(req, res, next);
     next();
   };
 }
+/* ---- Phone app notifications (free — no Firebase / paid push service) ----
+   The Android app checks for new notifications in the background roughly every 15 minutes. Website
+   logins expire after 12 hours, so the app gets its own long-lived DEVICE token at login: it can
+   only list that person's notifications, and stops working the moment their password changes
+   (token_version) or their account is removed. */
+app.post('/api/device/register', auth(ALL_ROLES), async (req, res) => {
+  const user = await db.getUser(req.user.username);
+  const deviceToken = jwt.sign({ username: user.username, tv: user.token_version || 0, scope: 'device' }, JWT_SECRET, { expiresIn: '180d' });
+  const latest = await db.getLatestNotificationId(user.username);
+  res.json({ deviceToken, username: user.username, latestId: latest });
+});
+app.get('/api/device/notifications', async (req, res) => {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Device ') ? header.slice(7) : null;
+  let payload;
+  try { payload = token && jwt.verify(token, JWT_SECRET); } catch (e) { payload = null; }
+  if (!payload || payload.scope !== 'device') return res.status(401).json({ error: 'Device not registered.' });
+  const user = await db.getUser(payload.username);
+  if (!user || (user.token_version || 0) !== (payload.tv || 0)) return res.status(401).json({ error: 'Device signed out.' });
+  const after = Math.max(0, parseInt(req.query.after, 10) || 0);
+  const items = await db.listUnreadNotificationsAfter(user.username, after, 20);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ items: items.map(n => ({ id: n.id, message: n.message, task_id: n.task_id, created_at: n.created_at })), latestId: items.length ? Math.max(...items.map(n => n.id)) : after });
+});
+// Cheapest possible "has anything changed?" — no database work at all. Clients poll this and only
+// re-download data when the version moves, so idle screens cost the server (almost) nothing and
+// every device — website or phone app — picks up changes within seconds of each other.
+app.get('/api/sync', auth(ALL_ROLES), (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ v: `${BOOT_ID}.${db.getDataVersion()}` });
+});
+
+/* ============ RESPONSE CACHE + LIVE SYNC ============
+   Read endpoints answer from memory until something actually changes. Every write anywhere bumps
+   db's dataVersion; a cached answer is reused only while the version is unchanged (and it's
+   younger than its max age, for things that also depend on the clock, like "overdue" counts or
+   "this week"). Identical requests arriving together (several screens refreshing at once) share
+   ONE computation instead of each running the same heavy queries — that pile-up is what stalled
+   the server for minutes and produced the 520 errors. Entries are per user (key includes the
+   username), so nobody ever receives someone else's data. */
+const BOOT_ID = Math.random().toString(36).slice(2, 8);
+const responseCache = new Map(); // key -> { version, at, body }
+const inFlight = new Map();      // key -> Promise<{ status, body }>
+const RESPONSE_CACHE_MAX = 400;
+function cacheResponse(maxAgeMs = 120000) {
+  return async (req, res, next) => {
+    if (req.method !== 'GET' || !req.user) return next();
+    const key = `${req.user.username}|${req.originalUrl}`;
+    const version = db.getDataVersion();
+    const hit = responseCache.get(key);
+    if (hit && hit.version === version && Date.now() - hit.at < maxAgeMs) { res.setHeader('X-Cache', 'hit'); return res.json(hit.body); }
+    const pending = inFlight.get(key);
+    if (pending) {
+      try { const r = await pending; if (r.status === 200) { res.setHeader('X-Cache', 'shared'); return res.json(r.body); } } catch (e) { /* fall through and compute */ }
+      return next();
+    }
+    let settle;
+    const promise = new Promise(resolve => { settle = resolve; });
+    inFlight.set(key, promise);
+    const json = res.json.bind(res);
+    res.json = (body) => {
+      if (res.statusCode === 200) {
+        if (responseCache.size >= RESPONSE_CACHE_MAX) responseCache.delete(responseCache.keys().next().value);
+        responseCache.set(key, { version, at: Date.now(), body });
+      }
+      inFlight.delete(key);
+      settle({ status: res.statusCode, body });
+      return json(body);
+    };
+    res.on('close', () => { if (inFlight.get(key) === promise) { inFlight.delete(key); settle({ status: 499 }); } });
+    next();
+  };
+}
+// Everything a refreshing screen reads goes through the cache.
+const CACHED_GET_PATHS = [
+  /^\/api\/tasks$/, /^\/api\/tasks\/mine$/, /^\/api\/tasks\/open-titles$/, /^\/api\/users\/directory$/, /^\/api\/teams$/,
+  /^\/api\/projects$/, /^\/api\/drawing-sections$/, /^\/api\/task-phases$/, /^\/api\/notifications$/, /^\/api\/approvals(\/mine)?$/,
+  /^\/api\/auth\/me$/, /^\/api\/reports\/[a-z-]+$/,
+];
+const cacheMiddleware = cacheResponse();
 
 /* ============ AUTH ============ */
 // Basic brute-force protection: after 5 consecutive failed attempts on an account, it locks for
@@ -407,7 +515,7 @@ function auth(roles) {
 app.post('/api/auth/login', loginRateLimiter, async (req, res) => {
   const username = str((req.body || {}).username).trim();
   const password = str((req.body || {}).password);
-  const user = await db.getUser(username);
+  const user = await db.getUserFresh(username);
   if (user && user.locked_until && new Date(user.locked_until) > new Date()) {
     const minutesLeft = Math.ceil((new Date(user.locked_until) - new Date()) / 60000);
     return res.status(423).json({ error: `Too many failed attempts — this account is locked for about ${minutesLeft} more minute${minutesLeft === 1 ? '' : 's'}.` });
@@ -422,7 +530,7 @@ app.post('/api/auth/login', loginRateLimiter, async (req, res) => {
   if (!user || !passwordMatches) {
     if (user) {
       await db.recordFailedLogin(user.username);
-      const justLocked = await db.getUser(user.username);
+      const justLocked = await db.getUserFresh(user.username);
       if (justLocked && justLocked.locked_until) {
         await auditFromReq(req, 'account_locked', `Account locked for 3 minutes after 5 failed login attempts.`, { username: user.username, name: user.name });
       }
@@ -464,7 +572,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   if (!username) return res.json({ ...genericResponse, emailConfigured: !!mailTransporter });
   if (otpRateLimited(username)) return res.json({ ...genericResponse, emailConfigured: !!mailTransporter });
   if (!mailTransporter) return res.json({ ...genericResponse, emailConfigured: false });
-  const user = await db.getUser(username);
+  const user = await db.getUserFresh(username);
   if (!user || !user.email) return res.json({ ...genericResponse, emailConfigured: true });
   const otp = String(Math.floor(100000 + Math.random() * 900000));
   const otpHash = bcrypt.hashSync(otp, 10);
@@ -481,7 +589,7 @@ app.post('/api/auth/reset-with-otp', async (req, res) => {
   const username = str((req.body || {}).username).trim();
   const otp = str((req.body || {}).otp).trim();
   const newPassword = str((req.body || {}).newPassword);
-  const user = await db.getUser(username);
+  const user = await db.getUserFresh(username);
   if (!user || !user.password_reset_otp_hash || !user.password_reset_otp_expires) {
     return res.status(400).json({ error: 'No reset code is pending for this account — request a new one.' });
   }
@@ -500,7 +608,7 @@ app.post('/api/auth/reset-with-otp', async (req, res) => {
 });
 app.post('/api/auth/logout-everywhere', auth(ALL_ROLES), async (req, res) => {
   await db.bumpTokenVersion(req.user.username);
-  const user = await db.getUser(req.user.username);
+  const user = await db.getUserFresh(req.user.username);
   const token = sign({ username: user.username, role: user.role, name: user.name, tv: user.token_version || 0, sid: req.user.sid });
   res.json({ ok: true, token });
 });
@@ -509,7 +617,7 @@ app.post('/api/auth/change-password', auth(ALL_ROLES), async (req, res) => {
   const pwErr1 = validatePasswordStrength(newPassword); if (pwErr1) return res.status(400).json({ error: pwErr1 });
   await db.setPassword(req.user.username, bcrypt.hashSync(newPassword, 10));
   await auditFromReq(req, 'password_changed', `Changed their own password.`);
-  const user = await db.getUser(req.user.username);
+  const user = await db.getUserFresh(req.user.username);
   const token = sign({ username: user.username, role: user.role, name: user.name, tv: user.token_version || 0, sid: req.user.sid });
   res.json({ ok: true, token });
 });
@@ -518,7 +626,7 @@ app.post('/api/auth/update-name', auth(ALL_ROLES), async (req, res) => {
   if (!name) return res.status(400).json({ error: 'Name cannot be empty.' });
   if (name.length > 80) return res.status(400).json({ error: 'Name is too long.' });
   await db.updateOwnName(req.user.username, name);
-  const user = await db.getUser(req.user.username);
+  const user = await db.getUserFresh(req.user.username);
   const token = sign({ username: user.username, role: user.role, name: user.name, tv: user.token_version || 0, sid: req.user.sid });
   res.json({ ok: true, token, name: user.name });
 });
@@ -537,6 +645,12 @@ app.post('/api/auth/update-phone', auth(ALL_ROLES), async (req, res) => {
   res.json({ ok: true, phone: phone || null });
 });
 app.get('/api/push/vapid-public-key', (req, res) => res.json({ publicKey: pushConfigured ? VAPID_PUBLIC_KEY : null }));
+// Whether this device's subscription is on file (so the page knows to show "Turn on" or not).
+app.post('/api/push/status', auth(ALL_ROLES), async (req, res) => {
+  const endpoint = str((req.body || {}).endpoint).trim();
+  const subs = await db.listPushSubscriptionsForUser(req.user.username);
+  res.json({ configured: pushConfigured, subscribed: !!endpoint && subs.some(x => x.endpoint === endpoint), devices: subs.length });
+});
 app.post('/api/push/subscribe', auth(ALL_ROLES), async (req, res) => {
   const sub = (req.body || {}).subscription;
   if (!sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) return res.status(400).json({ error: 'Invalid push subscription.' });
@@ -549,7 +663,7 @@ app.post('/api/push/unsubscribe', auth(ALL_ROLES), async (req, res) => {
   res.json({ ok: true });
 });
 app.get('/api/auth/me', auth(ALL_ROLES), async (req, res) => {
-  const user = await db.getUser(req.user.username);
+  const user = await db.getUserFresh(req.user.username);
   res.json({ username: user.username, role: user.role, name: user.name, email: user.email, phone: user.phone, team: user.team, designation: user.designation, isTeamLead: !!user.is_team_lead });
 });
 
@@ -632,16 +746,59 @@ app.post('/api/users/:username/reset-password', auth(['admin']), async (req, res
   await auditFromReq(req, 'password_reset', `Reset password for "${user.username}"`);
   res.json({ ok: true });
 });
+// Shows Admin exactly what removing this account will wipe out, before they confirm.
+app.get('/api/users/:username/deletion-impact', auth(['admin']), async (req, res) => {
+  const user = await db.getUser(req.params.username);
+  if (!user) return res.status(404).json({ error: 'User not found.' });
+  res.json({ username: user.username, name: user.name, ...(await db.getAccountDeletionImpact(user.username)) });
+});
+// Removes the account AND everything tied to it (see db.deleteUserCompletely for the full list).
+// This used to refuse outright whenever the person was on any open task, and when it did go
+// through it only deleted the login row — leaving their tasks, tags, replies, notifications,
+// approvals and sessions behind as orphans pointing at someone who no longer exists. Now shared
+// tasks are repaired (untagged, levels renumbered, next level released / task closed where due)
+// and everyone affected is told.
 app.delete('/api/users/:username', auth(['admin']), async (req, res) => {
-  if (req.params.username === req.user.username) return res.status(400).json({ error: "You can't remove your own account." });
-  if (!await db.getUser(req.params.username)) return res.status(404).json({ error: 'User not found.' });
-  const openTasks = await db.getOpenTaskInvolvement(req.params.username);
-  if (openTasks.length > 0) {
-    return res.status(400).json({ error: `This account is still involved in ${openTasks.length} open task${openTasks.length === 1 ? '' : 's'} (e.g. "${openTasks[0]}") — reassign, cancel, or close ${openTasks.length === 1 ? 'it' : 'them'} first. Otherwise ${openTasks.length === 1 ? 'that task' : 'those tasks'} would be stuck forever waiting on someone who no longer exists.` });
+  const username = req.params.username;
+  if (username === req.user.username) return res.status(400).json({ error: "You can't remove your own account." });
+  const target = await db.getUser(username);
+  if (!target) return res.status(404).json({ error: 'User not found.' });
+  if (target.role === 'admin') {
+    const admins = await db.listAdminUsernames();
+    if (admins.length <= 1) return res.status(400).json({ error: "That's the only Admin account — make someone else Admin first." });
   }
-  await db.deleteUser(req.params.username);
-  await auditFromReq(req, 'account_removed', `Removed account "${req.params.username}"`);
-  res.json({ ok: true });
+  const deleteDrawings = String(req.query.deleteDrawings || (req.body || {}).deleteDrawings || '') === '1' || (req.body || {}).deleteDrawings === true;
+  let result;
+  try {
+    result = await db.deleteUserCompletely(username, { deleteDrawings });
+  } catch (e) {
+    log('ERROR', 'account deletion failed', { requestId: req.id, username, error: e.message });
+    return res.status(500).json({ error: 'Removing the account failed and nothing was changed — please try again.' });
+  }
+  if (!result) return res.status(404).json({ error: 'User not found.' });
+  const who = `${target.name} (${username})`;
+  // Notifications happen after the transaction commits, and a failure here must never make the
+  // (already completed) removal look like it failed.
+  try {
+    for (const t of result.orphanedOpenTasks) {
+      await db.createNotification({ username: t.created_by_username, type: 'task_deleted', message: `"${t.title}" was removed because ${who}, the only person tagged on it, no longer has an account. Raise it again for someone else if it's still needed.`, task_id: null });
+    }
+    for (const t of result.repairedTasks) {
+      if (t.created_by_username && t.created_by_username !== req.user.username) {
+        await db.createNotification({ username: t.created_by_username, type: 'task_reply', message: t.closed ? `${who} was removed from "${t.title}" — everyone left had already been approved, so the task is now closed.` : `${who}'s account was removed, so they're no longer tagged on "${t.title}".`, task_id: t.id });
+      }
+      for (const u of t.released) {
+        await db.createNotification({ username: u, type: 'task_assigned', message: `You're released to start your part of "${t.title}".`, task_id: t.id });
+      }
+      if (t.closed) await releaseDependentsOf({ id: t.id, title: t.title });
+    }
+    for (const a of result.approvalsCompleted) {
+      if (a.created_by_username) await db.createNotification({ username: a.created_by_username, type: 'approval_approved', message: `"${a.title}" is fully approved.`, task_id: null });
+    }
+  } catch (e) { log('ERROR', 'post-deletion notifications failed', { requestId: req.id, username, error: e.message }); }
+  const s = result.summary;
+  await auditFromReq(req, 'account_removed', `Removed account "${username}" (${target.name}) and all related data: ${s.tasksDeleted} task(s) deleted, untagged from ${s.sharedTasksUntagged} shared task(s), ${s.replies} repl(ies), ${s.followups} follow-up tag(s), ${s.approvalsCreated} approval request(s) sent, ${s.approvalReviews} approval reviewer slot(s), ${s.notifications} notification(s)${deleteDrawings ? `, ${s.drawings} drawing(s)` : ' — drawings kept'}.`);
+  res.json({ ok: true, removed: s });
 });
 
 app.get('/api/audit-log', auth(['admin']), async (req, res) => res.json(await db.listAuditLog(200)));
@@ -844,9 +1001,7 @@ app.get('/api/reports/ratings', auth(['admin', 'director']), async (req, res) =>
   const activeThisQuarter = completionStats.filter(s => s.quarter > 0);
   const companyAvgQuarterCompletions = activeThisQuarter.length > 0
     ? activeThisQuarter.reduce((sum, s) => sum + s.quarter, 0) / activeThisQuarter.length : 0;
-  const responseTimesByUser = {};
-  const allUsersForResponseTimes = await db.listUsers();
-  for (const u of allUsersForResponseTimes) { responseTimesByUser[u.username] = await db.getMyResponseDurations(u.username); }
+  const responseTimesByUser = await db.getResponseDurationsByUser();
   const allResponseTimes = Object.values(responseTimesByUser).flat();
   const companyAvgResponseDays = allResponseTimes.length > 0 ? allResponseTimes.reduce((a, b) => a + b, 0) / allResponseTimes.length : null;
   const warningCounts = await db.getWarningCountsByUser();
@@ -894,9 +1049,7 @@ async function computeLeaderboard(periodKey) {
   // filtering, and building that out precisely per-period is a real, undone follow-up, not
   // silently pretended away here. Volume (the completion count itself) IS genuinely
   // period-scoped, which is the part that matters most for a leaderboard.
-  const responseTimesByUser = {};
-  const allUsersForResponseTimes = await db.listUsers();
-  for (const u of allUsersForResponseTimes) { responseTimesByUser[u.username] = await db.getMyResponseDurations(u.username); }
+  const responseTimesByUser = await db.getResponseDurationsByUser();
   const allResponseTimes = active.map(s => responseTimesByUser[s.username] || []).flat();
   const companyAvgResponseDays = allResponseTimes.length > 0 ? allResponseTimes.reduce((a, b) => a + b, 0) / allResponseTimes.length : null;
 
@@ -1042,20 +1195,15 @@ app.get('/api/reports/my-dashboard', auth(ALL_ROLES), async (req, res) => {
     const sumField = (rows, field) => rows.reduce((s, r) => s + r[field], 0);
     const completion = { week: sumField(completionAll, 'week'), month: sumField(completionAll, 'month'), year: sumField(completionAll, 'year'), allTime: sumField(completionAll, 'allTime') };
     const approval = { week: sumField(approvalAll, 'week'), month: sumField(approvalAll, 'month'), year: sumField(approvalAll, 'year'), allTime: sumField(approvalAll, 'allTime') };
-    const allUsersForDurations = await db.listUsers();
     let allDurations = [];
-    for (const u of allUsersForDurations) { allDurations = allDurations.concat(await db.getMyResponseDurations(u.username)); }
+    allDurations = Object.values(await db.getResponseDurationsByUser()).flat();
     const avgResponseDays = allDurations.length > 0 ? allDurations.reduce((a, b) => a + b, 0) / allDurations.length : null;
-    const allOpenTasks = (await db.listAllTasks()).filter(t => t.status === 'open');
     let onHoldCount = 0, waitingOnOthersCount = 0, needsActionCount = 0;
-    for (const t of allOpenTasks) {
-      const rows = await db.listAssignees(t.id);
-      rows.forEach(row => {
-        if (!row.is_released) onHoldCount++;
-        else if (row.decision === 'approve' && row.completed_at) waitingOnOthersCount++;
-        else needsActionCount++;
-      });
-    }
+    (await db.listAssigneeRowsForOpenTasks()).forEach(row => {
+      if (!row.is_released) onHoldCount++;
+      else if (row.decision === 'approve' && row.completed_at) waitingOnOthersCount++;
+      else needsActionCount++;
+    });
     const data = await db.getAllActivityTimestamps();
     const hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, total: 0 }));
     ['taskCreated', 'replies', 'submissions', 'approvals'].forEach(key => {
@@ -1085,14 +1233,13 @@ app.get('/api/reports/my-dashboard', auth(ALL_ROLES), async (req, res) => {
     ? responseDurations.reduce((a, b) => a + b, 0) / responseDurations.length
     : null;
 
-  const myOpenTasks = (await db.listTasksForUser(username)).filter(t => t.status === 'open');
+  const { openCount: myOpenCount, rows: myRows } = await db.getMyOpenTaskStateCounts(username);
   let onHoldCount = 0, waitingOnOthersCount = 0;
-  for (const t of myOpenTasks) {
-    const row = (await db.listAssignees(t.id)).find(a => a.username === username);
-    if (row && !row.is_released) onHoldCount++;
-    else if (row && row.decision === 'approve' && row.completed_at) waitingOnOthersCount++;
+  for (const row of myRows) {
+    if (!row.is_released) onHoldCount++;
+    else if (row.decision === 'approve' && row.completed_at) waitingOnOthersCount++;
   }
-  const needsActionCount = myOpenTasks.length - onHoldCount - waitingOnOthersCount;
+  const needsActionCount = myOpenCount - onHoldCount - waitingOnOthersCount;
 
   const data = await db.getAllActivityTimestamps();
   const hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, total: 0 }));
@@ -1329,6 +1476,47 @@ app.post('/api/team/members', auth(ALL_ROLES), async (req, res) => {
   res.json({ ok: true, username });
 });
 
+// The core of creating a task — the task row, every tagged person (by level), their individual
+// deadlines, optional checklist items and follow-up people, and each person's "you were
+// tagged" notification — all written through the caller's transaction `tx`. Shared by the
+// "+ New Task" form (POST /api/tasks) and bulk CSV/Excel import, so an imported task is
+// indistinguishable from one created by hand. Validation happens in the callers, before this.
+// `notify: false` skips the per-person notifications (bulk import sends one summary instead).
+async function insertTaskRecords(tx, actor, spec, { notify = true } = {}) {
+  const { id, title, stageGroups, usersByUsername } = spec;
+  await db.createTask({
+    id, title, description: spec.description, priority: spec.priority, deadline: spec.deadline,
+    created_by: actor.name, created_by_username: actor.username,
+    depends_on_task_id: spec.dependsOnTaskId || null, attachment: spec.attachment, attachment_name: spec.attachmentName,
+    is_drawing_request: !!spec.isDrawingRequest, parent_task_id: spec.parentTaskId || null,
+    project: spec.project || null, phase: spec.phase || null,
+  }, tx);
+  if (stageGroups.length > 1) await db.setAutoReleaseStages(id, !!spec.autoReleaseStages, tx);
+  const tagged = [];
+  for (const [idx, group] of stageGroups.entries()) {
+    const stageNum = idx + 1;
+    const isReleased = stageNum === 1;
+    for (const uname of group) {
+      const u = usersByUsername[uname];
+      await db.addTaskAssignee(id, u.username, u.team, stageNum, isReleased, (spec.individualDeadlines || {})[u.username], tx);
+      tagged.push({ username: u.username, stageNum, isReleased });
+      if (!notify || u.username === actor.username) continue;
+      const message = isReleased
+        ? `${actor.name} tagged you on "${title}".`
+        : `${actor.name} tagged you on "${title}" — you're on hold for now until Level ${stageNum - 1} finishes their part.`;
+      await db.createNotification({ username: u.username, type: 'task_assigned', message, task_id: id }, tx);
+    }
+  }
+  for (const [i, text] of (spec.checklist || []).entries()) await db.addChecklistItem(id, text, i, tx);
+  for (const uname of spec.followups || []) {
+    await db.addFollowup(id, uname, actor.username, tx);
+    if (notify && uname !== actor.username) {
+      await db.createNotification({ username: uname, type: 'followup_tagged', message: `${actor.name} asked you to follow up on "${title}".`, task_id: id }, tx);
+    }
+  }
+  return tagged;
+}
+
 /* ============ TASKS ============
    Anyone can create a task and tag one or more people on it. A task closes only once everyone
    tagged has completed their part — OR whoever created it (plus Admin, as the one retained
@@ -1374,7 +1562,8 @@ app.post('/api/tasks', auth(ALL_ROLES), async (req, res) => {
       individualDeadlines[uname] = cleaned;
     }
   }
-  if (!title || usernames.length === 0) return res.status(400).json({ error: 'Title and at least one tagged person are required.' });
+  // Tagging people is optional — a task can start untagged and have people added later.
+  if (!title) return res.status(400).json({ error: 'A title is required.' });
   if (!deadline) return res.status(400).json({ error: 'A deadline is required.' });
   if (!parseDeadline(deadline)) return res.status(400).json({ error: 'Deadline is not a valid date.' });
   if (tooLong(title, 200)) return res.status(400).json({ error: 'Title is too long (max 200 characters).' });
@@ -1419,25 +1608,10 @@ app.post('/api/tasks', auth(ALL_ROLES), async (req, res) => {
   // error on one insert) can no longer leave a task half-created with some assignees tagged and
   // others silently missing.
   await db.runInTransaction(async (tx) => {
-    await db.createTask({
-      id, title, description, priority, deadline, created_by: req.user.name, created_by_username: req.user.username,
-      depends_on_task_id: dependsOnTaskId || null, attachment, attachment_name: attachmentName, is_drawing_request: isDrawingRequest,
-      parent_task_id: parentTaskId || null, project: project || null, phase: phase || null,
-    }, tx);
-    if (stageGroups.length > 1) await db.setAutoReleaseStages(id, autoReleaseStages, tx);
-    for (const [idx, group] of stageGroups.entries()) {
-      const stageNum = idx + 1;
-      const isReleased = stageNum === 1;
-      for (const uname of group) {
-        const u = usersByUsername[uname];
-        await db.addTaskAssignee(id, u.username, u.team, stageNum, isReleased, individualDeadlines[u.username], tx);
-        if (u.username === req.user.username) continue;
-        const message = isReleased
-          ? `${req.user.name} tagged you on "${title}".`
-          : `${req.user.name} tagged you on "${title}" — you're on hold for now until Level ${stageNum - 1} finishes their part.`;
-        await db.createNotification({ username: u.username, type: 'task_assigned', message, task_id: id }, tx);
-      }
-    }
+    await insertTaskRecords(tx, req.user, {
+      id, title, description, priority, deadline, dependsOnTaskId, parentTaskId, project, phase,
+      attachment, attachmentName, isDrawingRequest, autoReleaseStages, stageGroups, usersByUsername, individualDeadlines,
+    });
   });
   // Tell the prerequisite task's creator and assignees that something new now depends on it —
   // clears up "does picking this send a notification?": yes, but only to the task it depends
@@ -1464,7 +1638,244 @@ app.post('/api/tasks', auth(ALL_ROLES), async (req, res) => {
   await auditFromReq(req, 'task_created', `Created ${parentTask ? 'subtask' : 'task'} "${title}" (${id})${parentTask ? ` under "${parentTask.title}"` : ''}.`);
   res.json({ ok: true, id });
 });
-app.get('/api/tasks', auth(['admin']), async (req, res) => res.json(await Promise.all((await db.listAllTasks()).map(t => db.getTaskFullLight(t.id)))));
+/* ============ BULK TASK IMPORT (CSV / Excel) ============
+   Two steps, so nothing is ever created by surprise: /preview parses the file and returns every
+   row with the people it resolved and any problems; /import re-reads the same file, re-checks
+   everything against the live data, and creates all the valid tasks in ONE transaction (all of
+   them or none). The importer becomes the creator of every task — the same authority as creating
+   them one by one through "+ New Task". */
+async function buildImportPlan(body) {
+  const parsed = await taskImport.parseImportFile((body || {}).fileData, str((body || {}).fileName));
+  const users = await db.listUsers();
+  const teams = await db.listTeams();
+  const refs = await db.listTaskRefs();
+  const plan = taskImport.planImport(parsed.rows, {
+    users, teams,
+    openTasks: refs.filter(t => t.status === 'open'),
+    tasksById: new Map(refs.map(t => [t.id.toUpperCase(), t])),
+  });
+  // Rows with a Task Key that was imported before update that task instead of duplicating it:
+  // only its deadline is changed (people, title etc. stay as they are in the app — they may have
+  // been edited there since). A key belonging to a closed/cancelled task is left alone.
+  const keyed = plan.plans.filter(p => p.taskKey && p.errors.length === 0);
+  const existing = await db.getTasksByImportKeys(Array.from(new Set(keyed.map(p => p.taskKey))));
+  const byKey = new Map();
+  for (const t of existing) { const cur = byKey.get(t.import_key); if (!cur || (cur.status !== 'open' && t.status === 'open')) byKey.set(t.import_key, t); }
+  for (const p of plan.plans) {
+    const t = p.taskKey && byKey.get(p.taskKey);
+    if (!t) { p.action = 'create'; continue; }
+    p.existing = { id: t.id, title: t.title, status: t.status, deadline: t.deadline };
+    // Compare with what the FILE said last time, not with the task's current deadline: if the
+    // row is the same as last upload but someone moved the deadline inside the app, that app
+    // change is kept rather than silently reverted by an unchanged spreadsheet.
+    const lastFileDeadline = t.import_deadline || t.deadline;
+    if (t.status !== 'open') p.action = 'closed';
+    else if (p.deadline && p.deadline !== lastFileDeadline) p.action = 'update';
+    else { p.action = 'unchanged'; if (t.deadline !== lastFileDeadline) p.existing.keptAppChange = true; }
+  }
+  return { parsed, plan };
+}
+function importCounts(plan) {
+  const ok = plan.plans.filter(p => p.errors.length === 0);
+  return {
+    createCount: ok.filter(p => p.action === 'create').length,
+    updateCount: ok.filter(p => p.action === 'update').length,
+    unchangedCount: ok.filter(p => p.action === 'unchanged').length,
+    closedCount: ok.filter(p => p.action === 'closed').length,
+  };
+}
+function importErrorResponse(res, e) {
+  if (e && e.isImportError) return res.status(400).json({ error: e.message });
+  log('ERROR', 'task import failed', { error: e && e.message });
+  return res.status(500).json({ error: 'Reading the file failed. Check it opens in Excel, then try again.' });
+}
+app.get('/api/tasks/import/template', auth(ALL_ROLES), async (req, res) => {
+  try {
+    const users = await db.listUsers();
+    if (str(req.query.format) === 'csv') {
+      const csv = taskImport.buildTemplateCSV(users);
+      return res.json({ name: 'task-import-template.csv', data: 'data:text/csv;base64,' + Buffer.from(csv, 'utf8').toString('base64') });
+    }
+    const buf = await taskImport.buildTemplateXLSX(users);
+    res.json({ name: 'task-import-template.xlsx', data: 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + buf.toString('base64') });
+  } catch (e) { importErrorResponse(res, e); }
+});
+app.post('/api/tasks/import/preview', auth(ALL_ROLES), async (req, res) => {
+  try {
+    const { parsed, plan } = await buildImportPlan(req.body);
+    res.json({
+      totalRows: plan.plans.length, validCount: plan.validCount, errorCount: plan.errorCount, ...importCounts(plan),
+      columns: parsed.columns, unknownColumns: parsed.unknownColumns, duplicateColumns: parsed.duplicateColumns, skippedByImportColumn: parsed.skippedByImportColumn,
+      rows: plan.plans.map(p => taskImport.planSummary(p, plan.userMap)),
+    });
+  } catch (e) { importErrorResponse(res, e); }
+});
+app.post('/api/tasks/import', auth(ALL_ROLES), async (req, res) => {
+  let built;
+  try { built = await buildImportPlan(req.body); } catch (e) { return importErrorResponse(res, e); }
+  const { plan } = built;
+  const skipInvalid = !!(req.body || {}).skipInvalid;
+  const counts = importCounts(plan);
+  if (plan.validCount === 0) return res.status(400).json({ error: 'None of the rows can be imported — fix the problems shown in the preview first.' });
+  if (plan.errorCount > 0 && !skipInvalid) {
+    return res.status(400).json({ error: `${plan.errorCount} row(s) have problems. Fix them, or choose to import only the ${plan.validCount} valid row(s).` });
+  }
+  if (counts.createCount + counts.updateCount === 0) return res.json({ ok: true, created: [], updated: [], ...counts, skipped: [] });
+
+  const usedIds = new Set();
+  const rowTaskId = new Map(); // rowNumber -> task id (new or existing), for Depends On / Parent Task between rows
+  for (const p of plan.plans) if (p.existing) rowTaskId.set(p.rowNumber, p.existing.id);
+  const toCreate = plan.order.filter(p => p.errors.length === 0 && p.action === 'create');
+  for (const p of toCreate) { let id; do { id = genId('TASK'); } while (usedIds.has(id)); usedIds.add(id); rowTaskId.set(p.rowNumber, id); }
+  const refId = r => (!r ? null : r.kind === 'row' ? rowTaskId.get(r.rowNumber) : r.id);
+  const bulk = { tasks: [], assignees: [], checklist: [], followups: [] };
+  const created = [];
+  const taggedByPerson = new Map();
+  const note = (u, kind, title, taskId) => {
+    if (u === req.user.username) return;
+    if (!taggedByPerson.has(u)) taggedByPerson.set(u, { released: [], onHold: [], followup: [], deadline: [], tasks: [] });
+    const e = taggedByPerson.get(u); e[kind].push(title); e.tasks.push({ kind, title, taskId });
+  };
+  for (const p of toCreate) {
+    const id = rowTaskId.get(p.rowNumber);
+    bulk.tasks.push({ id, title: p.title, description: p.description, priority: p.priority, deadline: p.deadline,
+      created_by: req.user.name, created_by_username: req.user.username, depends_on_task_id: refId(p.dependsOn), parent_task_id: refId(p.parent),
+      project: p.project, phase: p.phase, auto_release_stages: p.autoReleaseStages && p.stageGroups.length > 1, import_key: p.taskKey || null });
+    p.stageGroups.forEach((group, idx) => group.forEach(u => {
+      bulk.assignees.push({ task_id: id, username: u, team: (plan.userMap.get(u) || {}).team, stage: idx + 1, is_released: idx === 0, individual_deadline: p.individualDeadlines[u] });
+      note(u, idx === 0 ? 'released' : 'onHold', p.title, id);
+    }));
+    p.checklist.forEach((text, i) => bulk.checklist.push({ task_id: id, text, sort_order: i }));
+    p.followups.forEach(u => { bulk.followups.push({ task_id: id, username: u, tagged_by: req.user.username }); note(u, 'followup', p.title, id); });
+    created.push({ rowNumber: p.rowNumber, id, title: p.title });
+  }
+  const toUpdate = plan.plans.filter(p => p.errors.length === 0 && p.action === 'update');
+  const updated = toUpdate.map(p => ({ rowNumber: p.rowNumber, id: p.existing.id, title: p.existing.title, from: p.existing.deadline, to: p.deadline }));
+  try {
+    await db.runInTransaction(async (tx) => {
+      await db.bulkInsertTasks(tx, bulk);
+      await db.bulkUpdateDeadlines(tx, updated.map(u => ({ id: u.id, deadline: u.to })));
+    });
+  } catch (e) {
+    log('ERROR', 'bulk task import transaction failed', { requestId: req.id, error: e.message });
+    return res.status(500).json({ error: 'The import failed and nothing was changed — please try again.' });
+  }
+  // Notifications after commit. A handful → the normal one-per-task messages; many → one summary
+  // per person, so a big import doesn't fire hundreds of phone/WhatsApp alerts at someone.
+  try {
+    if (updated.length) {
+      const assigneeRows = await db.pool.query('SELECT task_id, username, individual_deadline, completed_at FROM task_assignees WHERE task_id = ANY($1::text[])', [updated.map(u => u.id)]);
+      const upd = new Map(updated.map(u => [u.id, u]));
+      for (const a of assigneeRows.rows) if (!a.completed_at && !a.individual_deadline) note(a.username, 'deadline', `${upd.get(a.task_id).title}" → ${upd.get(a.task_id).to.replace('T', ' ')}`, a.task_id);
+    }
+    for (const [username, e] of taggedByPerson) {
+      if (e.tasks.length <= 3) {
+        for (const t of e.tasks) {
+          const message = t.kind === 'released' ? `${req.user.name} tagged you on "${t.title}".`
+            : t.kind === 'onHold' ? `${req.user.name} tagged you on "${t.title}" — you're on hold for now until the level before you finishes their part.`
+            : t.kind === 'deadline' ? `${req.user.name} changed the deadline: "${t.title}.`
+            : `${req.user.name} asked you to follow up on "${t.title}".`;
+          await db.createNotification({ username, type: t.kind === 'followup' ? 'followup_tagged' : t.kind === 'deadline' ? 'individual_deadline_set' : 'task_assigned', message, task_id: t.taskId });
+        }
+      } else {
+        const parts = [];
+        if (e.released.length) parts.push(`tagged you on ${e.released.length} new task(s)`);
+        if (e.onHold.length) parts.push(`${e.onHold.length} more where you're on hold until an earlier level finishes`);
+        if (e.followup.length) parts.push(`${e.followup.length} to follow up on`);
+        if (e.deadline.length) parts.push(`changed the deadline on ${e.deadline.length} of your task(s)`);
+        await db.createNotification({ username, type: 'task_assigned', message: `${req.user.name} uploaded a task schedule and ${parts.join(', ')}. Check your task list.`, task_id: null });
+      }
+    }
+  } catch (e) { log('ERROR', 'bulk import notifications failed', { requestId: req.id, error: e.message }); }
+  const skipped = plan.plans.filter(p => p.errors.length).map(p => ({ rowNumber: p.rowNumber, title: p.title, errors: p.errors }));
+  // Keep this upload as the master copy of the schedule, so it can be downloaded again later with
+  // every row's status and timestamps filled in (Export & Archive page).
+  try { await db.saveImportFile(str((req.body || {}).fileName) || 'schedule.xlsx', (req.body || {}).fileData, req.user.username); }
+  catch (e) { log('ERROR', 'saving schedule master copy failed', { requestId: req.id, error: e.message }); }
+  await auditFromReq(req, 'tasks_imported', `Imported "${str((req.body || {}).fileName) || 'a file'}": ${created.length} task(s) created, ${updated.length} deadline(s) changed, ${counts.unchangedCount} unchanged${counts.closedCount ? `, ${counts.closedCount} already closed (left alone)` : ''}${skipped.length ? `, ${skipped.length} row(s) skipped with problems` : ''}.${updated.length ? ' Deadline changes: ' + updated.slice(0, 15).map(u => `${u.id} ${u.from} → ${u.to}`).join('; ') + (updated.length > 15 ? '; …' : '') : ''}`);
+  res.json({ ok: true, created: created.sort((a, b) => a.rowNumber - b.rowNumber), updated, unchangedCount: counts.unchangedCount, closedCount: counts.closedCount, skipped });
+});
+/* ============ HISTORY EXPORT, SCHEDULE TIMESTAMPS, ARCHIVE (Admin) ============ */
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const isLocalDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
+// Local calendar date → the instant that day starts / ends in the company's timezone.
+const localDayEnd = d => taskExport.deadlineEndsAt(d).toISOString();
+const localDayStart = d => new Date(taskExport.deadlineEndsAt(d).getTime() - 86400000 + 60000).toISOString();
+async function lookupTasksForSchedule({ keys, titles }) {
+  const byKey = new Map(), byTitle = new Map();
+  for (const t of await db.getTaskHistory({ keys: Array.from(new Set(keys)) })) {
+    const cur = byKey.get(t.import_key);
+    if (!cur || (cur.status !== 'open' && t.status === 'open')) byKey.set(t.import_key, t);
+  }
+  if (titles.length) {
+    const counts = new Map();
+    const found = await db.getTaskHistory({ titles: Array.from(new Set(titles)) });
+    found.forEach(t => counts.set(t.title.toLowerCase(), (counts.get(t.title.toLowerCase()) || 0) + 1));
+    found.forEach(t => { if (counts.get(t.title.toLowerCase()) === 1) byTitle.set(t.title.toLowerCase(), t); });
+  }
+  return { byKey, byTitle };
+}
+function withTimestampsName(name) {
+  const base = String(name || 'schedule.xlsx').replace(/\.(xlsx|xlsm|csv|txt)$/i, '').replace(/ \(with timestamps[^)]*\)$/, '');
+  const d = new Date(); const p = n => String(n).padStart(2, '0');
+  return `${base} (with timestamps ${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}).xlsx`;
+}
+app.get('/api/tasks/history-export', auth(['admin']), async (req, res) => {
+  try {
+    const mode = str(req.query.mode) === 'all' ? 'all' : 'completed';
+    const from = str(req.query.from), to = str(req.query.to), project = str(req.query.project).trim() || null;
+    if ((from && !isLocalDate(from)) || (to && !isLocalDate(to))) return res.status(400).json({ error: 'Dates must be YYYY-MM-DD.' });
+    const tasks = await db.getTaskHistory({ mode, project, from: from ? localDayStart(from) : null, to: to ? localDayEnd(to) : null });
+    const label = `${from || 'start'}_to_${to || new Date().toISOString().slice(0, 10)}`;
+    const buf = await taskExport.buildHistoryWorkbook(tasks, { title: `Task history${project ? ' — ' + project : ''}`, from: from ? localDayStart(from) : null, to: to ? localDayEnd(to) : null, mode });
+    await auditFromReq(req, 'history_exported', `Exported task history (${mode}, ${label}${project ? ', ' + project : ''}): ${tasks.length} task(s).`);
+    res.json({ name: `Task history ${label}${project ? ' ' + project.replace(/[^\w -]+/g, '') : ''}.xlsx`, count: tasks.length, data: `data:${XLSX_MIME};base64,` + buf.toString('base64') });
+  } catch (e) { log('ERROR', 'history export failed', { requestId: req.id, error: e.message }); res.status(500).json({ error: 'Export failed — please try again.' }); }
+});
+app.get('/api/schedules', auth(['admin']), async (req, res) => res.json(await db.listImportFiles()));
+app.get('/api/schedules/:id/download', auth(['admin']), async (req, res) => {
+  const f = await db.getImportFile(parseInt(req.params.id, 10) || 0);
+  if (!f) return res.status(404).json({ error: 'Schedule not found.' });
+  if (!/\.(xlsx|xlsm)$/i.test(f.file_name)) return res.status(400).json({ error: 'Timestamps can only be written into Excel (.xlsx) schedules — export the task history instead.' });
+  try {
+    const { buffer, stats } = await taskExport.fillScheduleTimestamps(taskImport.decodeDataUrl(f.data), lookupTasksForSchedule);
+    res.json({ name: withTimestampsName(f.file_name), stats, data: `data:${XLSX_MIME};base64,` + buffer.toString('base64') });
+  } catch (e) { if (e.isImportError) return res.status(400).json({ error: e.message }); log('ERROR', 'schedule download failed', { requestId: req.id, error: e.message }); res.status(500).json({ error: 'Building the file failed — please try again.' }); }
+});
+app.delete('/api/schedules/:id', auth(['admin']), async (req, res) => {
+  const n = await db.deleteImportFile(parseInt(req.params.id, 10) || 0);
+  if (!n) return res.status(404).json({ error: 'Schedule not found.' });
+  await auditFromReq(req, 'schedule_removed', `Removed saved schedule #${req.params.id}.`);
+  res.json({ ok: true });
+});
+// Fill timestamps into any schedule spreadsheet the admin uploads (e.g. one kept on their PC).
+app.post('/api/schedules/fill', auth(['admin']), async (req, res) => {
+  const { fileData, fileName } = req.body || {};
+  if (!/\.(xlsx|xlsm)$/i.test(str(fileName))) return res.status(400).json({ error: 'Choose an Excel (.xlsx) file.' });
+  try {
+    const { buffer, stats } = await taskExport.fillScheduleTimestamps(taskImport.decodeDataUrl(fileData), lookupTasksForSchedule);
+    res.json({ name: withTimestampsName(fileName), stats, data: `data:${XLSX_MIME};base64,` + buffer.toString('base64') });
+  } catch (e) { if (e.isImportError) return res.status(400).json({ error: e.message }); log('ERROR', 'schedule fill failed', { requestId: req.id, error: e.message }); res.status(500).json({ error: 'That file couldn\'t be read — save it as .xlsx and try again.' }); }
+});
+app.get('/api/tasks/archive/preview', auth(['admin']), async (req, res) => {
+  const before = str(req.query.before);
+  if (!isLocalDate(before)) return res.status(400).json({ error: 'Pick a date.' });
+  const ids = await db.listArchivableTaskIds(localDayEnd(before));
+  res.json({ count: ids.length, alreadyArchived: await db.countArchivedTasks() });
+});
+app.post('/api/tasks/archive', auth(['admin']), async (req, res) => {
+  const before = str((req.body || {}).before);
+  if (!isLocalDate(before)) return res.status(400).json({ error: 'Pick a date.' });
+  const ids = await db.listArchivableTaskIds(localDayEnd(before));
+  if (!ids.length) return res.json({ ok: true, archived: 0 });
+  let archived;
+  try { archived = await db.archiveTasks(ids); }
+  catch (e) { log('ERROR', 'archiving failed', { requestId: req.id, error: e.message }); return res.status(500).json({ error: 'Removing the tasks failed and nothing was changed — please try again.' }); }
+  await auditFromReq(req, 'tasks_archived', `Removed ${archived} completed/cancelled task(s) finished on or before ${before} from the site (history kept for exports and reports).`);
+  res.json({ ok: true, archived });
+});
+
+app.get('/api/tasks', auth(['admin']), async (req, res) => res.json(await db.listTasksFullLight('all')));
 // Minimal open-task list (id + title only, no other details) so EVERY user — not just Admin —
 // can pick a company-wide "Depends On" task, since a dependency very often belongs to a
 // different team than the one creating the new task. Previously this used each user's own
@@ -1473,9 +1884,9 @@ app.get('/api/tasks/open-titles', auth(ALL_ROLES), async (req, res) => {
   // Includes deadline in the payload so the dropdown can disambiguate tasks that share the same
   // title — e.g. every unedited "Ask for Drawing" task defaults to the literal title "Drawing
   // Request," which made the list look like it only ever showed one confusing repeated entry.
-  res.json((await db.listAllTasks()).filter(t => t.status === 'open').map(t => ({ id: t.id, title: t.title, deadline: t.deadline })));
+  res.json(await db.listOpenTaskTitles());
 });
-app.get('/api/tasks/mine', auth(ALL_ROLES), async (req, res) => res.json(await Promise.all((await db.listTasksForUser(req.user.username)).map(t => db.getTaskFullLight(t.id)))));
+app.get('/api/tasks/mine', auth(ALL_ROLES), async (req, res) => res.json(await db.listTasksFullLight('user', req.user.username)));
 app.get('/api/tasks/:id', auth(ALL_ROLES), async (req, res) => {
   const task = await db.getTaskFull(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
@@ -1598,6 +2009,32 @@ app.post('/api/tasks/:id/assignees', auth(ALL_ROLES), async (req, res) => {
   }
   res.json({ ok: true, added });
 });
+// Changes a task's overall deadline — creator or Admin only (same authority as setting it in the
+// first place). Everyone on the task is told, reminders restart for the new date, and the change
+// (old → new) goes in the audit log.
+app.post('/api/tasks/:id/deadline', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: 'Task not found.' });
+  if (task.status !== 'open') return res.status(400).json({ error: 'Only an open task\'s deadline can be changed.' });
+  const isCreator = task.created_by_username && task.created_by_username === req.user.username;
+  if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can change its deadline.' });
+  const deadline = str((req.body || {}).deadline).trim();
+  if (!deadline) return res.status(400).json({ error: 'Pick the new deadline.' });
+  if (!parseDeadline(deadline)) return res.status(400).json({ error: 'Deadline is not a valid date.' });
+  if (deadline === task.deadline) return res.json({ ok: true, unchanged: true });
+  const reason = str((req.body || {}).reason).trim();
+  if (tooLong(reason, 500)) return res.status(400).json({ error: 'Reason is too long (max 500 characters).' });
+  const changed = await db.updateTaskDeadline(task.id, deadline);
+  if (!changed) return res.status(409).json({ error: 'This task was just closed or changed by someone else — refresh and try again.' });
+  const assignees = await db.listAssignees(task.id);
+  for (const a of assignees) {
+    if (a.username === req.user.username || a.completed_at) continue;
+    await db.createNotification({ username: a.username, type: 'individual_deadline_set',
+      message: `${req.user.name} changed the deadline of "${task.title}" to ${deadline.replace('T', ' ')}${a.individual_deadline ? ' (your own individual deadline stays as it was)' : ''}${reason ? ` — ${reason}` : ''}.`, task_id: task.id });
+  }
+  await auditFromReq(req, 'task_deadline_changed', `Changed deadline of "${task.title}" (${task.id}) from ${task.deadline || 'none'} to ${deadline}${reason ? `: ${reason}` : ''}.`);
+  res.json({ ok: true });
+});
 // Sets or clears one person's individual deadline on an existing task — creator/Admin only,
 // same authority level as adding people to a task in the first place.
 app.post('/api/tasks/:id/assignees/:username/deadline', auth(ALL_ROLES), async (req, res) => {
@@ -1629,7 +2066,6 @@ app.delete('/api/tasks/:id/assignees/:username', auth(ALL_ROLES), async (req, re
   const target = assignees.find(a => a.username === req.params.username);
   if (!target) return res.status(404).json({ error: 'That person is not tagged on this task.' });
   if (target.submitted_at || target.completed_at) return res.status(400).json({ error: "Can't remove someone who has already submitted or been approved on this task — that's real recorded work and stays on record." });
-  if (assignees.length <= 1) return res.status(400).json({ error: 'A task needs at least one tagged person — add someone else first.' });
   await db.removeTaskAssignee(task.id, req.params.username);
   res.json({ ok: true });
 });
@@ -1943,7 +2379,8 @@ async function sendTaskReminders() {
   // stage — they can't act on it yet, so reminding or warning them (or their creator) would be
   // blaming someone for a delay that isn't theirs.
   const allOpenRows = await db.listIncompleteAssigneesForOpenTasks();
-  const blockedFlags = await Promise.all(allOpenRows.map(r => db.isTaskBlocked(r.task_id)));
+  const blockedIds = await db.listBlockedTaskIds();
+  const blockedFlags = allOpenRows.map(r => blockedIds.has(r.task_id));
   const rows = allOpenRows.filter((r, idx) => !blockedFlags[idx] && r.is_released);
   let sent = 0;
   for (const r of rows) {
@@ -1969,7 +2406,8 @@ async function sendEscalatingTaskReminders() {
   // act since the moment it became blocked, so escalating warnings about them specifically would
   // be punishing them for someone else's delay.
   const allEscalationRows = await db.listIncompleteAssigneesForEscalation();
-  const escalationBlockedFlags = await Promise.all(allEscalationRows.map(r => db.isTaskBlocked(r.task_id)));
+  const escalationBlockedIds = await db.listBlockedTaskIds();
+  const escalationBlockedFlags = allEscalationRows.map(r => escalationBlockedIds.has(r.task_id));
   const rows = allEscalationRows.filter((r, idx) => !escalationBlockedFlags[idx] && r.is_released);
   const msPerHour = 3600000;
   const adminUsernames = await db.listAdminUsernames();
@@ -2038,10 +2476,11 @@ async function sendDeadlineReminders() {
   // Task-level: notify the creator once when the OVERALL task deadline passes — Admin/creator
   // cares about the task as a whole, not each tagged person's own individual deadline.
   const tasks = await db.listOpenTasksWithDeadlines();
+  const blockedForDeadlines = await db.listBlockedTaskIds();
   for (const t of tasks) {
     const deadlineDate = parseDeadline(t.deadline);
     if (!deadlineDate) continue;
-    if (await db.isTaskBlocked(t.id)) continue; // blocked tasks stay exempt from all reminder types
+    if (blockedForDeadlines.has(t.id)) continue; // blocked tasks stay exempt from all reminder types
     if (!t.deadline_overdue_notified && isDeadlinePassed(t.deadline, now)) {
       if (t.created_by_username) await db.createNotification({ username: t.created_by_username, type: 'deadline_passed', message: `"${t.title}" has passed its deadline and is still open.`, task_id: t.id });
       await db.markDeadlineOverdueNotified(t.id);
@@ -2053,7 +2492,8 @@ async function sendDeadlineReminders() {
   // without an individual deadline, this produces exactly the same result as before — the
   // fallback IS the task deadline, so nothing changes for tasks that never used this feature.
   const allDeadlineRows = await db.listIncompleteAssigneesForDeadlineCheck();
-  const deadlineBlockedFlags = await Promise.all(allDeadlineRows.map(r => db.isTaskBlocked(r.task_id)));
+  const deadlineBlockedIds = await db.listBlockedTaskIds();
+  const deadlineBlockedFlags = allDeadlineRows.map(r => deadlineBlockedIds.has(r.task_id));
   const rows = allDeadlineRows.filter((r, idx) => r.is_released && !deadlineBlockedFlags[idx]);
   for (const r of rows) {
     const effectiveDeadlineStr = r.individual_deadline || r.task_deadline;
