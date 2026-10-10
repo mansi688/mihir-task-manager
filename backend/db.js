@@ -61,11 +61,15 @@ let userListCache = null;
 let usersVersion = 0;
 writeListeners.push((table) => { if (table === 'users') { usersVersion++; userRowCache.clear(); userListCache = null; } });
 // Writes that don't change anything shown to users (login bookkeeping, the audit trail).
-const UNTRACKED_TABLES = new Set(['sessions', 'audit_log']);
+// Chat has its own counter: a chat message must not make every open screen re-download all task
+// data (which dataVersion triggers). Clients watch chatVersion separately and refresh only chat.
+const UNTRACKED_TABLES = new Set(['sessions', 'audit_log', 'chat_messages', 'chat_files', 'chat_reads']);
+let chatVersion = 0;
 function noteWrite(text) {
   const m = /^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?(\w+)/i.exec(text);
   if (!m) return;
   const table = m[1].toLowerCase();
+  if (table.startsWith('chat_')) chatVersion++;
   if (UNTRACKED_TABLES.has(table)) return;
   dataVersion++;
   for (const fn of writeListeners) { try { fn(table); } catch (e) { /* listeners must never break a write */ } }
@@ -364,6 +368,30 @@ async function init() {
   // The last uploaded copy of each schedule file — "download it again with timestamps filled in".
   await run(`CREATE TABLE IF NOT EXISTS import_files(
     id SERIAL PRIMARY KEY, file_name TEXT NOT NULL, data TEXT NOT NULL, uploaded_by TEXT, uploaded_at TEXT NOT NULL)`);
+  // Multiple attachments per task / per reply. reply_id NULL = attached to the task itself.
+  // Deleting a task or a reply removes its files with it.
+  await run(`CREATE TABLE IF NOT EXISTS task_files(
+    id SERIAL PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    reply_id INTEGER REFERENCES task_replies(id) ON DELETE CASCADE,
+    name TEXT NOT NULL, data TEXT NOT NULL, uploaded_by TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_task_files_task ON task_files(task_id)');
+  // Chat: 'general' (everyone) or 'team:<department>' rooms; files hang off a message.
+  await run(`CREATE TABLE IF NOT EXISTS chat_messages(
+    id SERIAL PRIMARY KEY, room TEXT NOT NULL DEFAULT 'general',
+    by_username TEXT NOT NULL, by_name TEXT, message TEXT, created_at TEXT NOT NULL, deleted_at TEXT)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_chat_room_time ON chat_messages(room, id)');
+  await run(`CREATE TABLE IF NOT EXISTS chat_files(
+    id SERIAL PRIMARY KEY, message_id INTEGER NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+    name TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_chat_files_msg ON chat_files(message_id)');
+  await run(`CREATE TABLE IF NOT EXISTS chat_reads(
+    username TEXT NOT NULL, room TEXT NOT NULL, last_read_id INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(username, room))`);
+  // Announcements: circulated to everyone; event_date (optional) puts it on the calendar.
+  await run(`CREATE TABLE IF NOT EXISTS announcements(
+    id SERIAL PRIMARY KEY, title TEXT NOT NULL, body TEXT, emoji TEXT, category TEXT,
+    event_date TEXT, pinned INTEGER DEFAULT 0,
+    created_by_username TEXT, created_by_name TEXT, created_at TEXT NOT NULL, deleted_at TEXT)`);
   await run('CREATE INDEX IF NOT EXISTS idx_tasks_import_key ON tasks(import_key)');
   await run('CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)');
   await run('CREATE INDEX IF NOT EXISTS idx_task_assignees_user ON task_assignees(username)');
@@ -416,6 +444,7 @@ module.exports = {
   pool, // exposed for a clean shutdown (pool.end()) and for /ready health checks
   runInTransaction,
   getDataVersion() { return dataVersion; },
+  getChatVersion() { return chatVersion; },
   bumpDataVersion() { dataVersion++; },
   onWrite(fn) { writeListeners.push(fn); },
   getQueryCount() { return queryCount; },
@@ -857,6 +886,7 @@ module.exports = {
     const checklist = group(await all('SELECT * FROM task_checklist_items WHERE task_id = ANY(?::text[]) ORDER BY sort_order, id', [ids]));
     const replies = group(await all(`SELECT id, task_id, by_username, by_name, message, attachment_name, created_at, (attachment IS NOT NULL) AS has_attachment
       FROM task_replies WHERE task_id = ANY(?::text[]) ORDER BY created_at`, [ids]));
+    const fileMeta = await module.exports.listTaskFileMeta(ids);
     const subs = await all('SELECT id, title, status, priority, deadline, parent_task_id FROM tasks WHERE parent_task_id = ANY(?::text[]) ORDER BY created_at ASC', [ids]);
     const subsByParent = new Map();
     for (const sub of subs) {
@@ -874,7 +904,8 @@ module.exports = {
         assignees: assignees.get(t.id) || [],
         followups: followups.get(t.id) || [],
         checklist: checklist.get(t.id) || [],
-        replies: replies.get(t.id) || [],
+        replies: (replies.get(t.id) || []).map(r => ({ ...r, attachments: fileMeta.filter(f => f.reply_id === r.id).map(f => ({ id: f.id, name: f.name })) })),
+        files: fileMeta.filter(f => f.task_id === t.id && !f.reply_id).map(f => ({ id: f.id, name: f.name })),
         subtasks,
         subtaskCount: subtasks.length,
         openSubtaskCount: subtasks.filter(x => x.status === 'open').length,
@@ -993,7 +1024,7 @@ module.exports = {
           FROM (VALUES ${values}) AS v(id, summary) WHERE tasks.id = v.id AND tasks.archived_at IS NULL`,
           [now, ...chunk.flatMap(id => [id, JSON.stringify(summaries.get(id))])]);
         count += r.rowCount;
-        for (const table of ['task_replies', 'task_checklist_items', 'task_followups', 'notifications']) {
+        for (const table of ['task_files', 'task_replies', 'task_checklist_items', 'task_followups', 'notifications']) {
           await tx.run(`DELETE FROM ${table} WHERE task_id = ANY(?::text[])`, [chunk]);
         }
       }
@@ -1042,9 +1073,83 @@ module.exports = {
   async listChecklistItems(taskId) { return all('SELECT * FROM task_checklist_items WHERE task_id=? ORDER BY sort_order, id', [taskId]); },
   async getChecklistItem(id) { return get('SELECT * FROM task_checklist_items WHERE id=?', [id]); },
   async addReply(taskId, { by_username, by_name, message, attachment, attachment_name }) {
-    await run('INSERT INTO task_replies(task_id,by_username,by_name,message,attachment,attachment_name,created_at) VALUES(?,?,?,?,?,?,?)',
+    const row = await get('INSERT INTO task_replies(task_id,by_username,by_name,message,attachment,attachment_name,created_at) VALUES(?,?,?,?,?,?,?) RETURNING id',
       [taskId, by_username, by_name, message || null, attachment || null, attachment_name || null, new Date().toISOString()]);
+    return row ? row.id : null;
   },
+  // ---- multiple attachments ----
+  async addTaskFiles(taskId, replyId, files, uploadedBy, tx) {
+    const runner = tx ? tx.run : run;
+    const now = new Date().toISOString();
+    for (const f of files || []) {
+      await runner('INSERT INTO task_files(task_id, reply_id, name, data, uploaded_by, created_at) VALUES(?,?,?,?,?,?)', [taskId, replyId || null, f.name, f.data, uploadedBy || null, now]);
+    }
+  },
+  async listTaskFileMeta(taskIds) {
+    if (!taskIds.length) return [];
+    return all('SELECT id, task_id, reply_id, name FROM task_files WHERE task_id = ANY(?::text[]) ORDER BY id', [taskIds]);
+  },
+  async getTaskFile(fileId) {
+    const id = Number(fileId);
+    if (!Number.isInteger(id)) return null;
+    return get('SELECT id, task_id, reply_id, name, data FROM task_files WHERE id=?', [id]);
+  },
+  // ---- chat ----
+  async addChatMessage({ room, by_username, by_name, message, files }) {
+    return runInTransaction(async (tx) => {
+      const now = new Date().toISOString();
+      const row = await tx.get('INSERT INTO chat_messages(room, by_username, by_name, message, created_at) VALUES(?,?,?,?,?) RETURNING id', [room, by_username, by_name, message || null, now]);
+      for (const f of files || []) await tx.run('INSERT INTO chat_files(message_id, name, data, created_at) VALUES(?,?,?,?)', [row.id, f.name, f.data, now]);
+      return row.id;
+    });
+  },
+  async listChatMessages(room, { afterId = 0, beforeId = null, limit = 60 } = {}) {
+    const lim = Math.max(1, Math.min(200, Number(limit) || 60));
+    const rows = beforeId
+      ? await all('SELECT * FROM chat_messages WHERE room=? AND id < ? ORDER BY id DESC LIMIT ?', [room, Number(beforeId), lim])
+      : afterId
+        ? await all('SELECT * FROM chat_messages WHERE room=? AND id > ? ORDER BY id DESC LIMIT ?', [room, Number(afterId), lim])
+        : await all('SELECT * FROM chat_messages WHERE room=? ORDER BY id DESC LIMIT ?', [room, lim]);
+    rows.reverse();
+    const ids = rows.map(r => r.id);
+    const files = ids.length ? await all('SELECT id, message_id, name FROM chat_files WHERE message_id = ANY(?::int[]) ORDER BY id', [ids]) : [];
+    return rows.map(r => ({ ...r, files: r.deleted_at ? [] : files.filter(f => f.message_id === r.id).map(f => ({ id: f.id, name: f.name })), message: r.deleted_at ? null : r.message }));
+  },
+  async getChatMessage(id) { return get('SELECT * FROM chat_messages WHERE id=?', [Number(id)]); },
+  async deleteChatMessage(id) {
+    await run('UPDATE chat_messages SET deleted_at=?, message=NULL WHERE id=?', [new Date().toISOString(), Number(id)]);
+    await run('DELETE FROM chat_files WHERE message_id=?', [Number(id)]);
+  },
+  async getChatFile(fileId) {
+    const id = Number(fileId);
+    if (!Number.isInteger(id)) return null;
+    return get('SELECT f.id, f.name, f.data, m.room FROM chat_files f JOIN chat_messages m ON m.id = f.message_id WHERE f.id=?', [id]);
+  },
+  async chatRoomStats(username, rooms) {
+    if (!rooms.length) return [];
+    return all(`SELECT r.room,
+        COALESCE((SELECT MAX(id) FROM chat_messages m WHERE m.room = r.room), 0) AS last_id,
+        COALESCE((SELECT last_read_id FROM chat_reads cr WHERE cr.username = ? AND cr.room = r.room), 0) AS last_read_id,
+        (SELECT COUNT(*) FROM chat_messages m WHERE m.room = r.room AND m.deleted_at IS NULL AND m.by_username <> ?
+           AND m.id > COALESCE((SELECT last_read_id FROM chat_reads cr WHERE cr.username = ? AND cr.room = r.room), 0)) AS unread
+      FROM unnest(?::text[]) AS r(room)`, [username, username, username, rooms]);
+  },
+  async markChatRead(username, room, lastId) {
+    await run(`INSERT INTO chat_reads(username, room, last_read_id) VALUES(?,?,?)
+      ON CONFLICT (username, room) DO UPDATE SET last_read_id = GREATEST(chat_reads.last_read_id, excluded.last_read_id)`, [username, room, Number(lastId) || 0]);
+  },
+  // ---- announcements ----
+  async createAnnouncement({ title, body, emoji, category, event_date, pinned, created_by_username, created_by_name }) {
+    const row = await get(`INSERT INTO announcements(title, body, emoji, category, event_date, pinned, created_by_username, created_by_name, created_at)
+      VALUES(?,?,?,?,?,?,?,?,?) RETURNING id`, [title, body || null, emoji || null, category || null, event_date || null, pinned ? 1 : 0, created_by_username, created_by_name, new Date().toISOString()]);
+    return row.id;
+  },
+  async listAnnouncements() { return all('SELECT * FROM announcements WHERE deleted_at IS NULL ORDER BY pinned DESC, created_at DESC LIMIT 500'); },
+  async getAnnouncement(id) { return get('SELECT * FROM announcements WHERE id=? AND deleted_at IS NULL', [Number(id)]); },
+  async updateAnnouncement(id, { title, body, emoji, category, event_date, pinned }) {
+    await run('UPDATE announcements SET title=?, body=?, emoji=?, category=?, event_date=?, pinned=? WHERE id=?', [title, body || null, emoji || null, category || null, event_date || null, pinned ? 1 : 0, Number(id)]);
+  },
+  async deleteAnnouncement(id) { await run('UPDATE announcements SET deleted_at=? WHERE id=?', [new Date().toISOString(), Number(id)]); },
   async listReplies(taskId) { return all('SELECT * FROM task_replies WHERE task_id=? ORDER BY created_at', [taskId]); },
 
   // ---- follow-ups ----
@@ -1078,11 +1183,14 @@ module.exports = {
       delete r.attachment;
       return { ...r, has_attachment: has };
     });
+    const fileMeta = await module.exports.listTaskFileMeta([id]);
+    replies.forEach(r => { r.attachments = fileMeta.filter(f => f.reply_id === r.id).map(f => ({ id: f.id, name: f.name })); });
     const subtaskCountRow = await get('SELECT COUNT(*) c FROM tasks WHERE parent_task_id=?', [id]);
     const openSubtaskCountRow = await get("SELECT COUNT(*) c FROM tasks WHERE parent_task_id=? AND status='open'", [id]);
     return {
       ...t,
       has_attachment: hasAttachment,
+      files: fileMeta.filter(f => !f.reply_id).map(f => ({ id: f.id, name: f.name })),
       blocked: await module.exports.isTaskBlocked(id),
       assignees: await all('SELECT * FROM task_assignees WHERE task_id=?', [id]),
       followups: await all('SELECT * FROM task_followups WHERE task_id=?', [id]),

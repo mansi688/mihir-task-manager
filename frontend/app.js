@@ -103,7 +103,8 @@ if (token) {
 }
 function resetAllAppState() {
   myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0;
-  ui = defaultUiState();
+  ui = defaultUiState(); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
+  announcements = []; canPostAnnouncements = false; chat.rooms = []; chat.messages = {}; chat.hasOlder = {}; chat.lastVersion = null;
 }
 
 /* ==================== DAILY QUOTE ====================
@@ -208,6 +209,8 @@ const ICONS = {
   checkCircle: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9"/>',
   upload: '<path d="M12 15V4M7.5 8.5L12 4l4.5 4.5"/><path d="M4 15v4a1 1 0 001 1h14a1 1 0 001-1v-4"/>',
   pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/>',
+  chat: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/>',
+  megaphone: '<path d="M3 10v4h3l7 4V6L6 10z"/><path d="M16 9a4 4 0 010 6M18.5 6.5a7.5 7.5 0 010 11"/>',
 };
 function icon(name, size) {
   return `<svg viewBox="0 0 24 24" width="${size || 17}" height="${size || 17}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
@@ -367,18 +370,82 @@ function resizeImage(file, cb) {
 }
 // For CAD/drawing and other non-image files — kept as-is (base64), only images get downscaled.
 function readAnyFile(file, cb) {
-  if (file.type && file.type.startsWith('image/')) { resizeImage(file, cb); return; }
   const MAX = 150 * 1024 * 1024;
-  if (file.size > MAX) { cb(null); return; }
-  const reader = new FileReader();
-  reader.onload = e => cb(e.target.result);
-  reader.onerror = () => cb(null);
-  reader.readAsDataURL(file);
+  const readRaw = () => {
+    if (file.size > MAX) { cb(null); return; }
+    const reader = new FileReader();
+    reader.onload = e => cb(e.target.result);
+    reader.onerror = () => cb(null);
+    reader.readAsDataURL(file);
+  };
+  // Only real photos get downscaled. Browsers label some CAD files as images too (a .dwg is
+  // "image/vnd.dwg"), which used to send drawings through the photo resizer and fail — so check
+  // for actual photo formats, and fall back to the original file if resizing fails anyway.
+  if (/^image\/(jpeg|png|webp|bmp)$/i.test(file.type || '')) { resizeImage(file, data => data ? cb(data) : readRaw()); return; }
+  readRaw();
 }
 function filePreview(dataUrl, label) {
   if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) return '';
   if (dataUrl.startsWith('data:image')) return `<div class="photo-frame"><img src="${dataUrl}"></div>`;
   return `<div style="margin-top:8px;"><a href="${dataUrl}" download="${esc(label || 'document')}" target="_blank">📎 View ${esc(label || 'attachment')} →</a></div>`;
+}
+// ---- Multi-file picker (task form, task replies, chat) ----
+// Files picked but not yet sent live in pendingFiles[key] as [{ name, data }]. Picking again adds
+// more (up to MAX_PICK_FILES); each chip has a ✕ to drop it before sending.
+const pendingFiles = {};
+const MAX_PICK_FILES = 10;
+function fileIcon(name) {
+  const n = String(name || '').toLowerCase();
+  if (/\.(png|jpe?g|gif|webp|heic|bmp)$/.test(n)) return '🖼️';
+  if (/\.pdf$/.test(n)) return '📕';
+  if (/\.(xlsx?|xlsm|csv)$/.test(n)) return '📊';
+  if (/\.(docx?|txt|rtf)$/.test(n)) return '📝';
+  if (/\.(dwg|dxf|rvt|rfa|skp|dgn|ifc|step|stp|plt)$/.test(n)) return '📐';
+  if (/\.(zip|rar|7z)$/.test(n)) return '🗜️';
+  return '📎';
+}
+function pendingFilesHTML(key) {
+  const list = pendingFiles[key] || [];
+  if (!list.length) return '';
+  return `<div class="file-chips">${list.map((f, i) => `<span class="file-chip">${fileIcon(f.name)} ${esc(f.name)}<button type="button" class="file-chip-x" data-remove-pending="${esc(key)}" data-idx="${i}" aria-label="Remove ${esc(f.name)}">✕</button></span>`).join('')}</div>`;
+}
+function refreshPendingPreview(key) {
+  document.querySelectorAll(`[data-pending-preview="${CSS.escape(key)}"]`).forEach(el => { el.innerHTML = pendingFilesHTML(key); });
+}
+function bindFilePicker(inputEl, key) {
+  if (!inputEl) return;
+  inputEl.onchange = () => {
+    const picked = Array.from(inputEl.files || []);
+    inputEl.value = '';
+    if (!picked.length) return;
+    const list = pendingFiles[key] = pendingFiles[key] || [];
+    const room = MAX_PICK_FILES - list.length;
+    if (room <= 0) { alert(`You can attach up to ${MAX_PICK_FILES} files at a time.`); return; }
+    if (picked.length > room) alert(`Only the first ${room} file${room === 1 ? '' : 's'} were added — the limit is ${MAX_PICK_FILES} per message.`);
+    let left = Math.min(picked.length, room);
+    const failed = [];
+    picked.slice(0, room).forEach(f => readAnyFile(f, data => {
+      if (data) list.push({ name: f.name, data }); else failed.push(f.name);
+      if (--left === 0) {
+        refreshPendingPreview(key);
+        if (failed.length) alert(`Could not read: ${failed.join(', ')} (too large or unreadable).`);
+      }
+    }));
+  };
+}
+function takePendingFiles(key) { const l = pendingFiles[key] || []; delete pendingFiles[key]; return l; }
+document.addEventListener('click', e => {
+  const x = e.target.closest('[data-remove-pending]');
+  if (!x) return;
+  e.preventDefault();
+  const key = x.dataset.removePending, i = Number(x.dataset.idx);
+  if (pendingFiles[key]) { pendingFiles[key].splice(i, 1); refreshPendingPreview(key); }
+});
+// All files on a task (the original single attachment, if any, plus any added ones).
+function taskFilesHTML(t) {
+  const legacy = lazyAttachmentHTML(t.has_attachment, t.attachment_name, `/api/tasks/${t.id}/attachment`, `task-attach-${t.id}`);
+  const extra = (t.files || []).map(f => lazyAttachmentHTML(true, f.name, `/api/tasks/${t.id}/files/${f.id}`, `task-file-${t.id}-${f.id}`)).join('');
+  return legacy + extra;
 }
 // Attachments (task or reply) are no longer embedded in the task list data at all — only a
 // has_attachment flag and filename are. Actual bytes (which can be up to ~100MB for a drawing)
@@ -486,7 +553,7 @@ const CAD_DRAWING_EXTENSIONS = ['.dwg', '.dxf', '.rvt', '.rfa', '.skp', '.dgn', 
 
 /* ==================== ROLES / NAV ==================== */
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -507,6 +574,10 @@ const NAV_CONFIG = {
       { key: 'tasks', label: 'My Tasks', icon: 'checkCircle', badge: () => myOpenTaskBadgeCount() },
       { key: 'alltasks', label: 'All Tasks', icon: 'clipboard', badge: () => adminOpenTaskBadgeCount() },
       { key: 'calendar', label: 'Calendar', icon: 'clock' },
+    ]},
+    { group: 'Communicate', items: [
+      { key: 'chat', label: 'Chat Room', icon: 'chat', badge: () => chatUnreadTotal() },
+      { key: 'announcements', label: 'Announcements', icon: 'megaphone', badge: () => unseenAnnouncementCount() },
     ]},
     { group: 'Admin', items: [
       { key: 'accounts', label: 'Accounts', icon: 'users' },
@@ -530,6 +601,10 @@ const NAV_CONFIG = {
       { key: 'tasks', label: 'My Tasks', icon: 'checkCircle', badge: () => myOpenTaskBadgeCount() },
       { key: 'calendar', label: 'Calendar', icon: 'clock' },
     ]},
+    { group: 'Communicate', items: [
+      { key: 'chat', label: 'Chat Room', icon: 'chat', badge: () => chatUnreadTotal() },
+      { key: 'announcements', label: 'Announcements', icon: 'megaphone', badge: () => unseenAnnouncementCount() },
+    ]},
     { group: 'You', items: [
       { key: 'mydashboard', label: 'My Dashboard', icon: 'checkCircle' },
       { key: 'profile', label: 'My Profile', icon: 'pencil' },
@@ -547,6 +622,10 @@ const NAV_CONFIG = {
     { group: 'Tasks', items: [
       { key: 'tasks', label: 'My Tasks', icon: 'checkCircle', badge: () => myOpenTaskBadgeCount() },
       { key: 'calendar', label: 'Calendar', icon: 'clock' },
+    ]},
+    { group: 'Communicate', items: [
+      { key: 'chat', label: 'Chat Room', icon: 'chat', badge: () => chatUnreadTotal() },
+      { key: 'announcements', label: 'Announcements', icon: 'megaphone', badge: () => unseenAnnouncementCount() },
     ]},
     { group: 'Reporting', items: [
       { key: 'performance', label: 'Performance', icon: 'checkCircle' },
@@ -606,8 +685,8 @@ function renderSidebar() {
     </div>
   </aside>`;
 }
-const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'bell', task_closed: 'checkCircle', task_reminder: 'clock', task_reminder_3day: 'clock', task_warning: 'alertTriangle', task_warning_creator: 'alertTriangle', weekly_warning_digest: 'alertTriangle', followup_tagged: 'eye', task_submitted: 'checkCircle', mentioned_in_comment: 'bell', approval_requested: 'checkCircle', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', deadline_soon: 'clock', deadline_passed: 'alertTriangle', admin_late_flag: 'alertTriangle', task_reopened: 'alertTriangle' };
-const NOTIF_TYPE_LABEL = { task_assigned: 'Task Assigned', task_reply: 'Task Update', task_closed: 'Task Closed', task_reminder: 'Task Reminder', task_reminder_3day: '3-Day Reminder', task_warning: '7-Day Warning', task_warning_creator: 'Task Overdue Warning', weekly_warning_digest: 'Weekly Warning Summary', followup_tagged: 'Follow-up Requested', task_submitted: 'Awaiting Your Approval', mentioned_in_comment: 'Mentioned You', approval_requested: 'Approval Requested', approval_rejected: 'Approval Rejected', approval_approved: 'Fully Approved', deadline_soon: 'Deadline Soon', deadline_passed: 'Deadline Passed', admin_late_flag: 'Late User Flagged', task_reopened: 'Task Reopened' };
+const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'bell', task_closed: 'checkCircle', task_reminder: 'clock', task_reminder_3day: 'clock', task_warning: 'alertTriangle', task_warning_creator: 'alertTriangle', weekly_warning_digest: 'alertTriangle', followup_tagged: 'eye', task_submitted: 'checkCircle', mentioned_in_comment: 'bell', approval_requested: 'checkCircle', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', deadline_soon: 'clock', deadline_passed: 'alertTriangle', admin_late_flag: 'alertTriangle', task_reopened: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone' };
+const NOTIF_TYPE_LABEL = { task_assigned: 'Task Assigned', task_reply: 'Task Update', task_closed: 'Task Closed', task_reminder: 'Task Reminder', task_reminder_3day: '3-Day Reminder', task_warning: '7-Day Warning', task_warning_creator: 'Task Overdue Warning', weekly_warning_digest: 'Weekly Warning Summary', followup_tagged: 'Follow-up Requested', task_submitted: 'Awaiting Your Approval', mentioned_in_comment: 'Mentioned You', approval_requested: 'Approval Requested', approval_rejected: 'Approval Rejected', approval_approved: 'Fully Approved', deadline_soon: 'Deadline Soon', deadline_passed: 'Deadline Passed', admin_late_flag: 'Late User Flagged', task_reopened: 'Task Reopened', chat_mention: '💬 Mentioned in Chat', announcement: '📢 Announcement' };
 function renderNotifDrawer() {
   const sorted = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   return `
@@ -619,7 +698,7 @@ function renderNotifDrawer() {
       </div>
       <div style="padding:8px 12px;max-height:calc(100vh - 60px);overflow-y:auto;">
         ${sorted.length === 0 ? `<div class="empty">Nothing to show — all quiet.</div>` : sorted.map(n => `
-          <div class="notif-item" ${n.task_id ? `data-notif-goto-task="${esc(n.task_id)}"` : ''} style="${n.task_id ? 'cursor:pointer;' : ''}" data-mark-notif-read="${n.id}">
+          <div class="notif-item" ${n.task_id ? `data-notif-goto-task="${esc(n.task_id)}"` : n.type === 'chat_mention' ? 'data-notif-goto-tab="chat"' : n.type === 'announcement' ? 'data-notif-goto-tab="announcements"' : ''} style="${n.task_id || n.type === 'chat_mention' || n.type === 'announcement' ? 'cursor:pointer;' : ''}" data-mark-notif-read="${n.id}">
             <div class="notif-icon">${icon(NOTIF_TYPE_ICON[n.type] || 'alertTriangle', 16)}</div>
             <div style="flex:1;min-width:0;">
               <div class="flex-between"><span class="small" style="font-weight:700;">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')}</span>${n.read ? `<span class="badge received">Read</span>` : `<span class="badge flag">New</span>`}</div>
@@ -703,26 +782,34 @@ function renderLoginPage() {
     </div>
   </div>`;
 }
+let loginInFlight = false;
 function bindLogin() {
   bindPasswordToggles();
+  // One login request per attempt: ignore Enter/clicks while a login is already in flight.
   const submit = async () => {
+    if (loginInFlight) return;
     const username = document.getElementById('lg-user').value.trim();
     const password = document.getElementById('lg-pass').value;
+    loginInFlight = true;
     try {
       const data = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
       token = data.token;
       session = { username: data.user.username, role: data.user.role, name: data.user.name, mustChangePassword: data.user.mustChangePassword };
       safeStorage.setItem('ls_token', token); safeStorage.setItem('ls_session', JSON.stringify(session));
       ui.loginErr = ''; ui.adminTab = 'today'; safeStorage.setItem('ls_last_tab', 'today');
+      loginInFlight = false;
       await afterLogin();
-    } catch (e) { ui.loginErr = e.message; render(); }
+    } catch (e) { loginInFlight = false; ui.loginErr = e.message; render(); }
   };
   const loginBtn = document.querySelector('[data-act="login"]');
   if (loginBtn) loginBtn.onclick = submit;
   const userField = document.getElementById('lg-user');
-  if (userField) userField.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  // onkeydown (not addEventListener): bindLogin runs on every redraw and the same input boxes
+  // survive redraws, so addEventListener stacked one more Enter handler per redraw — one Enter
+  // press then sent 2-4 logins (and 2-4 "Logged in" audit rows). Assigning replaces instead.
+  if (userField) userField.onkeydown = e => { if (e.key === 'Enter') submit(); };
   const passField = document.getElementById('lg-pass');
-  if (passField) passField.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  if (passField) passField.onkeydown = e => { if (e.key === 'Enter') submit(); };
   const forgotLink = document.querySelector('[data-act="toggle-forgot-password"]');
   if (forgotLink) forgotLink.onclick = (e) => { e.preventDefault(); ui.showForgotPassword = !ui.showForgotPassword; ui.forgotPasswordStage = 'request'; ui.forgotPasswordErr = ''; render(); };
   const requestOtp = async () => {
@@ -746,7 +833,7 @@ function bindLogin() {
   const backToRequestBtn = document.querySelector('[data-act="back-to-forgot-request"]');
   if (backToRequestBtn) backToRequestBtn.onclick = () => { ui.forgotPasswordStage = 'request'; ui.forgotPasswordErr = ''; render(); };
   const fpUsernameField = document.getElementById('fp-username');
-  if (fpUsernameField) fpUsernameField.addEventListener('keydown', e => { if (e.key === 'Enter') requestOtp(); });
+  if (fpUsernameField) fpUsernameField.onkeydown = e => { if (e.key === 'Enter') requestOtp(); };
   const submitOtpReset = async () => {
     const otp = document.getElementById('fp-otp').value.trim();
     const newPassword = document.getElementById('fp-new-password').value;
@@ -763,7 +850,7 @@ function bindLogin() {
   if (submitOtpBtn) submitOtpBtn.onclick = submitOtpReset;
   ['fp-otp', 'fp-new-password'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter') submitOtpReset(); });
+    if (el) el.onkeydown = e => { if (e.key === 'Enter') submitOtpReset(); };
   });
 }
 function renderForcedPasswordChange() {
@@ -813,7 +900,7 @@ function bindForcedPasswordChange() {
   if (submitBtn) submitBtn.onclick = submit;
   ['pw-new', 'pw-confirm'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    if (el) el.onkeydown = e => { if (e.key === 'Enter') submit(); };
   });
   const logoutLink = document.querySelector('[data-act="logout"]');
   if (logoutLink) logoutLink.onclick = (e) => { e.preventDefault(); logout(); };
@@ -925,7 +1012,7 @@ function bindNotifPrompt() {
 }
 
 /* ==================== DATA LOADING ==================== */
-async function afterLogin() { await refreshData(); registerAndroidDevice(); ensurePushSubscription(false); }
+async function afterLogin() { await refreshData(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); }
 
 // ---- Push notifications (PWA) ----
 // Registering the service worker is harmless and done unconditionally (needed for the app to be
@@ -1008,7 +1095,7 @@ function dataRequests() {
   const core = {
     myTasks: '/api/tasks/mine', userDirectory: '/api/users/directory', teamsList: '/api/teams', projectsList: '/api/projects',
     sectionsList: '/api/drawing-sections', phasesList: '/api/task-phases', openTaskTitles: '/api/tasks/open-titles', me: '/api/auth/me',
-    notif: '/api/notifications', myApprovalRequests: '/api/approvals/mine',
+    notif: '/api/notifications', myApprovalRequests: '/api/approvals/mine', announcementsResp: '/api/announcements',
   };
   if (isAdmin) { core.allTasks = '/api/tasks'; core.allApprovalRequests = '/api/approvals'; }
   const extras = {
@@ -1045,6 +1132,7 @@ function applyData(key, v) {
       break;
     case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; break;
     case 'myApprovalRequests': myApprovalRequests = v; break;
+    case 'announcementsResp': announcements = v.items || []; canPostAnnouncements = !!v.canPost; break;
     case 'allApprovalRequests': allApprovalRequests = v; break;
     case 'myDashboardData': myDashboardData = v; break;
     case 'monthlyLeaderboard': monthlyLeaderboard = v; break;
@@ -1099,7 +1187,7 @@ async function doRefresh(opts) {
 
 function renderIfChanged(background) {
   if (background) {
-    const fingerprint = JSON.stringify({ myTasks, allTasks, userDirectory, teamsList, myNotifications, unreadNotifCount, completionStats, ratingsData, approvalStats, approvalDecisionsDetail, peakHoursData, hrRosterData, myDashboardData, auditLogEntries, monthlyLeaderboard, weeklyLeaderboard, reportsTaskList, myApprovalRequests, allApprovalRequests, quarterAwards, yearAwards });
+    const fingerprint = JSON.stringify({ myTasks, allTasks, userDirectory, teamsList, myNotifications, unreadNotifCount, completionStats, ratingsData, approvalStats, approvalDecisionsDetail, peakHoursData, hrRosterData, myDashboardData, auditLogEntries, monthlyLeaderboard, weeklyLeaderboard, reportsTaskList, myApprovalRequests, allApprovalRequests, quarterAwards, yearAwards, announcements, canPostAnnouncements });
     if (fingerprint === lastDataFingerprint) return; // nothing changed — skip the render, no flicker
     lastDataFingerprint = fingerprint;
   }
@@ -1172,10 +1260,13 @@ async function syncTick(force) {
   // (Accounts still on a temporary password sync too — they use the app normally until they change it.)
   if (!session || !token || syncBusy) return;
   if (document.hidden && !force) return;
-  if (userIsActivelyTyping() && !force) return;
   syncBusy = true;
   try {
     const r = await api('/api/sync');
+    // Chat has its own version: new messages refresh only chat (rooms/unread + the open room),
+    // and they keep arriving even while you're typing a reply.
+    if (r && r.c && r.c !== chat.lastVersion) { chat.lastVersion = r.c; await refreshChat(); }
+    if (userIsActivelyTyping() && !force) { syncBusy = false; return; }
     if (r && (r.v !== lastSyncVersion || Date.now() - lastFullRefreshAt > 60000)) {
       lastSyncVersion = r.v; lastFullRefreshAt = Date.now();
       await refreshData({ background: true });
@@ -1209,28 +1300,49 @@ function sortTasksForDisplay(tasks) {
     return new Date(b.created_at) - new Date(a.created_at);
   });
 }
+// Shared history table (tasks and document approvals): Date & Time · By · Action · Details.
+// rows: [{ at, who, sub, action, tone, detail }] — `detail` is already-escaped HTML.
+// tone picks the action label colour: ok | bad | info | me | neutral.
+function historyTableHTML(rows, emptyText) {
+  if (!rows.length) return `<div class="empty">${emptyText || 'No history yet.'}</div>`;
+  return `
+  <div class="history-table-wrap">
+    <table class="history-table">
+      <thead><tr><th style="width:150px;">Date &amp; Time</th><th style="width:170px;">By</th><th style="width:130px;">Action</th><th>Details</th></tr></thead>
+      <tbody>
+        ${rows.map(r => `
+        <tr>
+          <td class="ht-when" data-label="When">${fmtTime(r.at)}</td>
+          <td class="ht-who" data-label="By"><b>${esc(r.who || 'System')}</b>${r.sub ? `<div class="small muted">${esc(r.sub)}</div>` : ''}</td>
+          <td class="ht-action" data-label="Action"><span class="ht-pill ht-${r.tone || 'neutral'}">${esc(r.action)}</span></td>
+          <td class="ht-detail" data-label="Details">${r.detail || '<span class="muted">—</span>'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+function replyAttachmentsHTML(t, r) {
+  const files = Array.isArray(r.attachments) && r.attachments.length ? r.attachments : (r.has_attachment ? [{ id: null, name: r.attachment_name }] : []);
+  return files.map((f, i) => f.id
+    ? lazyAttachmentHTML(true, f.name, `/api/tasks/${t.id}/replies/${r.id}/files/${f.id}`, `reply-file-${t.id}-${r.id}-${f.id}`)
+    : lazyAttachmentHTML(true, f.name, `/api/tasks/${t.id}/replies/${r.id}/attachment`, `reply-attach-${t.id}-${r.id}`)).join('');
+}
 function renderTaskActivityFeed(t) {
-  const events = [];
-  events.push({ at: t.created_at, actor: t.created_by, text: `Task created — tagged by ${esc(t.created_by || 'someone')}` });
+  const rows = [];
+  const tagged = (t.assignees || []).map(a => personName(a.username));
+  rows.push({ at: t.created_at, who: t.created_by || 'Someone', action: 'Created', tone: 'info',
+    detail: `Task created${tagged.length ? ` and assigned to <b>${tagged.map(esc).join(', ')}</b>` : ' (nobody assigned yet)'}` });
   (t.assignees || []).forEach(a => {
-    if (a.submitted_at) events.push({ at: a.submitted_at, actor: a.username, team: a.team, text: `${esc(a.username)} submitted their part for approval` });
-    if (a.completed_at && a.decision === 'approve') events.push({ at: a.completed_at, actor: a.completed_by || 'Creator', team: a.team, text: `${esc(a.completed_by || 'The creator')} approved ${esc(a.username)}'s part`, decision: 'approve' });
+    if (a.submitted_at) rows.push({ at: a.submitted_at, who: personName(a.username), sub: a.team, action: 'Submitted', tone: 'me', detail: `Submitted their part for approval${a.submission_note ? `: ${highlightMentions(a.submission_note)}` : ''}` });
+    if (a.completed_at && a.decision === 'approve') rows.push({ at: a.completed_at, who: a.completed_by || 'Creator', action: 'Approved', tone: 'ok', detail: `Approved <b>${esc(personName(a.username))}</b>'s part` });
   });
   (t.replies || []).forEach(r => {
-    events.push({ at: r.created_at, actor: r.by_name || r.by_username, text: r.message, hasAttachment: r.has_attachment, attachmentName: r.attachment_name, replyId: r.id, taskId: t.id });
+    rows.push({ at: r.created_at, who: r.by_name || r.by_username, action: 'Reply', tone: 'neutral', detail: `${highlightMentions(r.message || '')}${replyAttachmentsHTML(t, r)}` });
   });
-  if (t.status === 'closed' && t.closed_at) events.push({ at: t.closed_at, actor: t.closed_by, text: `Task fully closed${t.closed_by ? ' — ' + esc(t.closed_by) : ''}`, isClose: true });
-  if (t.status === 'cancelled' && t.cancelled_at) events.push({ at: t.cancelled_at, actor: t.cancelled_by, text: `Task cancelled${t.cancelled_by ? ' — ' + esc(t.cancelled_by) : ''}${t.cancel_reason ? ': ' + esc(t.cancel_reason) : ''}`, isCancel: true });
-  events.sort((a, b) => new Date(a.at) - new Date(b.at));
-  return `
-  <div class="timeline" style="margin-top:12px;">
-    ${events.map((e, i) => `
-      <div class="tl-item">
-        <div class="tl-role">${e.actor ? esc(e.actor) : '—'}${e.team ? ' · ' + esc(e.team) : ''}${e.decision ? ` · <span style="color:var(--success);font-weight:700;">✓ Approved</span>` : ''}${e.isClose ? ' · <span style="color:var(--success);font-weight:700;">✓ Closed</span>' : ''}${e.isCancel ? ' · <span style="color:var(--danger);font-weight:700;">✗ Cancelled</span>' : ''}</div>
-        <div class="tl-time">${fmtTime(e.at)}</div>
-        <div class="tl-note">${highlightMentions(e.text || '')}</div>${e.hasAttachment ? lazyAttachmentHTML(true, e.attachmentName, `/api/tasks/${e.taskId}/replies/${e.replyId}/attachment`, `reply-attach-${e.taskId}-${e.replyId}`) : ''}
-      </div>`).join('')}
-  </div>`;
+  if (t.status === 'closed' && t.closed_at) rows.push({ at: t.closed_at, who: t.closed_by || 'System', action: 'Closed', tone: 'ok', detail: 'Task fully closed' });
+  if (t.status === 'cancelled' && t.cancelled_at) rows.push({ at: t.cancelled_at, who: t.cancelled_by || 'System', action: 'Cancelled', tone: 'bad', detail: t.cancel_reason ? esc(t.cancel_reason) : 'Task cancelled' });
+  rows.sort((a, b) => new Date(a.at) - new Date(b.at));
+  return `<div style="margin-top:8px;">${historyTableHTML(rows)}</div>`;
 }
 function renderTaskItem(t) {
   const assignees = t.assignees || [];
@@ -1333,7 +1445,7 @@ function renderTaskItem(t) {
         <div style="margin-bottom:8px;">${taskSourceBadge(t)}</div>
         ${isCancelled && t.cancel_reason ? `<div class="notice" style="border-color:var(--danger);">Cancelled: ${esc(t.cancel_reason)}</div>` : ''}
         ${t.description ? `<div class="doc-note">${esc(t.description)}</div>` : ''}
-        ${lazyAttachmentHTML(t.has_attachment, t.attachment_name, `/api/tasks/${t.id}/attachment`, `task-attach-${t.id}`)}
+        ${taskFilesHTML(t)}
         <div style="margin-top:8px;display:flex;flex-wrap:wrap;align-items:center;gap:6px;">${groupedAssigneeBadgesHTML()}</div>
         ${checklist.length > 0 ? `
         <div style="margin-top:10px;">
@@ -1404,7 +1516,7 @@ function renderTaskItem(t) {
         <button class="btn btn-sm" data-act="cancel-delete-task">Cancel</button>
       ` : `<button class="btn btn-sm btn-danger" style="margin-left:8px;" data-act="toggle-delete-task" data-task-id="${t.id}" title="Permanently removes the task — not a status change">Delete Task</button>`) : ''}
     </div>` : ''}
-    ${lazyAttachmentHTML(t.has_attachment, t.attachment_name, `/api/tasks/${t.id}/attachment`, `task-attach-${t.id}`)}
+    ${taskFilesHTML(t)}
     <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
       ${assignees.length === 0 ? `<span class="badge flag" title="Nobody is working on this yet — no reminders go out until someone is tagged">Not tagged yet</span>` : groupedAssigneeBadgesHTML()}
       ${assignees.length > 1 ? `<span class="small muted">${doneCount}/${assignees.length} approved</span>` : ''}
@@ -1451,9 +1563,9 @@ function renderTaskItem(t) {
         <textarea id="task-reply-${t.id}" data-mention-input placeholder="Update or question... use @name to tag someone"></textarea>
         <div id="task-reply-mentions-${t.id}" class="tag-suggestions-dropdown" style="display:none;"></div>
       </div>
-      <label style="margin-top:8px;">Attachment (optional)</label>
-      <input type="file" id="task-reply-file-${t.id}">
-      <div id="task-reply-file-preview-${t.id}"></div>
+      <label style="margin-top:8px;">Attachments (optional — you can pick several)</label>
+      <input type="file" id="task-reply-file-${t.id}" multiple>
+      <div data-pending-preview="reply-${esc(t.id)}">${pendingFilesHTML('reply-' + t.id)}</div>
       <button class="btn btn-sm" id="task-comment-btn-${t.id}" style="margin-top:8px;" data-reply-task="${t.id}">Reply</button>
     ` : ''}
     ${t.status === 'open' && !t.blocked && iAmTagged && myRow && !myRow.is_released ? `
@@ -1904,9 +2016,10 @@ function bindMentionTextarea(textareaEl, sugEl) {
       sugEl.style.display = 'none'; sugEl.innerHTML = '';
     });
   }
-  textareaEl.addEventListener('input', renderSuggestions);
-  textareaEl.addEventListener('keyup', e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') renderSuggestions(); });
-  textareaEl.addEventListener('blur', () => { setTimeout(() => { sugEl.style.display = 'none'; }, 150); });
+  // Property handlers (not addEventListener) so re-binding on every redraw replaces, never stacks.
+  textareaEl.oninput = renderSuggestions;
+  textareaEl.onkeyup = e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') renderSuggestions(); };
+  textareaEl.onblur = () => { setTimeout(() => { sugEl.style.display = 'none'; }, 150); };
 }
 // Turns valid @username mentions in already-escaped text into styled tags — invalid/unknown
 // mentions are left as plain text so a stray "@" in normal writing isn't mistaken for a tag.
@@ -1948,11 +2061,14 @@ function bindTagPicker(rootEl, initialUsernames, onChange) {
     });
   }
   inputEl.oninput = renderSuggestions;
-  inputEl.addEventListener('keydown', e => {
+  inputEl.onkeydown = e => {
     if (e.key === 'Enter') { e.preventDefault(); const first = sugEl.querySelector('[data-suggest]'); if (first) first.click(); }
     if (e.key === 'Escape') { sugEl.style.display = 'none'; sugEl.innerHTML = ''; }
-  });
-  document.addEventListener('click', e => { if (!rootEl.contains(e.target)) { sugEl.style.display = 'none'; } });
+  };
+  // One outside-click closer per picker, not one more per redraw.
+  if (rootEl._outsideCloser) document.removeEventListener('click', rootEl._outsideCloser);
+  rootEl._outsideCloser = e => { if (!rootEl.contains(e.target)) { sugEl.style.display = 'none'; } };
+  document.addEventListener('click', rootEl._outsideCloser);
   renderChips();
   return { getSelected: () => Array.from(selected) };
 }
@@ -2037,9 +2153,9 @@ function taskFormHTML() {
         <option value="">— None, this task doesn't wait on anything —</option>
         ${openTaskTitles.map(t => `<option value="${esc(t.id)}">${esc(t.title)}${t.deadline ? ` — due ${fmtDate(t.deadline)}` : ''} (${esc(t.id)})</option>`).join('')}
       </select>
-      <label>${isDrawingRequest ? 'Drawing File (CAD/drawing formats, up to ~100MB)' : 'Attachment (optional)'}</label>
-      <input type="file" id="new-task-file">
-      <div id="new-task-file-preview">${ui.pendingTaskFileName ? `<div class="small muted">Attached: ${esc(ui.pendingTaskFileName)}</div>` : ''}</div>
+      <label>${isDrawingRequest ? 'Drawing Files (CAD/drawing formats, up to ~100MB each)' : 'Attachments (optional — you can pick several)'}</label>
+      <input type="file" id="new-task-file" multiple>
+      <div data-pending-preview="task-new">${pendingFilesHTML('task-new')}</div>
       <div style="margin-top:6px;">
         <button class="btn btn-primary btn-sm" data-act="submit-task">${isDrawingRequest ? 'Send Drawing Request' : 'Create Task'}</button>
         <button class="btn btn-sm" data-act="cancel-task-form" style="margin-left:6px;">Cancel</button>
@@ -2119,9 +2235,9 @@ function bindTaskForm() {
         project: project || null, phase: phase || null,
         stages: stagesPayload ? stagesPayload.map(usernames => ({ usernames })) : null,
         autoReleaseStages: !!ui.taskFormAutoRelease,
-        dependsOnTaskId, attachment: ui.pendingTaskFile, attachmentName: ui.pendingTaskFileName, isDrawingRequest,
+        dependsOnTaskId, attachments: pendingFiles['task-new'] || [], isDrawingRequest,
       }) });
-      ui.pendingTaskFile = null; ui.pendingTaskFileName = null; ui.taskFormOpen = false; ui.taskFormTags = [];
+      takePendingFiles('task-new'); ui.taskFormOpen = false; ui.taskFormTags = [];
       ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false;
       celebrate(isDrawingRequest ? 'Drawing request sent! 📐' : undefined, RAISE_MESSAGES);
       setBanner(isDrawingRequest ? 'Drawing request sent.' : 'Task created.', 'ok');
@@ -2131,16 +2247,9 @@ function bindTaskForm() {
   const cancelTaskFormBtn = document.querySelector('[data-act="cancel-task-form"]');
   if (cancelTaskFormBtn) cancelTaskFormBtn.onclick = () => {
     ui.taskFormOpen = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false;
-    ui.pendingTaskFile = null; ui.pendingTaskFileName = null; render();
+    takePendingFiles('task-new'); render();
   };
-  const newTaskFileInput = document.getElementById('new-task-file');
-  if (newTaskFileInput) newTaskFileInput.onchange = (ev) => {
-    const f = ev.target.files[0]; if (!f) return;
-    readAnyFile(f, dataUrl => {
-      ui.pendingTaskFile = dataUrl; ui.pendingTaskFileName = f.name;
-      document.getElementById('new-task-file-preview').innerHTML = dataUrl ? `<div class="small muted">Attached: ${esc(f.name)}</div>` : '<div class="err">Could not read file (too large?).</div>';
-    });
-  };
+  bindFilePicker(document.getElementById('new-task-file'), 'task-new');
 }
 /* ==================== BULK IMPORT (CSV / Excel) ====================
    Step 1: pick a file → the server reads it and returns a preview of every row (who got tagged,
@@ -2568,66 +2677,115 @@ function bindApprovalForm() {
   if (cancelBtn) cancelBtn.onclick = () => { ui.approvalFormOpen = false; ui.approvalFormReviewers = []; ui.pendingApprovalFile = null; ui.pendingApprovalFileName = null; render(); };
 }
 const APPROVAL_STATUS_BADGE = { pending: '<span class="badge po_pending">PENDING</span>', approved: '<span class="badge received">APPROVED</span>', needs_revision: '<span class="badge flag">NEEDS REVISION</span>' };
+function approvalHistoryRows(r) {
+  return (r.history || []).map(h => {
+    const t = h.event_text || '';
+    let action = 'Update', tone = 'neutral';
+    if (/^Sent /.test(t)) { action = 'Sent'; tone = 'info'; }
+    else if (/^Fully approved/.test(t)) { action = 'Fully approved'; tone = 'ok'; }
+    else if (/^Approved/.test(t)) { action = 'Approved'; tone = 'ok'; }
+    else if (/^Rejected/.test(t)) { action = 'Rejected'; tone = 'bad'; }
+    else if (/revised/i.test(t)) { action = 'Revised'; tone = 'me'; }
+    return { at: h.created_at, who: h.actor_name || 'System', action, tone, detail: esc(t) };
+  });
+}
 function renderApprovalRequestCard(r) {
   const isCreator = r.created_by_username === session.username;
   const myReview = (r.reviewers || []).find(rv => rv.username === session.username);
   const canDecide = r.status === 'pending' && myReview && !myReview.decision;
+  const reviewers = r.reviewers || [];
+  const approvedCount = reviewers.filter(rv => rv.decision === 'approved').length;
+  const needsMyRevision = isCreator && r.status === 'needs_revision';
   return `
-  <div class="card" id="approval-card-${esc(r.id)}" style="background:var(--panel-2);">
-    <div class="flex-between">
-      <div><b>${esc(r.title)}</b></div>
-      ${APPROVAL_STATUS_BADGE[r.status] || ''}
-    </div>
+  <details class="card task-row" id="approval-card-${esc(r.id)}">
+    <summary class="task-row-summary">
+      <span class="task-row-chevron" aria-hidden="true"></span>
+      <span class="task-row-text">
+        <span class="task-row-title">📄 <b>${esc(r.title)}</b></span>
+        <span class="task-row-meta">
+          <span>From ${esc(r.created_by_name)}</span>
+          <span>${esc(fmtDate(r.created_at))}</span>
+          <span>${approvedCount}/${reviewers.length} approved</span>
+          ${canDecide ? '<span class="row-flag row-flag-me">Your decision needed</span>' : ''}
+          ${needsMyRevision ? '<span class="row-flag row-flag-bad">Revision needed</span>' : ''}
+          ${r.has_file ? `<span>📎 ${esc(r.file_name || 'Document')}</span>` : ''}
+        </span>
+      </span>
+      <span class="task-row-status">${APPROVAL_STATUS_BADGE[r.status] || ''}</span>
+    </summary>
+    <div class="task-row-body">
     ${r.description ? `<div class="doc-note">${esc(r.description)}</div>` : ''}
     <div class="muted small" style="margin-top:6px;">Sent by ${esc(r.created_by_name)} · ${fmtTime(r.created_at)}</div>
     ${lazyAttachmentHTML(r.has_file, r.file_name, `/api/approvals/${r.id}/attachment`, `approval-file-${r.id}`)}
     <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">
-      ${(r.reviewers || []).map(rv => {
-        let cls = 'created', label = esc(rv.username);
+      ${reviewers.map(rv => {
+        let cls = 'created', label = esc(personName(rv.username));
         if (rv.decision === 'approved') { cls = 'received'; label += ' ✓ Approved'; }
         else if (rv.decision === 'rejected') { cls = 'flag'; label += ' ✗ Rejected'; }
+        else label += ' · Pending';
         return `<span class="badge ${cls}">${label}</span>`;
       }).join('')}
     </div>
-    <div class="small muted" style="margin-top:10px;">History</div>
-    <div class="timeline">
-      ${(r.history || []).map(h => `<div class="tl-item"><div class="tl-role">${esc(h.actor_name || 'System')}</div><div class="tl-time">${fmtTime(h.created_at)}</div><div class="tl-note">${esc(h.event_text)}</div></div>`).join('')}
-    </div>
+    <div class="small muted" style="margin-top:12px;">History</div>
+    <div style="margin-top:8px;">${historyTableHTML(approvalHistoryRows(r))}</div>
     ${canDecide ? `
     <div class="row" style="margin-top:10px;align-items:flex-end;">
       <div class="col"><input type="text" id="approval-reason-${r.id}" placeholder="Reason (required only if rejecting)"></div>
-      <div class="col" style="flex:0;">
+      <div class="col" style="flex:0;white-space:nowrap;">
         <button class="btn btn-sm btn-primary" data-approve-request="${r.id}">Approve</button>
         <button class="btn btn-sm btn-danger" data-reject-request="${r.id}">Reject</button>
       </div>
     </div>` : ''}
-    ${isCreator && r.status === 'needs_revision' ? `
+    ${needsMyRevision ? `
     <div class="card" style="background:var(--panel);margin-top:10px;padding:10px 14px;">
       <label>Upload revised document</label>
       <input type="file" id="approval-revise-file-${r.id}">
       <div id="approval-revise-preview-${r.id}"></div>
       <button class="btn btn-primary btn-sm" style="margin-top:6px;" data-revise-request="${r.id}">Send Revision</button>
     </div>` : ''}
-  </div>`;
+    </div>
+  </details>`;
 }
 function renderApprovalsSection() {
   const scope = (session.role === 'admin' && ui.approvalsScope === 'all') ? allApprovalRequests : myApprovalRequests;
+  // Same layout as the task list: Pending (incl. needs revision) | Completed, newest first,
+  // anything waiting on *you* floated to the top.
+  const needsMe = r => {
+    const mine = (r.reviewers || []).find(rv => rv.username === session.username);
+    return (r.status === 'pending' && mine && !mine.decision) || (r.created_by_username === session.username && r.status === 'needs_revision');
+  };
+  const pending = scope.filter(r => r.status !== 'approved').sort((a, b) => (needsMe(b) - needsMe(a)) || (new Date(b.created_at) - new Date(a.created_at)));
+  const done = scope.filter(r => r.status === 'approved').sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const tab = ui.approvalsTab === 'done' ? 'done' : 'pending';
+  const list = tab === 'done' ? done : pending;
+  const shown = list.slice(0, ui.approvalsShown || HISTORY_PAGE_SIZE);
+  const waiting = pending.filter(needsMe).length;
   return `
   <div class="card">
     <div class="flex-between">
-      <div class="card-title" style="margin:0;">Approval Requests</div>
+      <div class="card-title" style="margin:0;">Approval Requests ${waiting ? `<span class="badge flag" style="margin-left:6px;">${waiting} need you</span>` : ''}</div>
       ${session.role === 'admin' ? `
       <select id="approvals-scope" style="width:auto;padding:4px 8px;">
         <option value="mine" ${ui.approvalsScope !== 'all' ? 'selected' : ''}>Mine</option>
         <option value="all" ${ui.approvalsScope === 'all' ? 'selected' : ''}>All</option>
       </select>` : ''}
     </div>
-    ${scope.length === 0 ? `<div class="empty">Nothing here yet.</div>` : scope.map(renderApprovalRequestCard).join('')}
+    ${taskTabsHTML([
+      { key: 'pending', label: 'Pending', count: pending.length },
+      { key: 'done', label: 'Approved', count: done.length },
+    ], tab, 'data-approvals-tab')}
+    <div class="task-list">
+      ${shown.length === 0 ? `<div class="empty">${tab === 'done' ? 'Nothing approved yet.' : 'Nothing pending.'}</div>` : shown.map(renderApprovalRequestCard).join('')}
+    </div>
+    ${list.length > shown.length ? `<button class="btn btn-sm" style="margin-top:8px;" data-act="approvals-more">Show ${Math.min(HISTORY_PAGE_SIZE, list.length - shown.length)} more (${list.length - shown.length} remaining)</button>` : ''}
   </div>`;
 }
 function bindApprovalsSection() {
   const scopeSelect = document.getElementById('approvals-scope');
-  if (scopeSelect) scopeSelect.onchange = () => { ui.approvalsScope = scopeSelect.value; render(); };
+  if (scopeSelect) scopeSelect.onchange = () => { ui.approvalsScope = scopeSelect.value; ui.approvalsShown = HISTORY_PAGE_SIZE; render(); };
+  document.querySelectorAll('[data-approvals-tab]').forEach(b => b.onclick = () => { ui.approvalsTab = b.dataset.approvalsTab; ui.approvalsShown = HISTORY_PAGE_SIZE; render(); });
+  const moreApprovals = document.querySelector('[data-act="approvals-more"]');
+  if (moreApprovals) moreApprovals.onclick = () => { ui.approvalsShown = (ui.approvalsShown || HISTORY_PAGE_SIZE) + HISTORY_PAGE_SIZE; render(); };
   document.querySelectorAll('[data-approve-request]').forEach(btn => btn.onclick = async () => {
     const id = btn.dataset.approveRequest;
     try {
@@ -2666,6 +2824,327 @@ function bindApprovalsSection() {
       setBanner('Revision sent.', 'ok'); await refreshData();
     } catch (e) { setBanner(e.message); render(); }
   });
+}
+
+/* ==================== CHAT ROOM ====================
+   General room for everyone + one room per department. @mention autocomplete (same as task
+   replies), several files per message, unread badges. New messages arrive through the chat
+   version in /api/sync, so chatting never makes task screens reload. */
+const chat = { rooms: [], messages: {}, hasOlder: {}, loading: false, sending: false, lastVersion: null };
+function chatRoomKey() {
+  const k = ui.chatRoom || 'general';
+  return chat.rooms.length && !chat.rooms.some(r => r.key === k) ? 'general' : k;
+}
+function chatUnreadTotal() { return chat.rooms.reduce((s, r) => s + (r.key === chatRoomKey() && ui.adminTab === 'chat' ? 0 : (r.unread || 0)), 0); }
+async function loadChatRooms() {
+  try { chat.rooms = await api('/api/chat/rooms'); } catch (e) { /* keep old */ }
+}
+async function loadChatMessages(room, { older = false } = {}) {
+  const list = chat.messages[room] || [];
+  let url = `/api/chat/messages?room=${encodeURIComponent(room)}&limit=60`;
+  if (older && list.length) url += `&before=${list[0].id}`;
+  else if (list.length) url += `&after=${list[list.length - 1].id}`;
+  const rows = await api(url);
+  if (older) { chat.messages[room] = rows.concat(list); chat.hasOlder[room] = rows.length === 60; }
+  else if (list.length) {
+    const seen = new Set(list.map(m => m.id));
+    chat.messages[room] = list.concat(rows.filter(m => !seen.has(m.id)));
+  } else { chat.messages[room] = rows; chat.hasOlder[room] = rows.length === 60; }
+  return rows.length;
+}
+// Re-fetch a room fully (picks up deletions too) — used after a delete.
+async function reloadChatRoom(room) { delete chat.messages[room]; await loadChatMessages(room); }
+async function markChatRoomRead(room) {
+  const list = chat.messages[room] || [];
+  if (!list.length) return;
+  const lastId = list[list.length - 1].id;
+  const r = chat.rooms.find(x => x.key === room);
+  if (r && r.unread === 0 && r.lastRead >= lastId) return;
+  if (r) { r.unread = 0; r.lastRead = lastId; }
+  api('/api/chat/read', { method: 'POST', body: JSON.stringify({ room, lastId }) }).catch(() => {});
+}
+// Called from syncTick when the chat version moves (and on opening the Chat tab).
+async function refreshChat() {
+  await loadChatRooms();
+  if (ui.adminTab === 'chat') {
+    const room = chatRoomKey();
+    const box = document.getElementById('chat-scroll');
+    const nearBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+    try { await loadChatMessages(room); } catch (e) { /* offline */ }
+    if (!document.hidden) markChatRoomRead(room);
+    render();
+    if (nearBottom) scrollChatToBottom();
+  } else render();
+}
+function scrollChatToBottom() { requestAnimationFrame(() => { const b = document.getElementById('chat-scroll'); if (b) b.scrollTop = b.scrollHeight; }); }
+function chatDayLabel(iso) {
+  const d = new Date(iso), today = new Date(), y = new Date(); y.setDate(y.getDate() - 1);
+  if (isSameDay(d, today)) return 'Today';
+  if (isSameDay(d, y)) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+}
+function chatMessageHTML(m, prev) {
+  const mine = m.by_username === session.username;
+  const grouped = prev && prev.by_username === m.by_username && !prev.deleted_at && (new Date(m.created_at) - new Date(prev.created_at)) < 5 * 60000 && isSameDay(new Date(prev.created_at), new Date(m.created_at));
+  const canDelete = !m.deleted_at && (mine || session.role === 'admin');
+  const time = new Date(m.created_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const mentionsMe = !mine && m.message && new RegExp(`@${session.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(m.message);
+  return `
+  <div class="chat-msg${mine ? ' chat-msg-mine' : ''}${grouped ? ' chat-msg-grouped' : ''}${mentionsMe ? ' chat-msg-mention' : ''}" id="chat-msg-${m.id}">
+    ${grouped ? '<div class="chat-avatar-spacer"></div>' : `<div class="chat-avatar ${avatarColorFor(m.by_username)}">${esc(initials(m.by_name || m.by_username))}</div>`}
+    <div class="chat-bubble-wrap">
+      ${grouped ? '' : `<div class="chat-meta"><b>${esc(mine ? 'You' : (m.by_name || m.by_username))}</b> <span class="muted">${time}</span></div>`}
+      <div class="chat-bubble">
+        ${m.deleted_at ? '<span class="muted" style="font-style:italic;">🚫 Message deleted</span>' : `
+        ${m.message ? `<div class="chat-text">${highlightMentions(m.message).replace(/\n/g, '<br>')}</div>` : ''}
+        ${(m.files || []).map(f => lazyAttachmentHTML(true, `${fileIcon(f.name)} ${f.name}`, `/api/chat/files/${f.id}`, `chat-file-${f.id}`)).join('')}`}
+      </div>
+      ${canDelete ? `<button class="chat-del" data-chat-delete="${m.id}" title="Delete message">Delete</button>` : ''}
+    </div>
+  </div>`;
+}
+function renderChatView() {
+  const room = chatRoomKey();
+  const info = chat.rooms.find(r => r.key === room) || { key: 'general', name: 'General', emoji: '💬', hint: 'Everyone in the company' };
+  const msgs = chat.messages[room];
+  let lastDay = '';
+  const body = !msgs ? '<div class="empty">Loading messages…</div>'
+    : msgs.length === 0 ? `<div class="chat-empty"><div style="font-size:42px;">${info.emoji}</div><b>No messages in #${esc(info.name)} yet</b><div class="small muted">Say hello 👋 — type @ to tag someone, 📎 to attach files.</div></div>`
+    : msgs.map((m, i) => {
+        const day = chatDayLabel(m.created_at);
+        const sep = day !== lastDay ? `<div class="chat-day"><span>${esc(day)}</span></div>` : '';
+        const prev = day !== lastDay ? null : msgs[i - 1];
+        lastDay = day;
+        return sep + chatMessageHTML(m, prev);
+      }).join('');
+  return `
+  <div class="card chat-shell">
+    <div class="chat-rooms" role="tablist" aria-label="Chat rooms">
+      ${(chat.rooms.length ? chat.rooms : [info]).map(r => `
+        <button type="button" class="chat-room${r.key === room ? ' active' : ''}" data-chat-room="${esc(r.key)}" role="tab" aria-selected="${r.key === room}" title="${esc(r.hint || '')}">
+          <span class="chat-room-emoji">${r.emoji}</span><span class="chat-room-name">${esc(r.name)}</span>
+          ${r.unread && r.key !== room ? `<span class="chat-unread">${r.unread > 99 ? '99+' : r.unread}</span>` : ''}
+        </button>`).join('')}
+    </div>
+    <div class="chat-main">
+      <div class="chat-head"><span style="font-size:20px;">${info.emoji}</span><div><b>#${esc(info.name)}</b><div class="small muted">${esc(info.hint || '')}</div></div></div>
+      <div class="chat-scroll" id="chat-scroll">
+        ${msgs && chat.hasOlder[room] ? `<div style="text-align:center;margin:6px 0 10px;"><button class="btn btn-sm" data-act="chat-older">${chat.loading ? 'Loading…' : 'Load older messages'}</button></div>` : ''}
+        ${body}
+      </div>
+      <div class="chat-compose">
+        <div data-pending-preview="chat-${esc(room)}">${pendingFilesHTML('chat-' + room)}</div>
+        <div class="chat-compose-row">
+          <label class="chat-attach" title="Attach files">📎<input type="file" id="chat-file-input" multiple style="display:none;"></label>
+          <div style="position:relative;flex:1;min-width:0;">
+            <textarea id="chat-input-${esc(room)}" class="chat-input" rows="1" placeholder="Message #${esc(info.name)} — type @ to tag someone"></textarea>
+            <div id="chat-mentions" class="tag-suggestions-dropdown chat-mentions" style="display:none;"></div>
+          </div>
+          <button class="btn btn-primary chat-send" data-act="chat-send" ${chat.sending ? 'disabled' : ''}>${chat.sending ? '…' : 'Send'}</button>
+        </div>
+        <div class="small muted chat-hint">Enter to send · Shift+Enter for a new line · up to ${MAX_PICK_FILES} files per message</div>
+      </div>
+    </div>
+  </div>`;
+}
+let chatShownInView = false; // reset whenever you leave the Chat tab
+function bindChatView() {
+  const room = chatRoomKey();
+  // On phones the header and banners push the chat down the page; the first time it's shown on
+  // this visit, scroll so the whole chat — including the message box — is on screen.
+  if (!chatShownInView && window.matchMedia && window.matchMedia('(max-width: 720px)').matches && document.querySelector('.chat-shell')) {
+    chatShownInView = true;
+    requestAnimationFrame(() => { const shell = document.querySelector('.chat-shell'); if (shell) shell.scrollIntoView({ block: 'end' }); });
+  }
+  document.querySelectorAll('[data-chat-room]').forEach(b => b.onclick = async () => {
+    ui.chatRoom = b.dataset.chatRoom; render();
+    if (!chat.messages[ui.chatRoom]) { try { await loadChatMessages(ui.chatRoom); } catch (e) { setBanner(e.message); } }
+    markChatRoomRead(ui.chatRoom); render(); scrollChatToBottom();
+  });
+  const older = document.querySelector('[data-act="chat-older"]');
+  if (older) older.onclick = async () => {
+    const box = document.getElementById('chat-scroll'); const before = box ? box.scrollHeight : 0;
+    chat.loading = true; render();
+    try { await loadChatMessages(room, { older: true }); } catch (e) { setBanner(e.message); }
+    chat.loading = false; render();
+    requestAnimationFrame(() => { const b = document.getElementById('chat-scroll'); if (b) b.scrollTop = b.scrollHeight - before; });
+  };
+  bindFilePicker(document.getElementById('chat-file-input'), 'chat-' + room);
+  const input = document.getElementById(`chat-input-${room}`);
+  const sug = document.getElementById('chat-mentions');
+  if (input && sug) bindMentionTextarea(input, sug);
+  const send = async () => {
+    if (chat.sending || !input) return;
+    const message = input.value.trim();
+    const files = pendingFiles['chat-' + room] || [];
+    if (!message && !files.length) return;
+    chat.sending = true; render();
+    try {
+      await api('/api/chat/messages', { method: 'POST', body: JSON.stringify({ room, message, attachments: files }) });
+      takePendingFiles('chat-' + room);
+      const el = document.getElementById(`chat-input-${room}`); if (el) { el.value = ''; el.style.height = ''; }
+      await loadChatMessages(room);
+      markChatRoomRead(room);
+    } catch (e) { setBanner(e.message); }
+    chat.sending = false; render(); scrollChatToBottom();
+    const el2 = document.getElementById(`chat-input-${room}`); if (el2) el2.focus();
+  };
+  const sendBtn = document.querySelector('[data-act="chat-send"]');
+  if (sendBtn) sendBtn.onclick = send;
+  if (input) {
+    input.onkeydown = e => {
+      const sugOpen = sug && sug.style.display === 'block';
+      if (e.key === 'Enter' && !e.shiftKey && !sugOpen) { e.preventDefault(); send(); }
+    };
+    // bindMentionTextarea just (re)set oninput to its suggestion handler; chain auto-grow onto it.
+    const mentionHandler = input.oninput;
+    input.oninput = e => { if (mentionHandler) mentionHandler(e); input.style.height = 'auto'; input.style.height = Math.min(140, input.scrollHeight) + 'px'; };
+  }
+  document.querySelectorAll('[data-chat-delete]').forEach(b => b.onclick = async () => {
+    if (!confirm('Delete this message for everyone?')) return;
+    try { await api(`/api/chat/messages/${b.dataset.chatDelete}`, { method: 'DELETE' }); await reloadChatRoom(room); render(); }
+    catch (e) { setBanner(e.message); render(); }
+  });
+}
+async function openChatTab() {
+  await loadChatRooms();
+  const room = chatRoomKey();
+  if (!chat.messages[room]) { try { await loadChatMessages(room); } catch (e) { setBanner(e.message); } }
+  else { try { await loadChatMessages(room); } catch (e) { /* ignore */ } }
+  markChatRoomRead(room);
+  render(); scrollChatToBottom();
+}
+
+/* ==================== ANNOUNCEMENTS ====================
+   Company-wide notices. Admin, Directors and HR post; everyone reads. A dated announcement also
+   shows on the calendar with its emoji. "New" = posted since you last opened this tab. */
+let announcements = [];
+let canPostAnnouncements = false;
+const ANNOUNCEMENT_CATEGORY_INFO = {
+  general: { label: 'General', emoji: '📢', cls: 'ann-general' },
+  holiday: { label: 'Holiday', emoji: '🏖️', cls: 'ann-holiday' },
+  event: { label: 'Event', emoji: '🎉', cls: 'ann-event' },
+  celebration: { label: 'Celebration', emoji: '🎊', cls: 'ann-celebration' },
+  meeting: { label: 'Meeting', emoji: '📅', cls: 'ann-meeting' },
+  safety: { label: 'Safety', emoji: '🦺', cls: 'ann-safety' },
+  policy: { label: 'Policy', emoji: '📜', cls: 'ann-policy' },
+  urgent: { label: 'Urgent', emoji: '🚨', cls: 'ann-urgent' },
+};
+const ANNOUNCEMENT_EMOJIS = ['📢', '🎉', '🎊', '🥳', '🪔', '🎆', '🏖️', '🌴', '🙏', '🏆', '🍰', '🎂', '📅', '🤝', '🦺', '⚠️', '🚨', '🚧', '🏗️', '👷', '📜', '💡', '📌', '✅', '💰', '🌧️', '❤️', '⭐'];
+function announcementEmoji(a) { return a.emoji || (ANNOUNCEMENT_CATEGORY_INFO[a.category] || ANNOUNCEMENT_CATEGORY_INFO.general).emoji; }
+function lastSeenAnnouncementId() { return Number(safeStorage.getItem(`ls_ann_seen_${session && session.username}`) || 0); }
+function unseenAnnouncementCount() { const seen = lastSeenAnnouncementId(); return announcements.filter(a => a.id > seen && a.created_by_username !== session.username).length; }
+function markAnnouncementsSeen() {
+  const maxId = announcements.reduce((m, a) => Math.max(m, a.id), 0);
+  if (maxId > lastSeenAnnouncementId()) safeStorage.setItem(`ls_ann_seen_${session.username}`, String(maxId));
+}
+function announcementsOnDate(iso) { return announcements.filter(a => a.event_date === iso); }
+function announcementCardHTML(a, { compact = false, seenBefore = Infinity } = {}) {
+  const cat = ANNOUNCEMENT_CATEGORY_INFO[a.category] || ANNOUNCEMENT_CATEGORY_INFO.general;
+  const canEdit = a.created_by_username === session.username || session.role === 'admin';
+  const isNew = a.id > seenBefore && a.created_by_username !== session.username;
+  const editing = ui.annEditId === a.id;
+  if (editing) return `<div class="card ann-card ${cat.cls}">${announcementFormHTML(a)}</div>`;
+  return `
+  <div class="card ann-card ${cat.cls}${a.pinned ? ' ann-pinned' : ''}" id="ann-${a.id}">
+    <div class="ann-emoji" aria-hidden="true">${esc(announcementEmoji(a))}</div>
+    <div class="ann-content">
+      <div class="ann-top">
+        <span class="ann-cat">${cat.emoji} ${esc(cat.label)}</span>
+        ${a.pinned ? '<span class="ann-flag">📌 Pinned</span>' : ''}
+        ${isNew ? '<span class="ann-flag ann-new">✨ New</span>' : ''}
+        ${a.event_date ? `<span class="ann-flag">🗓️ ${esc(fmtDate(a.event_date))}</span>` : ''}
+      </div>
+      <div class="ann-title">${esc(a.title)}</div>
+      ${a.body && !compact ? `<div class="ann-body">${esc(a.body).replace(/\n/g, '<br>')}</div>` : ''}
+      ${a.body && compact ? `<div class="ann-body small">${esc(a.body.length > 160 ? a.body.slice(0, 159) + '…' : a.body)}</div>` : ''}
+      <div class="ann-foot small muted">Posted by ${esc(a.created_by_name || a.created_by_username)} · ${fmtTime(a.created_at)}
+        ${canEdit && !compact ? `<span class="ann-actions"><button class="link-btn" data-ann-edit="${a.id}">✏️ Edit</button><button class="link-btn" data-ann-delete="${a.id}" style="color:var(--danger);">🗑️ Remove</button></span>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+function announcementFormHTML(a) {
+  const v = a || { title: '', body: '', emoji: '📢', category: 'general', event_date: '', pinned: 0 };
+  const id = a ? a.id : 'new';
+  const chosen = ui.annEmoji && ui.annEmojiFor === id ? ui.annEmoji : (v.emoji || '📢');
+  return `
+    <div class="card-title" style="margin-bottom:8px;">${a ? '✏️ Edit announcement' : '📣 Post an announcement'}</div>
+    <label>Title</label>
+    <input type="text" id="ann-title-${id}" maxlength="160" placeholder="e.g. Diwali holidays — office closed 31 Oct to 2 Nov" value="${esc(v.title)}">
+    <label>Message</label>
+    <textarea id="ann-body-${id}" rows="3" placeholder="Details everyone should know…">${esc(v.body || '')}</textarea>
+    <div class="row" style="align-items:flex-end;">
+      <div class="col"><label>Category</label>
+        <select id="ann-cat-${id}">${Object.entries(ANNOUNCEMENT_CATEGORY_INFO).map(([k, c]) => `<option value="${k}" ${v.category === k ? 'selected' : ''}>${c.emoji} ${c.label}</option>`).join('')}</select></div>
+      <div class="col"><label>Show on calendar (optional)</label><input type="date" id="ann-date-${id}" value="${esc(v.event_date || '')}"></div>
+    </div>
+    <label>Emoji</label>
+    <div class="ann-emoji-pick" role="radiogroup" aria-label="Pick an emoji">
+      ${ANNOUNCEMENT_EMOJIS.map(e => `<button type="button" class="ann-emoji-opt${e === chosen ? ' active' : ''}" data-ann-emoji="${e}" data-ann-for="${id}" aria-checked="${e === chosen}" role="radio">${e}</button>`).join('')}
+    </div>
+    <label class="small" style="display:flex;gap:6px;align-items:center;font-weight:400;margin-top:8px;"><input type="checkbox" id="ann-pin-${id}" style="width:auto;" ${v.pinned ? 'checked' : ''}> 📌 Pin to the top</label>
+    <div style="margin-top:10px;display:flex;gap:6px;">
+      <button class="btn btn-primary btn-sm" data-ann-save="${id}">${a ? 'Save changes' : '📢 Post to everyone'}</button>
+      <button class="btn btn-sm" data-ann-cancel="${id}">Cancel</button>
+    </div>`;
+}
+function renderAnnouncementsView() {
+  const seenBefore = ui.annSeenBefore != null ? ui.annSeenBefore : lastSeenAnnouncementId();
+  const filter = ui.annFilter || 'all';
+  const todayIso = toISODateLocal(new Date());
+  const upcoming = announcements.filter(a => a.event_date && a.event_date >= todayIso).sort((x, y) => x.event_date.localeCompare(y.event_date));
+  const usedCats = Array.from(new Set(announcements.map(a => a.category || 'general')));
+  const list = filter === 'upcoming' ? upcoming : filter === 'all' ? announcements : announcements.filter(a => (a.category || 'general') === filter);
+  return `
+  <div class="card ann-hero">
+    <div class="ann-hero-emoji">📢</div>
+    <div>
+      <div class="card-title" style="margin:0;">Announcements</div>
+      <div class="small muted">Company news, holidays 🏖️, events 🎉, safety notices 🦺 and more — dated ones also appear on your calendar 🗓️.</div>
+    </div>
+    ${canPostAnnouncements && !ui.annFormOpen ? `<button class="btn btn-primary btn-sm" data-act="ann-new" style="margin-left:auto;">＋ New announcement</button>` : ''}
+  </div>
+  ${ui.annFormOpen ? `<div class="card">${announcementFormHTML(null)}</div>` : ''}
+  ${announcements.length ? `
+  <div class="ann-filters">
+    <button class="ann-filter${filter === 'all' ? ' active' : ''}" data-ann-filter="all">✨ All <span class="task-tab-count">${announcements.length}</span></button>
+    <button class="ann-filter${filter === 'upcoming' ? ' active' : ''}" data-ann-filter="upcoming">🗓️ Upcoming <span class="task-tab-count">${upcoming.length}</span></button>
+    ${usedCats.map(k => { const c = ANNOUNCEMENT_CATEGORY_INFO[k] || ANNOUNCEMENT_CATEGORY_INFO.general; return `<button class="ann-filter${filter === k ? ' active' : ''}" data-ann-filter="${k}">${c.emoji} ${c.label}</button>`; }).join('')}
+  </div>` : ''}
+  ${list.length === 0 ? `<div class="card"><div class="empty">${announcements.length ? 'Nothing in this view.' : `No announcements yet. ${canPostAnnouncements ? 'Post the first one ☝️' : 'Check back soon 🙂'}`}</div></div>`
+    : list.map(a => announcementCardHTML(a, { seenBefore })).join('')}`;
+}
+function bindAnnouncementsView() {
+  const newBtn = document.querySelector('[data-act="ann-new"]');
+  if (newBtn) newBtn.onclick = () => { ui.annFormOpen = true; ui.annEmoji = null; ui.annEmojiFor = null; render(); };
+  document.querySelectorAll('[data-ann-filter]').forEach(b => b.onclick = () => { ui.annFilter = b.dataset.annFilter; render(); });
+  document.querySelectorAll('[data-ann-emoji]').forEach(b => b.onclick = () => { ui.annEmoji = b.dataset.annEmoji; ui.annEmojiFor = b.dataset.annFor === 'new' ? 'new' : Number(b.dataset.annFor); render(); });
+  document.querySelectorAll('[data-ann-cancel]').forEach(b => b.onclick = () => { ui.annFormOpen = false; ui.annEditId = null; ui.annEmoji = null; render(); });
+  document.querySelectorAll('[data-ann-edit]').forEach(b => b.onclick = () => { ui.annEditId = Number(b.dataset.annEdit); ui.annEmoji = null; render(); });
+  document.querySelectorAll('[data-ann-save]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.annSave;
+    const val = k => { const el = document.getElementById(`ann-${k}-${id}`); return el ? el.value.trim() : ''; };
+    const current = id === 'new' ? null : announcements.find(a => String(a.id) === id);
+    const emoji = ui.annEmoji && String(ui.annEmojiFor) === id ? ui.annEmoji : ((current && current.emoji) || '📢');
+    const payload = { title: val('title'), body: val('body'), category: val('cat'), eventDate: val('date'), emoji, pinned: !!(document.getElementById(`ann-pin-${id}`) || {}).checked };
+    if (!payload.title) { alert('Give the announcement a title.'); return; }
+    b.disabled = true;
+    try {
+      if (id === 'new') await api('/api/announcements', { method: 'POST', body: JSON.stringify(payload) });
+      else await api(`/api/announcements/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      ui.annFormOpen = false; ui.annEditId = null; ui.annEmoji = null;
+      if (id === 'new') celebrate('Announcement posted! 📢', ['Everyone has been notified 🎉']);
+      setBanner(id === 'new' ? 'Announcement posted — everyone has been notified.' : 'Announcement updated.', 'ok');
+      await refreshData();
+    } catch (e) { b.disabled = false; setBanner(e.message); render(); }
+  });
+  document.querySelectorAll('[data-ann-delete]').forEach(b => b.onclick = async () => {
+    if (!confirm('Remove this announcement for everyone?')) return;
+    try { await api(`/api/announcements/${b.dataset.annDelete}`, { method: 'DELETE' }); setBanner('Announcement removed.', 'ok'); await refreshData(); }
+    catch (e) { setBanner(e.message); render(); }
+  });
+  markAnnouncementsSeen();
 }
 
 /* ==================== CALENDAR ====================
@@ -2738,10 +3217,12 @@ function renderCalendarMonthView() {
   tasksByDate.forEach(list => list.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]));
   const selectedIso = ui.calendarSelectedDate;
   const selectedTasks = selectedIso ? (tasksByDate.get(selectedIso) || []) : [];
+  const selectedAnns = selectedIso ? announcementsOnDate(selectedIso) : [];
   const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const monthAnnCount = announcements.filter(a => a.event_date && a.event_date.slice(0, 7) === `${year}-${String(month + 1).padStart(2, '0')}`).length;
   return `
   <div class="card">
-    ${withDeadlines.length === 0 ? `<div class="notice">No open tasks with a deadline yet — the calendar only shows tasks that have one.${noDeadlineCount > 0 ? ` (${noDeadlineCount} open task${noDeadlineCount === 1 ? '' : 's'} without a deadline ${noDeadlineCount === 1 ? "isn't" : "aren't"} shown here.)` : ''}</div>` : ''}
+    ${withDeadlines.length === 0 && !monthAnnCount ? `<div class="notice">No open tasks with a deadline yet — the calendar only shows tasks that have one.${noDeadlineCount > 0 ? ` (${noDeadlineCount} open task${noDeadlineCount === 1 ? '' : 's'} without a deadline ${noDeadlineCount === 1 ? "isn't" : "aren't"} shown here.)` : ''}</div>` : ''}
     <div class="flex-between" style="margin-bottom:10px;">
       <div style="display:flex;align-items:center;gap:10px;">
         <button class="btn btn-sm" data-act="cal-prev">‹</button>
@@ -2749,6 +3230,12 @@ function renderCalendarMonthView() {
         <button class="btn btn-sm" data-act="cal-next">›</button>
       </div>
       <button class="btn btn-sm" data-act="cal-today">Today</button>
+    </div>
+    <div class="cal-legend small">
+      <span><i class="cal-dot" style="background:${PRIORITY_DOT_COLOR.high};"></i> High</span>
+      <span><i class="cal-dot" style="background:${PRIORITY_DOT_COLOR.medium};"></i> Medium</span>
+      <span><i class="cal-dot" style="background:${PRIORITY_DOT_COLOR.low};"></i> Low</span>
+      <span class="cal-legend-ann">📢 Announcement${monthAnnCount ? ` <b>(${monthAnnCount} this month)</b>` : ''}</span>
     </div>
     <div class="cal-grid cal-weekdays">${weekdayLabels.map(w => `<div class="cal-weekday">${w}</div>`).join('')}</div>
     <div class="cal-grid">
@@ -2758,9 +3245,11 @@ function renderCalendarMonthView() {
         const isSelected = c.iso === selectedIso;
         const shown = dayTasks.slice(0, 3);
         const extra = dayTasks.length - shown.length;
+        const dayAnns = announcementsOnDate(c.iso);
         return `
-        <div class="cal-cell ${c.inMonth ? '' : 'cal-cell-outmonth'} ${isToday ? 'cal-cell-today' : ''} ${isSelected ? 'cal-cell-selected' : ''}" data-cal-date="${c.iso}">
+        <div class="cal-cell ${c.inMonth ? '' : 'cal-cell-outmonth'} ${isToday ? 'cal-cell-today' : ''} ${isSelected ? 'cal-cell-selected' : ''} ${dayAnns.length ? 'cal-cell-ann' : ''}" data-cal-date="${c.iso}">
           <div class="cal-daynum">${c.date.getDate()}</div>
+          ${dayAnns.length ? `<div class="cal-ann" title="${esc(dayAnns.map(a => announcementEmoji(a) + ' ' + a.title).join('\n'))}">${dayAnns.slice(0, 2).map(a => `<span class="cal-ann-emoji">${esc(announcementEmoji(a))}</span>`).join('')}${dayAnns.length > 2 ? `<span class="cal-dot-more">+${dayAnns.length - 2}</span>` : ''}<span class="cal-ann-title">${esc(dayAnns[0].title)}</span></div>` : ''}
           <div class="cal-dots">
             ${shown.map(t => `<span class="cal-dot" style="background:${PRIORITY_DOT_COLOR[t.priority] || PRIORITY_DOT_COLOR.medium};" title="${esc(t.title)} (${t.priority})"></span>`).join('')}
             ${extra > 0 ? `<span class="cal-dot-more">+${extra}</span>` : ''}
@@ -2771,8 +3260,9 @@ function renderCalendarMonthView() {
   </div>
   ${selectedIso ? `
   <div class="card">
-    <div class="card-title">${fmtDate(selectedIso)} <span class="mono small muted">(${selectedTasks.length} task${selectedTasks.length === 1 ? '' : 's'}, priority-sorted)</span></div>
-    ${selectedTasks.length === 0 ? `<div class="empty">Nothing due this day.</div>` : selectedTasks.map(t => renderTaskItem(t)).join('')}
+    <div class="card-title">${fmtDate(selectedIso)} <span class="mono small muted">(${selectedTasks.length} task${selectedTasks.length === 1 ? '' : 's'}, priority-sorted${selectedAnns.length ? ` · ${selectedAnns.length} announcement${selectedAnns.length === 1 ? '' : 's'}` : ''})</span></div>
+    ${selectedAnns.map(a => announcementCardHTML(a, { compact: true })).join('')}
+    ${selectedTasks.length === 0 ? `<div class="empty">${selectedAnns.length ? 'No tasks due this day.' : 'Nothing due this day.'}</div>` : selectedTasks.map(t => renderTaskItem(t)).join('')}
   </div>` : ''}`;
 }
 // Week view: tasks with a deadline TIME are positioned like calendar events at that hour;
@@ -2820,6 +3310,7 @@ function renderCalendarWeekView() {
             <div class="week-day-num ${dd.iso === todayIso ? 'week-day-num-today' : ''}">${dd.date.getDate()}</div>
           </div>
           <div class="week-allday">
+            ${announcementsOnDate(dd.iso).map(a => `<div class="week-allday-chip week-ann-chip" title="${esc(a.title)}">${esc(announcementEmoji(a))} ${esc(a.title)}</div>`).join('')}
             ${dd.allDay.map(t => `<div class="week-allday-chip" style="background:${PRIORITY_DOT_COLOR[t.priority] || PRIORITY_DOT_COLOR.medium};" data-cal-week-task="${t.id}" title="${esc(t.title)}">${esc(t.title)}</div>`).join('')}
           </div>
           <div class="week-hours" style="height:${hourRows.length * WEEK_ROW_HEIGHT}px;">
@@ -4326,6 +4817,8 @@ function renderInner() {
   else if (ui.adminTab === 'reports' && session.role === 'admin') body = renderReportsView();
   else if (ui.adminTab === 'exports' && session.role === 'admin') body = renderExportsView();
   else if (ui.adminTab === 'calendar') body = renderCalendarView();
+  else if (ui.adminTab === 'chat') body = renderChatView();
+  else if (ui.adminTab === 'announcements') body = renderAnnouncementsView();
   else if (ui.adminTab === 'profile') body = renderProfileView();
   else if (ui.adminTab === 'myteam' && session.role !== 'admin' && session.isTeamLead) body = renderMyTeamView();
   else { body = renderTodayFeed(); showingToday = true; }
@@ -4345,6 +4838,8 @@ function renderInner() {
   if (ui.adminTab === 'tasks' || ui.adminTab === 'alltasks' || ui.adminTab === 'calendar' || ui.adminTab === 'mydashboard' || showingToday) { bindMyTasks(); bindFollowupForm(); bindSubtaskForm(); bindAddAssigneeForm(); }
   if (ui.adminTab === 'tasks') { bindApprovalForm(); bindApprovalsSection(); }
   if (ui.adminTab === 'calendar') bindCalendarView();
+  if (ui.adminTab === 'chat') bindChatView();
+  if (ui.adminTab === 'announcements') bindAnnouncementsView();
   if (ui.adminTab === 'tasks') { bindTaskForm(); bindImportPanel(); }
   if (ui.adminTab === 'accounts') bindAccounts();
   if (ui.adminTab === 'profile') bindProfile();
@@ -4364,8 +4859,11 @@ function bindGlobal() {
   bindThemeToggle();
   document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => {
     ui.adminTab = b.dataset.tab; ui.sidebarOpen = false; safeStorage.setItem('ls_last_tab', ui.adminTab);
+    if (ui.adminTab === 'announcements') ui.annSeenBefore = lastSeenAnnouncementId(); // keep "New" tags visible this visit
+    if (ui.adminTab !== 'chat') chatShownInView = false;
     loadTabExtras();
     render();
+    if (ui.adminTab === 'chat') openChatTab();
     // Switching tabs previously only re-rendered whatever was already in memory from login time
     // or the last background poll — meaning a page like Accounts could show stale (or, on a
     // slow/failed earlier fetch, still-empty) data even though the real data was one request
@@ -4404,6 +4902,7 @@ function bindGlobal() {
     const id = el.dataset.markNotifRead;
     try { await api(`/api/notifications/${id}/read`, { method: 'POST' }); } catch (e) { /* ignore */ }
     if (el.dataset.notifGotoTask) { ui.notifDrawerOpen = false; ui.adminTab = 'tasks'; }
+    if (el.dataset.notifGotoTab) { ui.notifDrawerOpen = false; ui.adminTab = el.dataset.notifGotoTab; safeStorage.setItem('ls_last_tab', ui.adminTab); if (ui.adminTab === 'chat') openChatTab(); }
     await refreshData();
   });
   const toggleForm = document.querySelector('[data-act="toggle-task-form"]'); if (toggleForm) toggleForm.onclick = () => { ui.taskFormOpen = true; ui.taskFormIsDrawing = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; render(); };
@@ -4682,28 +5181,19 @@ function bindMyTasks() {
     ui.subtaskFormTags = [];
     render();
   });
-  document.querySelectorAll('[id^="task-reply-file-"]').forEach(inp => inp.onchange = () => {
-    const id = inp.id.replace('task-reply-file-', '');
-    const f = inp.files[0]; if (!f) return;
-    readAnyFile(f, dataUrl => {
-      ui.pendingReplyFiles = ui.pendingReplyFiles || {};
-      ui.pendingReplyFiles[id] = dataUrl ? { data: dataUrl, name: f.name } : null;
-      const preview = document.getElementById(`task-reply-file-preview-${id}`);
-      if (preview) preview.innerHTML = dataUrl ? `<div class="small muted">Attached: ${esc(f.name)}</div>` : '<div class="err">Could not read file.</div>';
-    });
-  });
+  document.querySelectorAll('[id^="task-reply-file-"]').forEach(inp => bindFilePicker(inp, 'reply-' + inp.id.replace('task-reply-file-', '')));
   document.querySelectorAll('[data-reply-task]').forEach(btn => btn.onclick = async () => {
     if (btn.disabled) return;
     const id = btn.dataset.replyTask;
     const field = document.getElementById(`task-reply-${id}`);
     if (!field) { setBanner('Something went wrong finding the reply box — try again.'); render(); return; }
     const message = field.value.trim();
-    const pending = (ui.pendingReplyFiles || {})[id];
-    if (!message && !pending) { alert('Write a message or attach a file.'); return; }
+    const files = pendingFiles['reply-' + id] || [];
+    if (!message && !files.length) { alert('Write a message or attach a file.'); return; }
     btn.disabled = true;
     try {
-      await api(`/api/tasks/${id}/reply`, { method: 'POST', body: JSON.stringify({ message, attachment: pending ? pending.data : null, attachmentName: pending ? pending.name : '' }) });
-      if (ui.pendingReplyFiles) delete ui.pendingReplyFiles[id];
+      await api(`/api/tasks/${id}/reply`, { method: 'POST', body: JSON.stringify({ message, attachments: files }) });
+      takePendingFiles('reply-' + id);
       if (field) field.value = '';
       setBanner('Reply sent.', 'ok'); await refreshData();
     } catch (e) { btn.disabled = false; setBanner(e.message); render(); }
@@ -4906,7 +5396,7 @@ render();
 if (session && token) {
   // Paint the last known data from this device instantly, then fetch fresh data.
   loadDataSnapshot().then(had => { if (had) render(); });
-  refreshData().then(() => { lastFullRefreshAt = Date.now(); registerAndroidDevice(); ensurePushSubscription(false); });
+  refreshData().then(() => { lastFullRefreshAt = Date.now(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); });
 }
 // Guard against interrupting active typing: a full-DOM rebuild every 30s (see refreshData)
 // causes a visible flash and can even make a cursor mid-sentence jump or feel like it "vanished"
@@ -4927,6 +5417,8 @@ function userIsActivelyTyping() {
 // immediately via their own explicit refreshData() call right after that action succeeds —
 // this interval only covers picking up everyone else's changes.
 setInterval(() => syncTick(false), 5000);
+// Quicker checks while the Chat Room is open, so conversations feel live.
+setInterval(() => { if (ui && ui.adminTab === 'chat') syncTick(false); }, 2000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) syncTick(true); });
 window.addEventListener('focus', () => syncTick(true));
 window.addEventListener('online', () => syncTick(true));
