@@ -2300,10 +2300,10 @@ function importPanelHTML() {
       <details class="import-help"><summary class="small">What can the file contain?</summary>
         <div class="small muted" style="margin-top:6px;line-height:1.6;">
           <b>Required:</b> Title and Deadline (DD/MM/YYYY — day first — or YYYY-MM-DD).<br>
-          <b>Assignees</b> are optional — leave blank to create tasks untagged and tag people later. They can be usernames, full names, emails, or a department name (tags everyone in it), separated by commas.<br>
+          <b>People:</b> the template has <b>Level 1 / Level 2 / Level 3 – Person</b> columns, each with a <b>dropdown of every employee</b> (and "Department: …" to tag a whole department). Pick one person per cell; each column is tagged at its level automatically. The list is rebuilt every time you download the template, so new employees are always in it — or just type a username. Leave them blank to create tasks untagged.<br>
           <b>Task Key</b> (optional) is a permanent ID per row. Upload the file again later and rows already imported just get their deadline updated — no duplicates.<br>
           Columns whose heading starts with <b>Info:</b> are kept for reference and ignored.<br>
-          <b>Optional:</b> Description, Priority (High/Medium/Low), Deadline Time, Level 2 / Level 3 (people who wait for the level before them), Auto Release (Yes/No), Follow Up, Project, Phase, Checklist (items separated by |), Depends On and Parent Task (another row's Sr No, its title, or an existing task ID), Individual Deadlines ("rohit.k: 12/10/2026").<br>
+          <b>Optional:</b> Description, Priority (High/Medium/Low), Deadline Time, Auto Release (Yes/No), Follow Up, Project, Phase, Checklist (items separated by |), Depends On and Parent Task (another row's Sr No, its title, or an existing task ID), Individual Deadlines ("rohit.k: 12/10/2026").<br>
           The Excel template has a <b>People</b> sheet listing everyone's exact username.
         </div>
       </details>

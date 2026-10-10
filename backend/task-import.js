@@ -39,6 +39,12 @@ const FIELD_ALIASES = {
   individualDeadlines: ['individual deadlines', 'individual deadline', 'person deadlines', 'per person deadlines', 'personal deadlines'],
 };
 const LEVEL_HEADER = /^(?:level|stage|lvl)\s*(\d{1,2})(?:\s+(?:assignees?|people|tags?|tagged))?$/;
+// One-person-per-cell columns (the template's dropdown layout): "Level 2 - Person 1",
+// "Level 1 Person 3", "Assignee 2", "Follow Up 2". Several such columns for the same level are
+// merged into that level's list, so each Excel cell can be a single dropdown pick.
+const LEVEL_SLOT_HEADER = /^(?:level|stage|lvl)\s*(\d{1,2})\s+(?:person|people|assignee|member|name|tag)\s*(\d{1,2})$/;
+const ASSIGNEE_SLOT_HEADER = /^(?:assignee|person|tag)\s*(\d{1,2})$/;
+const FOLLOWUP_SLOT_HEADER = /^(?:follow\s*up|followup|cc)\s*(\d{1,2})$/;
 
 function normHeader(h) {
   return String(h == null ? '' : h).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -58,15 +64,25 @@ function mapColumns(headers) {
     // "Info: Construction Start" etc. — reference columns kept in the sheet for people, never imported.
     if (/^info\b/.test(h)) return;
     let target = null;
+    const lvlSlot = h.match(LEVEL_SLOT_HEADER);
+    const asgSlot = h.match(ASSIGNEE_SLOT_HEADER);
+    const fuSlot = h.match(FOLLOWUP_SLOT_HEADER);
     const lvl = h.match(LEVEL_HEADER);
-    if (lvl) {
+    if (lvlSlot) {
+      const n = parseInt(lvlSlot[1], 10);
+      target = n <= 1 ? { field: 'assignees', slot: parseInt(lvlSlot[2], 10) } : { field: 'level', level: n, slot: parseInt(lvlSlot[2], 10) };
+    } else if (asgSlot) {
+      target = { field: 'assignees', slot: parseInt(asgSlot[1], 10) };
+    } else if (fuSlot) {
+      target = { field: 'followups', slot: parseInt(fuSlot[1], 10) };
+    } else if (lvl) {
       const n = parseInt(lvl[1], 10);
       target = n <= 1 ? { field: 'assignees' } : { field: 'level', level: n };
     } else if (lookup[h]) {
       target = { field: lookup[h] };
     }
     if (!target) { unknown.push(String(raw).trim()); return; }
-    const key = target.field === 'level' ? `level${target.level}` : target.field;
+    const key = (target.field === 'level' ? `level${target.level}` : target.field) + (target.slot ? `#${target.slot}` : '');
     if (seen.has(key)) { duplicates.push(String(raw).trim()); return; }
     seen.add(key);
     map[idx] = target;
@@ -222,9 +238,18 @@ async function parseImportFile(dataUrl, fileName) {
     const isBlank = cells.every(c => c == null || (typeof c === 'string' && c.trim() === ''));
     if (isBlank) continue;
     const record = { rowNumber: r + 1, levels: {} };
+    // People columns can repeat (one person per cell) — join them into one comma list per level.
+    const put = (obj, key, v) => {
+      const val = v == null ? '' : v;
+      const prev = obj[key];
+      if (prev === undefined || cellText(prev) === '') obj[key] = val;
+      else if (cellText(val) !== '') obj[key] = `${cellText(prev)}, ${cellText(val)}`;
+    };
+    const MULTI = new Set(['assignees', 'followups']);
     for (const [idx, target] of Object.entries(map)) {
       const v = cells[idx];
-      if (target.field === 'level') record.levels[target.level] = v == null ? '' : v;
+      if (target.field === 'level') put(record.levels, target.level, v);
+      else if (MULTI.has(target.field)) put(record, target.field, v);
       else record[target.field] = v == null ? '' : v;
     }
     // "Import" column = No → leave this row out entirely (not an error). Lets one master schedule
@@ -236,7 +261,7 @@ async function parseImportFile(dataUrl, fileName) {
   if (rows.length > MAX_IMPORT_ROWS) throw importError(`That's ${rows.length} rows — import at most ${MAX_IMPORT_ROWS} tasks at a time (split the file into parts).`);
   return {
     rows,
-    columns: headers.map((h, idx) => ({ header: String(h).trim(), field: map[idx] ? (map[idx].field === 'level' ? `level ${map[idx].level}` : map[idx].field) : null })).filter(c => c.header),
+    columns: headers.map((h, idx) => ({ header: String(h).trim(), field: map[idx] ? (map[idx].field === 'level' ? `level ${map[idx].level}` : map[idx].field === 'assignees' && map[idx].slot ? 'level 1' : map[idx].field) : null })).filter(c => c.header),
     unknownColumns: unknown,
     duplicateColumns: duplicates,
     skippedByImportColumn,
@@ -590,74 +615,130 @@ function planSummary(p, userMap) {
 }
 
 // ---------- template ----------
-const TEMPLATE_HEADERS = ['Sr No', 'Task Key', 'Title', 'Description', 'Priority', 'Deadline', 'Deadline Time', 'Assignees', 'Level 2', 'Auto Release',
-  'Follow Up', 'Project', 'Phase', 'Checklist', 'Depends On', 'Parent Task', 'Individual Deadlines'];
+// People columns are one person per cell, each with a dropdown of everyone (rebuilt from the
+// current account list on every download, so newly added users appear automatically). Several
+// cells of the same level are merged on import; typing a username or a comma list still works.
+const LEVEL_SLOTS = [[1, 3], [2, 2], [3, 2]]; // [level, how many person columns]
+const PEOPLE_HEADERS = LEVEL_SLOTS.flatMap(([lvl, n]) => Array.from({ length: n }, (_, i) => `Level ${lvl} - Person ${i + 1}`));
+const FOLLOWUP_HEADERS = ['Follow Up 1', 'Follow Up 2'];
+const TEMPLATE_HEADERS = ['Sr No', 'Task Key', 'Title', 'Description', 'Priority', 'Deadline', 'Deadline Time',
+  ...PEOPLE_HEADERS, 'Auto Release', ...FOLLOWUP_HEADERS, 'Project', 'Phase', 'Checklist', 'Depends On', 'Parent Task', 'Individual Deadlines'];
+function personPickLabel(u) { return `${u.name || u.username} (${u.username})`; }
+function departmentPickLabel(team) { return `Department: ${team}`; }
+// Everyone in the pick list order: by department, then name; departments (tag all) at the end.
+function pickList(users) {
+  const people = [...users].sort((x, y) => String(x.team || '~').localeCompare(String(y.team || '~')) || String(x.name || '').localeCompare(String(y.name || '')));
+  const teams = Array.from(new Set(users.map(u => u.team).filter(Boolean))).sort();
+  return { people, teams, labels: [...people.map(personPickLabel), ...teams.map(departmentPickLabel)] };
+}
 function templateExampleRows(users) {
   const sample = users.filter(u => u.role !== 'admin').slice(0, 3);
-  const a = sample[0] ? sample[0].username : 'rohit.k';
-  const b = sample[1] ? sample[1].username : 'suraj_kathale';
-  const c = sample[2] ? sample[2].username : 'tanishq.m';
+  const pick = (i, fb) => sample[i] ? personPickLabel(sample[i]) : fb;
+  const a = pick(0, 'Rohit Kamble (rohit.k)'), b = pick(1, 'Suraj Kathale (suraj_kathale)'), c = pick(2, 'Tanishq Mutha (tanishq.m)');
+  const aUser = sample[0] ? sample[0].username : 'rohit.k';
   const d = new Date(Date.now() + 7 * 86400000);
   const d2 = new Date(Date.now() + 14 * 86400000);
   const fmt = x => `${pad(x.getDate())}/${pad(x.getMonth() + 1)}/${x.getFullYear()}`;
+  const people = (l1, l2, l3) => { const cells = []; LEVEL_SLOTS.forEach(([lvl, n], li) => { const src = [l1, l2, l3][li] || []; for (let i = 0; i < n; i++) cells.push(src[i] || ''); }); return cells; };
   return [
-    ['1', '', 'Prepare BOQ for Tower B', 'Structural + finishing items', 'High', fmt(d), '17:00', a, b, 'Yes', c, 'Tower B', 'Structure', 'Collect drawings | Take off quantities | Rate analysis', '', '', `${a}: ${fmt(new Date(Date.now() + 5 * 86400000))}`],
-    ['2', '', 'Float cement purchase enquiry', 'Based on BOQ quantities', 'Medium', fmt(d2), '', c, '', '', '', 'Tower B', 'Structure', '', '1', '', ''],
-    ['3', '', 'Get 3 vendor quotes', '', 'Low', fmt(d2), '', c, '', '', '', 'Tower B', '', '', '', '2', ''],
+    ['1', '', 'Prepare BOQ for Tower B', 'Structural + finishing items', 'High', fmt(d), '17:00', ...people([a], [b]), 'Yes', c, '', 'Tower B', 'Structure', 'Collect drawings | Take off quantities | Rate analysis', '', '', `${aUser}: ${fmt(new Date(Date.now() + 5 * 86400000))}`],
+    ['2', '', 'Float cement purchase enquiry', 'Based on BOQ quantities', 'Medium', fmt(d2), '', ...people([c, a]), '', '', '', 'Tower B', 'Structure', '', '1', '', ''],
+    ['3', '', 'Get 3 vendor quotes', '', 'Low', fmt(d2), '', ...people([c]), '', '', '', 'Tower B', '', '', '', '2', ''],
   ];
 }
 function csvEscape(v) { const s = String(v == null ? '' : v); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; }
 function buildTemplateCSV(users) {
   const lines = [TEMPLATE_HEADERS, ...templateExampleRows(users)].map(r => r.map(csvEscape).join(','));
-  return '\uFEFF' + lines.join('\r\n') + '\r\n';
+  return '﻿' + lines.join('\r\n') + '\r\n';
 }
+function colLetter(n) { let s = ''; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; }
+const TEMPLATE_DATA_ROWS = 1000; // dropdowns are set up for this many task rows
 async function buildTemplateXLSX(users) {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'MIHIR Task Manager';
-  const ws = wb.addWorksheet('Tasks', { views: [{ state: 'frozen', ySplit: 1 }] });
+  const ws = wb.addWorksheet('Tasks', { views: [{ state: 'frozen', ySplit: 1, xSplit: 3 }] });
   ws.addRow(TEMPLATE_HEADERS);
   templateExampleRows(users).forEach(r => ws.addRow(r));
-  ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3A5F' } };
-  const widths = [7, 16, 34, 30, 10, 13, 12, 26, 20, 12, 18, 14, 12, 40, 12, 12, 30];
-  widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
-  ws.getColumn(6).numFmt = '@'; // keep typed dates as text so Excel doesn't flip day/month
-    for (let n = 2; n <= 500; n++) ws.getCell(n, 5).dataValidation = { type: 'list', allowBlank: true, formulae: ['"High,Medium,Low"'] };
+  const head = ws.getRow(1);
+  head.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  head.height = 30;
+  head.alignment = { vertical: 'middle', wrapText: true };
+  TEMPLATE_HEADERS.forEach((h, i) => {
+    const cell = head.getCell(i + 1);
+    const lvl = /^Level (\d)/.exec(h);
+    // Colour the people columns by level so the levels are easy to tell apart.
+    const fill = lvl ? ({ 1: 'FF2E7D32', 2: 'FF1565C0', 3: 'FF6A1B9A' }[lvl[1]]) : /^Follow Up/.test(h) ? 'FF8D6E63' : 'FF1F3A5F';
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+  });
+  TEMPLATE_HEADERS.forEach((h, i) => {
+    const w = { 'Sr No': 7, 'Task Key': 16, 'Title': 34, 'Description': 30, 'Priority': 10, 'Deadline': 13, 'Deadline Time': 12, 'Auto Release': 12,
+      'Project': 14, 'Phase': 12, 'Checklist': 40, 'Depends On': 12, 'Parent Task': 12, 'Individual Deadlines': 30 }[h];
+    ws.getColumn(i + 1).width = w || 28;
+  });
+  const col = h => TEMPLATE_HEADERS.indexOf(h) + 1;
+  ws.getColumn(col('Deadline')).numFmt = '@'; // keep typed dates as text so Excel doesn't flip day/month
+
+  // ---- pick list (People sheet), rebuilt from the live account list on every download ----
+  const { people, teams, labels } = pickList(users);
+  const ps = wb.addWorksheet('People');
+  ps.addRow(['Pick from list', 'Username', 'Name', 'Department', 'Designation']);
+  ps.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  ps.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3A5F' } };
+  people.forEach(u => ps.addRow([personPickLabel(u), u.username, u.name, u.team || '', u.designation || '']));
+  teams.forEach(t => ps.addRow([departmentPickLabel(t), '', `Everyone in ${t}`, t, '']));
+  [34, 22, 28, 26, 24].forEach((w, i) => { ps.getColumn(i + 1).width = w; });
+  ps.views = [{ state: 'frozen', ySplit: 1 }];
+  const lastPick = Math.max(2, labels.length + 1);
+  wb.definedNames.add(`People!$A$2:$A$${lastPick}`, 'PeopleList');
+
+  // ---- dropdowns ----
+  const lastRow = TEMPLATE_DATA_ROWS + 1;
+  const personCols = [...PEOPLE_HEADERS, ...FOLLOWUP_HEADERS].map(col);
+  const personRule = {
+    type: 'list', allowBlank: true, formulae: ['PeopleList'],
+    showInputMessage: true, promptTitle: 'Pick a person', prompt: 'Choose from the list — or type a username. One person per cell; use the next "Person" column for more.',
+    // Warning (not Stop) so a typed username or "a, b" list is still allowed.
+    showErrorMessage: true, errorStyle: 'warning', errorTitle: 'Not in the list', error: 'This name is not in the People list. Press Yes to keep it anyway (a username or comma list is fine), or No to pick from the list.',
+  };
+  const yesNo = { type: 'list', allowBlank: true, formulae: ['"Yes,No"'] };
+  const prio = { type: 'list', allowBlank: true, formulae: ['"High,Medium,Low"'] };
+  // One rule per whole column range. (Setting it cell by cell makes ExcelJS write overlapping
+  // duplicate ranges — it sorts "E10" before "E2" — which Excel flags as a corrupt file.)
+  const range = c => `${colLetter(c)}2:${colLetter(c)}${lastRow}`;
+  for (const c of personCols) ws.dataValidations.add(range(c), personRule);
+  ws.dataValidations.add(range(col('Priority')), prio);
+  ws.dataValidations.add(range(col('Auto Release')), yesNo);
 
   const help = wb.addWorksheet('How to fill');
-  help.getColumn(1).width = 22; help.getColumn(2).width = 110;
+  help.getColumn(1).width = 26; help.getColumn(2).width = 110;
   const guide = [
     ['Column', 'How to fill it'],
     ['Sr No', 'Optional. A short reference for this row, so other rows can point at it in "Depends On" / "Parent Task".'],
     ['Task Key', 'Optional. A permanent ID for this row (e.g. EQX-1A-3F9C21). If you upload the file again later, rows whose Task Key was already imported UPDATE that task\'s deadline instead of creating a duplicate. Leave blank for one-off tasks.'],
     ['Title', 'Required. Max 200 characters.'],
     ['Description', 'Optional.'],
-    ['Priority', 'High, Medium or Low. Blank = Medium.'],
+    ['Priority', 'Pick High, Medium or Low. Blank = Medium.'],
     ['Deadline', 'Required. DD/MM/YYYY (e.g. 15/10/2026), YYYY-MM-DD, or "15 Oct 2026". Numbers are always read day-first.'],
     ['Deadline Time', 'Optional, e.g. 17:00 or 5:00 PM.'],
-    ['Assignees', 'Optional — leave blank to create the task untagged and add people later. Who is tagged (Level 1). Separate several with commas. Use username (best), full name, email, or a department name to tag everyone in it — see the "People" sheet.'],
-    ['Level 2, Level 3…', 'Optional. People who wait until the level before them is approved. Add "Level 3", "Level 4" columns if needed.'],
+    ['Level 1 - Person 1…3', 'Who does the work first. Click a cell and pick a person from the dropdown (one person per cell — use Person 2, Person 3 for more). Pick "Department: …" to tag everyone in that department. Leave all blank to create the task untagged and tag people later.'],
+    ['Level 2 / Level 3 - Person…', 'Optional. People who start only after the level before them is approved. Need more people in a level? Insert another column named e.g. "Level 2 - Person 3". Need Level 4? Add "Level 4 - Person 1".'],
+    ['Typing instead of picking', 'You can also type a username (e.g. rohit.k), or several separated by commas, in any person cell. Excel shows a warning — press Yes to keep it.'],
+    ['New employees', 'The dropdown is built from the accounts that exist when you download this template. Someone added later? Download the template again for an updated list — or just type their username; the import always checks against the current accounts.'],
     ['Auto Release', 'Yes = release the next level automatically once the previous one is approved.'],
-    ['Follow Up', 'Optional. People to keep in the loop (they are not assigned work).'],
+    ['Follow Up 1 / 2', 'Optional. People to keep in the loop (they are not assigned work). Same dropdown.'],
     ['Project / Phase', 'Optional. New names are added to the lists automatically.'],
     ['Checklist', 'Optional. Items separated by | or on separate lines inside the cell. Assignees must tick every item before submitting.'],
     ['Depends On', 'Optional. This task stays Blocked until that one closes. Use another row\'s Sr No, "row 5", its exact title, or an existing task ID like TASK-AB12CD.'],
     ['Parent Task', 'Optional. Makes this a subtask. Same ways of referring as Depends On.'],
     ['Individual Deadlines', 'Optional. Per-person deadlines, e.g. "rohit.k: 12/10/2026; suraj_kathale: 14/10/2026". Those people must be tagged on the task.'],
     ['', ''],
+    ['Older layouts', 'Files with a single "Assignees" column and "Level 2", "Level 3" columns (names separated by commas) still import exactly as before.'],
     ['Info: …', 'Any column whose heading starts with "Info:" (e.g. "Info: Construction Start") is kept for reference only and never imported.'],
     ['Tips', 'Delete the 3 example rows before importing. Nothing is created until you review the preview and press Import. Any extra columns you have are simply ignored.'],
   ];
   guide.forEach(r => help.addRow(r));
   help.getRow(1).font = { bold: true };
   help.getColumn(2).alignment = { wrapText: true, vertical: 'top' };
-
-  const people = wb.addWorksheet('People');
-  people.addRow(['Username (use this)', 'Name', 'Department', 'Designation']);
-  people.getRow(1).font = { bold: true };
-  [...users].sort((x, y) => String(x.team || '').localeCompare(String(y.team || '')) || String(x.name).localeCompare(String(y.name)))
-    .forEach(u => people.addRow([u.username, u.name, u.team || '', u.designation || '']));
-  [22, 28, 26, 24].forEach((w, i) => { people.getColumn(i + 1).width = w; });
 
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
