@@ -30,6 +30,16 @@ Messages that tag you or your department are highlighted.
 
 Live updates come through the separate chat version in `/api/sync` (`c`), so chatting never reloads task screens.
 
-## Not yet: private conversations
-Rooms are open to all. A private room (only chosen departments/people can see it) is a planned
-follow-up.
+## Private chats 🔒
+- **＋ New private chat** → pick people (and optionally a name). Only the starter and those people
+  can see it. Nobody else — not their department, not other departments, **not Admin**. It does not
+  appear in anyone else's room list, and its messages, files and unread counts are refused (403/404)
+  to non-members.
+- Tagging **@person** inside a private chat adds that person; they then see the whole conversation.
+  `@[Department]` and `@everyone` do nothing in a private chat.
+- Members can **Add people** or **Leave**. When the last member leaves, the chat and its messages are deleted.
+- Note: whoever manages the database itself (Supabase) can still read any stored data, as with all app data.
+
+API: `POST /api/chat/private { name?, members[] }` → room info · `POST /api/chat/private/:id/members { members[] }`
+· `POST /api/chat/private/:id/leave`. Private rooms appear in `GET /api/chat/rooms` (only for members) with
+`private: true` and `members`.

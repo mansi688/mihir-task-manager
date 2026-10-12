@@ -70,7 +70,7 @@ writeListeners.push((table) => { if (table === 'users') { usersVersion++; userRo
 // Writes that don't change anything shown to users (login bookkeeping, the audit trail).
 // Chat has its own counter: a chat message must not make every open screen re-download all task
 // data (which dataVersion triggers). Clients watch chatVersion separately and refresh only chat.
-const UNTRACKED_TABLES = new Set(['sessions', 'audit_log', 'chat_messages', 'chat_files', 'chat_reads']);
+const UNTRACKED_TABLES = new Set(['sessions', 'audit_log', 'chat_messages', 'chat_files', 'chat_reads', 'chat_private', 'chat_private_members']);
 let chatVersion = 0;
 function noteWrite(text) {
   const m = /^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?(\w+)/i.exec(text);
@@ -1220,6 +1220,54 @@ module.exports = {
   async markChatRead(username, room, lastId) {
     await run(`INSERT INTO chat_reads(username, room, last_read_id) VALUES(?,?,?)
       ON CONFLICT (username, room) DO UPDATE SET last_read_id = GREATEST(chat_reads.last_read_id, excluded.last_read_id)`, [username, room, Number(lastId) || 0]);
+  },
+  // ---- private chats (room key 'p:<id>') ----
+  async createPrivateChat({ name, created_by, members }) {
+    return runInTransaction(async (tx) => {
+      const now = new Date().toISOString();
+      const row = await tx.get('INSERT INTO chat_private(name, created_by, created_at) VALUES(?,?,?) RETURNING id', [name || null, created_by, now]);
+      for (const u of new Set([created_by, ...members])) {
+        await tx.run('INSERT INTO chat_private_members(chat_id, username, added_by, added_at) VALUES(?,?,?,?) ON CONFLICT DO NOTHING', [row.id, u, created_by, now]);
+      }
+      return row.id;
+    });
+  },
+  async getPrivateChat(id) {
+    const n = Number(id);
+    if (!Number.isInteger(n)) return null;
+    const chat = await get('SELECT * FROM chat_private WHERE id=?', [n]);
+    if (!chat) return null;
+    chat.members = (await all('SELECT username FROM chat_private_members WHERE chat_id=? ORDER BY added_at, username', [n])).map(r => r.username);
+    return chat;
+  },
+  async listPrivateChatsFor(username) {
+    const chats = await all(`SELECT c.* FROM chat_private c JOIN chat_private_members m ON m.chat_id = c.id
+      WHERE m.username=? ORDER BY c.id`, [username]);
+    if (!chats.length) return [];
+    const members = await all('SELECT chat_id, username FROM chat_private_members WHERE chat_id = ANY(?::int[]) ORDER BY added_at, username', [chats.map(c => c.id)]);
+    return chats.map(c => ({ ...c, members: members.filter(m => m.chat_id === c.id).map(m => m.username) }));
+  },
+  async isPrivateChatMember(id, username) {
+    return !!(await get('SELECT 1 AS ok FROM chat_private_members WHERE chat_id=? AND username=?', [Number(id), username]));
+  },
+  async addPrivateChatMembers(id, usernames, added_by) {
+    const now = new Date().toISOString();
+    const added = [];
+    for (const u of usernames) {
+      const r = await get('INSERT INTO chat_private_members(chat_id, username, added_by, added_at) VALUES(?,?,?,?) ON CONFLICT DO NOTHING RETURNING username', [Number(id), u, added_by, now]);
+      if (r) added.push(r.username);
+    }
+    return added;
+  },
+  async leavePrivateChat(id, username) {
+    await run('DELETE FROM chat_private_members WHERE chat_id=? AND username=?', [Number(id), username]);
+    const left = await get('SELECT COUNT(*) AS c FROM chat_private_members WHERE chat_id=?', [Number(id)]);
+    if (Number(left.c) === 0) {
+      // Nobody left to see it — remove the conversation, its messages and files entirely.
+      await run("DELETE FROM chat_messages WHERE room=?", [`p:${Number(id)}`]);
+      await run("DELETE FROM chat_reads WHERE room=?", [`p:${Number(id)}`]);
+      await run('DELETE FROM chat_private WHERE id=?', [Number(id)]);
+    }
   },
   // ---- announcements ----
   async createAnnouncement({ title, body, emoji, category, event_date, pinned, created_by_username, created_by_name }) {

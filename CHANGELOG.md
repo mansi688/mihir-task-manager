@@ -13,13 +13,15 @@ previous deploy → Rollback (all migrations are additive).
 - Chat Room: every employee now sees and can post in General and every department room (their own is marked
   "your dept"). Tags: @person, @[Department] (whole department) and @everyone (Admin/Directors only).
   Tag notifications open the room they came from. docs/CHAT.md.
+- 🔒 Private chats: only the starter and the people tagged/added can see them — not their department,
+  not Admin. Tagging @person in a private chat adds them.
 ### Fixed
 - Slow login and slow screens: database connections were closed after 30s idle, and re-opening them
   (server in Oregon, database in Tokyo) cost ~1.5–2s on the next load. They now stay open 10 minutes
   with TCP keep-alive, and 4 are kept warm. Optional env: DB_IDLE_TIMEOUT_MS, DB_POOL_WARM.
 - "column m.mentions does not exist" errors on every load (chat code didn't match the database).
-### Database: none new. Uses the existing chat tables; migration 005 only adds notifications.chat_room
-(already applied in production). Environment: none.
+### Database: migration 006 (chat_private, chat_private_members — new tables, additive). The rest uses the
+existing chat tables; migration 005 only adds notifications.chat_room (already applied in production). Environment: none.
 
 ## [Documents] / photos / video → tasks
 ### Added

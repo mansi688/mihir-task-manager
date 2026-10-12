@@ -565,22 +565,38 @@ app.get('/api/sync', auth(ALL_ROLES), (req, res) => {
    read and post in every room — department rooms are where you go to talk to that department.
    Tagging (same idea as task tagging): @username notifies that person, @[Department] notifies
    everyone in that department, @everyone (Admin/Directors only) notifies the whole company.
-   A tag notification opens the room it came from. */
+   A tag notification opens the room it came from.
+   Private chats ('p:<id>'): only their members can see them — not the department, not Admin.
+   Members are the starter plus everyone tagged in it; tagging a new @person adds them. */
 const CHAT_MAX_LEN = 4000;
 async function chatDepartments() {
   const fromTeams = (await db.listTeams()).map(t => (t && t.name) || t).filter(Boolean);
   const fromUsers = (await db.listUsers()).map(u => u.team).filter(Boolean);
   return Array.from(new Set([...fromTeams, ...fromUsers])).sort((a, b) => a.localeCompare(b));
 }
+const privateChatId = (room) => (/^p:(\d{1,9})$/.exec(room) || [])[1];
+async function privateRoomInfo(chat) {
+  const users = new Map((await db.listUsers()).map(u => [u.username, u]));
+  const members = chat.members.map(u => ({ username: u, name: (users.get(u) || {}).name || u }));
+  const others = members.filter(m => m.username !== chat.viewer).map(m => m.name.split(' ')[0]);
+  const fallback = others.length ? (others.length > 3 ? `${others.slice(0, 3).join(', ')} +${others.length - 3}` : others.join(', ')) : 'Just you';
+  return {
+    key: `p:${chat.id}`, name: chat.name || fallback, emoji: '🔒', private: true, createdBy: chat.created_by,
+    hint: `Private — only ${members.length === 1 ? 'you' : `these ${members.length} people`} can see this chat`, members,
+  };
+}
 async function chatRoomsFor(user) {
   const rooms = [{ key: 'general', name: 'General', emoji: '💬', hint: 'Everyone in the company' }];
   for (const t of await chatDepartments()) {
     rooms.push({ key: `team:${t}`, name: t, emoji: '👥', hint: `${t} department — open to everyone`, mine: !!user.team && user.team === t });
   }
+  for (const c of await db.listPrivateChatsFor(user.username)) rooms.push(await privateRoomInfo({ ...c, viewer: user.username }));
   return rooms;
 }
 async function canUseChatRoom(user, room) {
   if (room === 'general') return true;
+  const pid = privateChatId(room);
+  if (pid) return db.isPrivateChatMember(pid, user.username); // membership only — no role overrides
   if (!room.startsWith('team:')) return false;
   return (await chatDepartments()).includes(room.slice(5));
 }
@@ -609,27 +625,33 @@ app.post('/api/chat/messages', auth(ALL_ROLES), async (req, res) => {
   if (!message && uploads.files.length === 0) return res.status(400).json({ error: 'Write a message or attach a file.' });
   const id = await db.addChatMessage({ room, by_username: req.user.username, by_name: req.user.name, message, files: uploads.files });
   // Tags → notify. Everyone can see every room, so anyone tagged is notified.
-  const roomName = room === 'general' ? 'General' : room.slice(5);
+  const roomName = room === 'general' ? 'General' : room.startsWith('team:') ? room.slice(5) : 'private chat';
   const allUsers = await db.listUsers();
   const byUsername = new Map(allUsers.map(u => [u.username.toLowerCase(), u]));
   const departments = await chatDepartments();
   const mentioned = new Set();
   const taggedDepartments = new Set();
   let taggedEveryone = false;
-  // @[Department Name] — brackets allow spaces in the name.
-  for (const m of message.matchAll(/@\[([^\]\n]{1,60})\]/g)) {
+  const pid = privateChatId(room);
+  // @[Department Name] — brackets allow spaces in the name. (Not in private chats: there only
+  // individually tagged people may see the conversation.)
+  if (!pid) for (const m of message.matchAll(/@\[([^\]\n]{1,60})\]/g)) {
     const dept = departments.find(d => d.toLowerCase() === m[1].trim().toLowerCase());
     if (dept) taggedDepartments.add(dept);
   }
   // @word — a username, a one-word department name, or @everyone.
   for (const m of message.matchAll(/(^|[^\w@])@([a-zA-Z0-9._-]{2,40})\b/g)) {
     const word = m[2];
-    if (word.toLowerCase() === 'everyone') { if (canTagEveryone(user)) taggedEveryone = true; continue; }
+    if (word.toLowerCase() === 'everyone') { if (!pid && canTagEveryone(user)) taggedEveryone = true; continue; }
     const u = byUsername.get(word.toLowerCase());
     if (u) { mentioned.add(u.username); continue; }
+    if (pid) continue;
     const dept = departments.find(d => d.toLowerCase() === word.toLowerCase());
     if (dept) taggedDepartments.add(dept);
   }
+  // Tagging someone in a private chat lets them in (they can then see the whole conversation).
+  let addedToPrivate = [];
+  if (pid && mentioned.size) addedToPrivate = await db.addPrivateChatMembers(pid, Array.from(mentioned), req.user.username);
   const deptMembers = new Set();
   for (const u of allUsers) {
     if (taggedEveryone || (u.team && taggedDepartments.has(u.team))) deptMembers.add(u.username);
@@ -638,12 +660,13 @@ app.post('/api/chat/messages', auth(ALL_ROLES), async (req, res) => {
   const notify = new Set([...mentioned, ...deptMembers]);
   notify.delete(req.user.username);
   for (const u of notify) {
-    const how = mentioned.has(u) ? 'mentioned you' : taggedEveryone ? 'tagged @everyone' : `tagged your department`;
-    await db.createNotification({ username: u, type: 'chat_mention', chat_room: room, message: `${req.user.name} ${how} in #${roomName}: "${snippet}"` });
+    const how = mentioned.has(u) ? (addedToPrivate.includes(u) ? 'added you to a private chat' : 'mentioned you') : taggedEveryone ? 'tagged @everyone' : `tagged your department`;
+    const where = pid ? '🔒 a private chat' : `#${roomName}`;
+    await db.createNotification({ username: u, type: 'chat_mention', chat_room: room, message: `${req.user.name} ${how} in ${where}: "${snippet}"` });
   }
   mentioned.delete(req.user.username);
   await db.markChatRead(req.user.username, room, id);
-  res.json({ id, mentioned: Array.from(mentioned), departments: Array.from(taggedDepartments), everyone: taggedEveryone, notified: notify.size });
+  res.json({ id, mentioned: Array.from(mentioned), departments: Array.from(taggedDepartments), everyone: taggedEveryone, notified: notify.size, addedToPrivate });
 });
 app.post('/api/chat/read', auth(ALL_ROLES), async (req, res) => {
   const room = str((req.body || {}).room).trim() || 'general';
@@ -653,10 +676,41 @@ app.post('/api/chat/read', auth(ALL_ROLES), async (req, res) => {
 });
 app.delete('/api/chat/messages/:id', auth(ALL_ROLES), async (req, res) => {
   const msg = await db.getChatMessage(req.params.id);
-  if (!msg || msg.deleted_at) return res.status(404).json({ error: 'Message not found.' });
+  if (!msg || msg.deleted_at || !await canUseChatRoom(await chatUser(req), msg.room)) return res.status(404).json({ error: 'Message not found.' });
   if (msg.by_username !== req.user.username && req.user.role !== 'admin') return res.status(403).json({ error: 'You can only delete your own messages.' });
   await db.deleteChatMessage(msg.id);
   if (msg.by_username !== req.user.username) await auditFromReq(req, 'chat_message_deleted', `Deleted a chat message by ${msg.by_name || msg.by_username} in ${msg.room}.`);
+  res.json({ ok: true });
+});
+// Start a private chat with chosen people (individuals only — no departments).
+app.post('/api/chat/private', auth(ALL_ROLES), async (req, res) => {
+  const body = req.body || {};
+  const name = str(body.name).trim().slice(0, 80);
+  const wanted = Array.isArray(body.members) ? body.members.map(x => str(x).trim()).filter(Boolean) : [];
+  const users = new Map((await db.listUsers()).map(u => [u.username.toLowerCase(), u]));
+  const members = Array.from(new Set(wanted.map(w => (users.get(w.toLowerCase()) || {}).username).filter(Boolean))).filter(u => u !== req.user.username);
+  if (!members.length) return res.status(400).json({ error: 'Pick at least one person to chat with.' });
+  if (members.length > 50) return res.status(400).json({ error: 'A private chat can have at most 50 people.' });
+  const id = await db.createPrivateChat({ name, created_by: req.user.username, members });
+  for (const u of members) {
+    await db.createNotification({ username: u, type: 'chat_mention', chat_room: `p:${id}`, message: `${req.user.name} added you to 🔒 a private chat${name ? ` "${name}"` : ''}.` });
+  }
+  const chat = await db.getPrivateChat(id);
+  res.json(await privateRoomInfo({ ...chat, viewer: req.user.username }));
+});
+app.post('/api/chat/private/:id/members', auth(ALL_ROLES), async (req, res) => {
+  if (!await db.isPrivateChatMember(req.params.id, req.user.username)) return res.status(404).json({ error: 'Chat not found.' });
+  const users = new Map((await db.listUsers()).map(u => [u.username.toLowerCase(), u]));
+  const wanted = Array.isArray((req.body || {}).members) ? req.body.members : [];
+  const names = Array.from(new Set(wanted.map(w => (users.get(str(w).trim().toLowerCase()) || {}).username).filter(Boolean)));
+  if (!names.length) return res.status(400).json({ error: 'Pick at least one person to add.' });
+  const added = await db.addPrivateChatMembers(req.params.id, names, req.user.username);
+  for (const u of added) await db.createNotification({ username: u, type: 'chat_mention', chat_room: `p:${Number(req.params.id)}`, message: `${req.user.name} added you to 🔒 a private chat.` });
+  res.json({ added });
+});
+app.post('/api/chat/private/:id/leave', auth(ALL_ROLES), async (req, res) => {
+  if (!await db.isPrivateChatMember(req.params.id, req.user.username)) return res.status(404).json({ error: 'Chat not found.' });
+  await db.leavePrivateChat(req.params.id, req.user.username);
   res.json({ ok: true });
 });
 app.get('/api/chat/files/:id', auth(ALL_ROLES), async (req, res) => {

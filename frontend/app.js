@@ -3411,14 +3411,18 @@ function renderChatView() {
   return `
   <div class="card chat-shell">
     <div class="chat-rooms" role="tablist" aria-label="Chat rooms">
-      ${(chat.rooms.length ? chat.rooms : [info]).map(r => `
+      ${(chat.rooms.length ? chat.rooms : [info]).map((r, i, all) => `${r.private && !(all[i - 1] || {}).private ? '<div class="chat-rooms-label">🔒 Private</div>' : ''}
         <button type="button" class="chat-room${r.key === room ? ' active' : ''}" data-chat-room="${esc(r.key)}" role="tab" aria-selected="${r.key === room}" title="${esc(r.hint || '')}">
           <span class="chat-room-emoji">${r.emoji}</span><span class="chat-room-name">${esc(r.name)}${r.mine ? ' <span class="chat-room-mine">your dept</span>' : ''}</span>
           ${r.unread && r.key !== room ? `<span class="chat-unread">${r.unread > 99 ? '99+' : r.unread}</span>` : ''}
         </button>`).join('')}
+      <button type="button" class="chat-room chat-room-new${ui.chatPrivForm && ui.chatPrivForm.mode === 'new' ? ' active' : ''}" data-act="chat-new-private" title="Start a chat only the people you pick can see">
+        <span class="chat-room-emoji">＋</span><span class="chat-room-name">New private chat</span>
+      </button>
     </div>
-    <div class="chat-main">
-      <div class="chat-head"><span style="font-size:20px;">${info.emoji}</span><div><b>#${esc(info.name)}</b><div class="small muted">${esc(info.hint || '')}</div></div></div>
+    ${ui.chatPrivForm ? chatPrivateFormHTML(info) : `<div class="chat-main">
+      <div class="chat-head"><span style="font-size:20px;">${info.emoji}</span><div><b>${info.private ? '' : '#'}${esc(info.name)}</b><div class="small muted">${esc(info.hint || '')}</div></div></div>
+      ${info.private ? chatPrivateBarHTML(info) : ''}
       <div class="chat-scroll" id="chat-scroll">
         ${msgs && chat.hasOlder[room] ? `<div style="text-align:center;margin:6px 0 10px;"><button class="btn btn-sm" data-act="chat-older">${chat.loading ? 'Loading…' : 'Load older messages'}</button></div>` : ''}
         ${body}
@@ -3428,14 +3432,14 @@ function renderChatView() {
         <div class="chat-compose-row">
           <label class="chat-attach" title="Attach files">📎<input type="file" id="chat-file-input" multiple style="display:none;"></label>
           <div style="position:relative;flex:1;min-width:0;">
-            <textarea id="chat-input-${esc(room)}" class="chat-input" rows="1" placeholder="Message #${esc(info.name)} — type @ to tag a person or department"></textarea>
+            <textarea id="chat-input-${esc(room)}" class="chat-input" rows="1" placeholder="${info.private ? `Message 🔒 ${esc(info.name)} — only members see this` : `Message #${esc(info.name)} — type @ to tag a person or department`}"></textarea>
             <div id="chat-mentions" class="tag-suggestions-dropdown chat-mentions" style="display:none;"></div>
           </div>
           <button class="btn btn-primary chat-send" data-act="chat-send" ${chat.sending ? 'disabled' : ''}>${chat.sending ? '…' : 'Send'}</button>
         </div>
-        <div class="small muted chat-hint">Enter to send · Shift+Enter for a new line · @name tags a person, @[Department] tags the whole department${canTagEveryoneInChat() ? ', @everyone tags the company' : ''} · up to ${MAX_PICK_FILES} files per message</div>
+        <div class="small muted chat-hint">Enter to send · Shift+Enter for a new line · ${info.private ? 'tagging @name adds that person to this private chat' : `@name tags a person, @[Department] tags the whole department${canTagEveryoneInChat() ? ', @everyone tags the company' : ''}`} · up to ${MAX_PICK_FILES} files per message</div>
       </div>
-    </div>
+    </div>`}
   </div>`;
 }
 let chatShownInView = false; // reset whenever you leave the Chat tab
@@ -3448,7 +3452,7 @@ function bindChatView() {
     requestAnimationFrame(() => { const shell = document.querySelector('.chat-shell'); if (shell) shell.scrollIntoView({ block: 'end' }); });
   }
   document.querySelectorAll('[data-chat-room]').forEach(b => b.onclick = async () => {
-    ui.chatRoom = b.dataset.chatRoom; render();
+    ui.chatRoom = b.dataset.chatRoom; ui.chatPrivForm = null; render();
     if (!chat.messages[ui.chatRoom]) { try { await loadChatMessages(ui.chatRoom); } catch (e) { setBanner(e.message); } }
     markChatRoomRead(ui.chatRoom); render(); scrollChatToBottom();
   });
@@ -3463,7 +3467,9 @@ function bindChatView() {
   bindFilePicker(document.getElementById('chat-file-input'), 'chat-' + room);
   const input = document.getElementById(`chat-input-${room}`);
   const sug = document.getElementById('chat-mentions');
-  if (input && sug) bindMentionTextarea(input, sug, { groups: true });
+  const roomInfo = chat.rooms.find(r => r.key === room) || {};
+  if (input && sug) bindMentionTextarea(input, sug, { groups: !roomInfo.private });
+  bindChatPrivate(roomInfo);
   const send = async () => {
     if (chat.sending || !input) return;
     const message = input.value.trim();
@@ -3496,6 +3502,94 @@ function bindChatView() {
     try { await api(`/api/chat/messages/${b.dataset.chatDelete}`, { method: 'DELETE' }); await reloadChatRoom(room); render(); }
     catch (e) { setBanner(e.message); render(); }
   });
+}
+// ---- Private chats: only the members can see them (not their department, not Admin) ----
+function chatPrivateBarHTML(info) {
+  const names = (info.members || []).map(m => m.username === session.username ? 'You' : m.name);
+  return `<div class="chat-private-bar">
+    <span>🔒 Only <b>${esc(names.join(', '))}</b> can see this chat.</span>
+    <span class="chat-private-actions">
+      <button class="btn btn-sm" data-act="chat-private-add">＋ Add people</button>
+      <button class="btn btn-sm" data-act="chat-private-leave">Leave</button>
+    </span>
+  </div>`;
+}
+function chatPrivateFormHTML(info) {
+  const f = ui.chatPrivForm;
+  const adding = f.mode === 'add';
+  const already = new Set(adding ? (info.members || []).map(m => m.username) : [session.username]);
+  const people = userDirectory.filter(u => !already.has(u.username)).sort((a, b) => a.name.localeCompare(b.name));
+  return `<div class="chat-main chat-private-form">
+    <div class="chat-head" style="display:flex;"><span style="font-size:20px;">🔒</span><div><b>${adding ? `Add people to ${esc(info.name)}` : 'New private chat'}</b>
+      <div class="small muted">${adding ? 'They will see the whole conversation, including earlier messages.' : 'Only you and the people you pick can see it — nobody else, not their department, not Admin.'}</div></div></div>
+    <div class="chat-scroll">
+      ${adding ? '' : `<label class="small muted" for="chat-priv-name">Name (optional)</label>
+      <input id="chat-priv-name" maxlength="80" placeholder="e.g. Tower B design review" value="${esc(f.name || '')}">`}
+      <label class="small muted" for="chat-priv-search" style="display:block;margin-top:10px;">People</label>
+      <input id="chat-priv-search" placeholder="Search by name or department…" autocomplete="off">
+      <div class="chat-priv-picked" id="chat-priv-picked">${chatPrivPickedHTML()}</div>
+      <div class="chat-priv-list">
+        ${people.map(u => `<label class="chat-priv-person" data-priv-search="${esc((u.name + ' ' + u.username + ' ' + (u.team || '')).toLowerCase())}">
+          <input type="checkbox" data-priv-pick="${esc(u.username)}" ${f.picked.includes(u.username) ? 'checked' : ''}>
+          <span class="chat-avatar ${avatarColorFor(u.username)}" style="width:28px;height:28px;font-size:11px;">${esc(initials(u.name))}</span>
+          <span><b>${esc(u.name)}</b> <span class="muted small">${esc(u.team || '')}</span></span>
+        </label>`).join('') || '<div class="muted small">Everyone is already in this chat.</div>'}
+      </div>
+    </div>
+    <div class="chat-compose" style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" data-act="chat-priv-cancel">Cancel</button>
+      <button class="btn btn-primary" data-act="chat-priv-save">${adding ? 'Add to chat' : 'Start private chat'}</button>
+    </div>
+  </div>`;
+}
+function chatPrivPickedHTML() {
+  const f = ui.chatPrivForm;
+  if (!f || !f.picked.length) return '<span class="muted small">Nobody picked yet.</span>';
+  return f.picked.map(u => `<span class="mention-tag">${esc(personName(u))}</span>`).join(' ');
+}
+function bindChatPrivate(info) {
+  const newBtn = document.querySelector('[data-act="chat-new-private"]');
+  if (newBtn) newBtn.onclick = () => { ui.chatPrivForm = { mode: 'new', name: '', picked: [] }; render(); const s = document.getElementById('chat-priv-search'); if (s) s.focus(); };
+  const addBtn = document.querySelector('[data-act="chat-private-add"]');
+  if (addBtn) addBtn.onclick = () => { ui.chatPrivForm = { mode: 'add', picked: [] }; render(); };
+  const leaveBtn = document.querySelector('[data-act="chat-private-leave"]');
+  if (leaveBtn) leaveBtn.onclick = async () => {
+    if (!confirm('Leave this private chat? You will no longer see it. If you are the last member, the chat is deleted.')) return;
+    try { await api(`/api/chat/private/${info.key.slice(2)}/leave`, { method: 'POST' }); delete chat.messages[info.key]; ui.chatRoom = 'general'; await openChatTab(); }
+    catch (e) { setBanner(e.message); render(); }
+  };
+  const f = ui.chatPrivForm;
+  if (!f) return;
+  const nameEl = document.getElementById('chat-priv-name');
+  if (nameEl) nameEl.oninput = () => { f.name = nameEl.value; };
+  const search = document.getElementById('chat-priv-search');
+  // Filter in place (no re-render) so typing never loses focus.
+  if (search) search.oninput = () => {
+    const q = search.value.trim().toLowerCase();
+    document.querySelectorAll('[data-priv-search]').forEach(el => { el.style.display = !q || el.dataset.privSearch.includes(q) ? '' : 'none'; });
+  };
+  document.querySelectorAll('[data-priv-pick]').forEach(cb => cb.onchange = () => {
+    const u = cb.dataset.privPick;
+    f.picked = cb.checked ? Array.from(new Set([...f.picked, u])) : f.picked.filter(x => x !== u);
+    const box = document.getElementById('chat-priv-picked'); if (box) box.innerHTML = chatPrivPickedHTML();
+  });
+  const cancel = document.querySelector('[data-act="chat-priv-cancel"]');
+  if (cancel) cancel.onclick = () => { ui.chatPrivForm = null; render(); };
+  const save = document.querySelector('[data-act="chat-priv-save"]');
+  if (save) save.onclick = async () => {
+    if (!f.picked.length) { setBanner('Pick at least one person.'); render(); return; }
+    save.disabled = true;
+    try {
+      if (f.mode === 'add') {
+        await api(`/api/chat/private/${info.key.slice(2)}/members`, { method: 'POST', body: JSON.stringify({ members: f.picked }) });
+      } else {
+        const created = await api('/api/chat/private', { method: 'POST', body: JSON.stringify({ name: (f.name || '').trim(), members: f.picked }) });
+        ui.chatRoom = created.key;
+      }
+      ui.chatPrivForm = null;
+      await openChatTab();
+    } catch (e) { save.disabled = false; setBanner(e.message); render(); }
+  };
 }
 async function openChatTab() {
   await loadChatRooms();
@@ -5432,7 +5526,7 @@ function bindGlobal() {
     const id = el.dataset.markNotifRead;
     try { await api(`/api/notifications/${id}/read`, { method: 'POST' }); } catch (e) { /* ignore */ }
     if (el.dataset.notifGotoTask) { ui.notifDrawerOpen = false; ui.adminTab = 'tasks'; }
-    if (el.dataset.notifGotoTab) { ui.notifDrawerOpen = false; ui.adminTab = el.dataset.notifGotoTab; safeStorage.setItem('ls_last_tab', ui.adminTab); if (ui.adminTab === 'chat') { if (el.dataset.notifChatRoom) ui.chatRoom = el.dataset.notifChatRoom; openChatTab(); } }
+    if (el.dataset.notifGotoTab) { ui.notifDrawerOpen = false; ui.adminTab = el.dataset.notifGotoTab; safeStorage.setItem('ls_last_tab', ui.adminTab); if (ui.adminTab === 'chat') { if (el.dataset.notifChatRoom) { ui.chatRoom = el.dataset.notifChatRoom; ui.chatPrivForm = null; } openChatTab(); } }
     await refreshData();
   });
   const toggleForm = document.querySelector('[data-act="toggle-task-form"]'); if (toggleForm) toggleForm.onclick = () => { ui.taskFormOpen = true; ui.taskFormIsDrawing = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; render(); };

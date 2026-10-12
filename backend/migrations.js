@@ -363,6 +363,28 @@ const MIGRATIONS = [
       ALTER TABLE notifications ADD COLUMN IF NOT EXISTS chat_room TEXT;
     `,
   },
+  {
+    version: '006',
+    name: 'private chats: conversations only their members can see',
+    sql: `
+      -- A private chat's room key is 'p:<id>'. Only the people in chat_private_members can list,
+      -- read, post or download files in it — no department or role (not even Admin) sees it.
+      CREATE TABLE IF NOT EXISTS chat_private (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS chat_private_members (
+        chat_id INTEGER NOT NULL REFERENCES chat_private(id) ON DELETE CASCADE,
+        username TEXT NOT NULL,
+        added_by TEXT,
+        added_at TEXT NOT NULL,
+        PRIMARY KEY (chat_id, username)
+      );
+      CREATE INDEX IF NOT EXISTS idx_chat_private_members_user ON chat_private_members (username);
+    `,
+  },
 ];
 
 async function runMigrations(pool, log = console.log) {
