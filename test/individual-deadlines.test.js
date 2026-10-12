@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
+const { startTestServer, api, login, createMember, futureDate, localDateTime } = require('../testlib/helpers');
 
 test('per-individual task deadlines drive personal reminders independently of the overall task deadline', async (t) => {
   const { baseUrl, getRawClient, stop } = await startTestServer();
@@ -44,7 +44,7 @@ test('per-individual task deadlines drive personal reminders independently of th
     // Back-date bob's individual deadline into the past so it's genuinely overdue right now
     // (futureDate(0) is "today", which may not yet be strictly <= now at test-run time).
     const raw = await getRawClient();
-    await raw.query('UPDATE task_assignees SET individual_deadline=$1 WHERE task_id=$2 AND username=$3', [new Date(Date.now() - 3600000).toISOString().slice(0, 16), id, 'bob']);
+    await raw.query('UPDATE task_assignees SET individual_deadline=$1 WHERE task_id=$2 AND username=$3', [localDateTime(-3600000), id, 'bob']);
     await raw.end();
 
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
@@ -84,7 +84,7 @@ test('per-individual task deadlines drive personal reminders independently of th
       body: { title: 'Blocked Individual Deadline Test', priority: 'high', deadline: futureDate(30), assignedToList: ['bob'], dependsOnTaskId: prereq.data.id },
     });
     const raw = await getRawClient();
-    await raw.query('UPDATE task_assignees SET individual_deadline=$1 WHERE task_id=$2 AND username=$3', [new Date(Date.now() - 3600000).toISOString().slice(0, 16), dependent.data.id, 'bob']);
+    await raw.query('UPDATE task_assignees SET individual_deadline=$1 WHERE task_id=$2 AND username=$3', [localDateTime(-3600000), dependent.data.id, 'bob']);
     await raw.end();
 
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });

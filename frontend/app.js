@@ -1,6 +1,24 @@
 /* ==================== STATE ==================== */
-let token = localStorage.getItem('ls_token') || null;
-let session = JSON.parse(localStorage.getItem('ls_session') || 'null');
+// Browser storage that can never crash the app. Safari with "Block all cookies", some private /
+// lockdown modes and strict privacy settings THROW on any localStorage access — and because the
+// very first lines of this file read the saved login, that throw used to stop the whole app with
+// a blank white page on that one machine. Falls back to in-memory storage (works normally, the
+// user just has to log in again after a reload).
+const safeStorage = (() => {
+  const memory = {};
+  let ls = null;
+  try { ls = window.localStorage; const k = '__ls_test__'; ls.setItem(k, '1'); ls.removeItem(k); } catch (e) { ls = null; }
+  return {
+    available: !!ls,
+    getItem(k) { try { return ls ? ls.getItem(k) : (k in memory ? memory[k] : null); } catch (e) { return k in memory ? memory[k] : null; } },
+    setItem(k, v) { memory[k] = String(v); try { if (ls) ls.setItem(k, String(v)); } catch (e) { /* full or blocked — memory copy still works */ } },
+    removeItem(k) { delete memory[k]; try { if (ls) ls.removeItem(k); } catch (e) { /* ignore */ } },
+  };
+})();
+let token = safeStorage.getItem('ls_token') || null;
+// A corrupted saved session must not stop the app from starting either.
+let session = null;
+try { session = JSON.parse(safeStorage.getItem('ls_session') || 'null'); } catch (e) { session = null; token = null; }
 let myTasks = [];
 let allTasks = [];       // Admin only
 let userDirectory = [];
@@ -29,25 +47,27 @@ let reportsTaskList = []; // admin-only
 let currentTaskReport = null;
 let myNotifications = [];
 let unreadNotifCount = 0;
-let theme = localStorage.getItem('ks_theme') || 'light';
+let theme = safeStorage.getItem('ks_theme') || 'light';
 document.documentElement.setAttribute('data-theme', theme);
-function setTheme(t) { theme = t; localStorage.setItem('ks_theme', t); document.documentElement.setAttribute('data-theme', t); render(); }
+function setTheme(t) { theme = t; safeStorage.setItem('ks_theme', t); document.documentElement.setAttribute('data-theme', t); render(); }
 
 function defaultUiState() {
   return {
-    adminTab: 'today', sidebarOpen: false, notifDrawerOpen: false, banner: null,
+    adminTab: 'today', sidebarOpen: false, sidebarCollapsed: !!safeStorage.getItem('ls_sidebar_collapsed'), notifDrawerOpen: false, banner: null,
     loginErr: '', pwChangeErr: '', showForgotPassword: false, forgotPasswordStage: 'request', forgotPasswordErr: '', forgotPasswordUsername: '', showPasswordChangeModal: true,
     pendingTaskFile: null, pendingTaskFileName: null,
     pendingReplyFiles: {},
     taskArchiveTab: 'open',
     taskFormOpen: false, taskFormIsDrawing: false, taskFormTags: [],
     taskFormStages: [{ usernames: [] }], taskFormAutoRelease: false,
+    importOpen: false, importFileName: null, importFileData: null, importPreview: null, importBusy: false, importResult: null, importOnlyProblems: false, importError: null,
     followupFormTaskId: null, followupFormTags: [],
     subtaskFormTaskId: null, subtaskFormTags: [], individualDeadlineFormTaskId: null, reshuffleLevelsFormTaskId: null,
     levelEditKey: null, levelEditConfirmKey: null, levelEditConfirmValue: null, deleteTaskConfirmId: null,
     cancelFormTaskId: null,
     addAssigneeFormTaskId: null, addAssigneeTags: [],
-    taskSearchQuery: '', taskFilterProject: '', taskFilterPhase: '',
+    taskSearchQuery: '', taskFilterProject: '', taskFilterPhase: '', taskFilterTagging: '',
+    myOpenShown: 30, allOpenShown: 30, deadlineEditTaskId: null,
     myHistoryShown: 20, allHistoryShown: 20,
     calendarYear: new Date().getFullYear(), calendarMonth: new Date().getMonth(),
     calendarSelectedDate: null, calendarScope: 'mine',
@@ -72,16 +92,16 @@ let ui = defaultUiState();
 // Deliberately only restores when a session already exists (token is set) — a genuine fresh
 // login should still always land on 'today', matching the existing intentional reset at login.
 if (token) {
-  const savedTab = localStorage.getItem('ls_last_tab');
+  const savedTab = safeStorage.getItem('ls_last_tab');
   if (savedTab) ui.adminTab = savedTab;
   // Same idea as the tab restore above: once someone has dismissed the temporary-password
   // reminder, it should stay dismissed across refreshes too, not reappear and feel like the old
   // hard block all over again — it should only come back if they explicitly click "Set a real
   // password now" from the banner.
-  if (localStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
+  if (safeStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0;
+  myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; chatUnread = { unread: 0, mentions: 0 }; chatRoomsList = []; chatMessagesResp = null; Object.keys(chatOlder).forEach(k => delete chatOlder[k]);
   ui = defaultUiState();
 }
 
@@ -185,6 +205,7 @@ const ICONS = {
   moon: '<path d="M20 14.5A8.5 8.5 0 019.5 4a8.5 8.5 0 1010.5 10.5z"/>',
   alertTriangle: '<path d="M12 3l10 18H2z"/><path d="M12 10v4M12 17.5v0"/>',
   checkCircle: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9"/>',
+  upload: '<path d="M12 15V4M7.5 8.5L12 4l4.5 4.5"/><path d="M4 15v4a1 1 0 001 1h14a1 1 0 001-1v-4"/>',
   pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/>',
 };
 function icon(name, size) {
@@ -221,12 +242,22 @@ function bindPasswordToggles() {
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = 'Bearer ' + token;
-  const res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+  // Never wait forever: a request stuck behind a waking-up server would otherwise hold the whole
+  // refresh cycle hostage. Long uploads/exports can pass a bigger opts.timeoutMs.
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), opts.timeoutMs || 90000) : null;
+  let res;
+  try {
+    res = await fetch(path, { ...opts, headers: { ...headers, ...(opts.headers || {}) }, signal: controller ? controller.signal : undefined });
+  } catch (e) {
+    throw new Error(e && e.name === 'AbortError' ? 'The server is taking too long to answer — please try again in a moment.' : 'Can\'t reach the server — check your internet connection.');
+  } finally { if (timer) clearTimeout(timer); }
   let data = {};
   try { data = await res.json(); } catch (e) { /* no body */ }
   if (res.status === 401 && token) {
     token = null; session = null;
-    localStorage.removeItem('ls_token'); localStorage.removeItem('ls_session');
+    safeStorage.removeItem('ls_token'); safeStorage.removeItem('ls_session');
+    dataLoadedOnce = false; lastDataFingerprint = null; clearDataSnapshots();
     resetAllAppState();
     const msg = data.error || 'Your session expired. Please log in again.';
     setTimeout(() => { setBanner(msg, 'err'); render(); }, 0);
@@ -454,7 +485,7 @@ const CAD_DRAWING_EXTENSIONS = ['.dwg', '.dxf', '.rvt', '.rfa', '.skp', '.dgn', 
 
 /* ==================== ROLES / NAV ==================== */
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', chat: 'Chat', system: 'System Health' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -482,6 +513,7 @@ const NAV_CONFIG = {
       { key: 'auditlog', label: 'Audit Log', icon: 'clipboard' },
       { key: 'peakhours', label: 'Peak Hours', icon: 'clock' },
       { key: 'reports', label: 'Reports', icon: 'clipboard' },
+      { key: 'exports', label: 'Export & Archive', icon: 'upload' },
       { key: 'hrdashboard', label: 'HR Dashboard', icon: 'users' },
     ]},
     { group: 'You', items: [
@@ -540,6 +572,14 @@ function renderSidebar() {
   if (session.role !== 'admin' && isHRTeamName(session.team)) {
     groups.push({ group: 'HR', items: [{ key: 'hrdashboard', label: 'HR Dashboard', icon: 'users' }] });
   }
+  // Assistant pages appear when switched on (or when something is still waiting for review).
+  // Company chat — for everyone.
+  if (groups[0] && !groups[0].items.some(i => i.key === 'chat')) groups[0] = { ...groups[0], items: groups[0].items.concat({ key: 'chat', label: 'Chat', icon: 'users', badge: () => chatUnread.unread || 0 }) };
+  const assistantItems = [];
+  if (appFeatures.voiceTasks || appFeatures.aiTaskExtraction || appFeatures.meetingAi || pendingSuggestions.length) assistantItems.push({ key: 'suggestions', label: 'Suggestions', icon: 'checkCircle', badge: () => pendingSuggestions.length });
+  if (appFeatures.meetingAi) assistantItems.push({ key: 'meetings', label: 'Meetings', icon: 'clock' });
+  if (assistantItems.length) groups.splice(2, 0, { group: 'Assistant', items: assistantItems });
+  if (session.role === 'admin') { const g = groups.find(x => x.group === 'Admin'); if (g && !g.items.some(i => i.key === 'system')) g.items = g.items.concat({ key: 'system', label: 'System Health', icon: 'clipboard' }); }
   const active = currentTabKey();
   return `
   ${ui.sidebarOpen ? `<div class="sidebar-backdrop" data-act="close-sidebar"></div>` : ''}
@@ -586,7 +626,7 @@ function renderNotifDrawer() {
       </div>
       <div style="padding:8px 12px;max-height:calc(100vh - 60px);overflow-y:auto;">
         ${sorted.length === 0 ? `<div class="empty">Nothing to show — all quiet.</div>` : sorted.map(n => `
-          <div class="notif-item" ${n.task_id ? `data-notif-goto-task="${esc(n.task_id)}"` : ''} style="${n.task_id ? 'cursor:pointer;' : ''}" data-mark-notif-read="${n.id}">
+          <div class="notif-item" ${n.task_id ? `data-notif-goto-task="${esc(n.task_id)}"` : ''} ${n.chat_room ? `data-notif-goto-chat="${esc(n.chat_room)}"` : ''} style="${n.task_id || n.chat_room ? 'cursor:pointer;' : ''}" data-mark-notif-read="${n.id}">
             <div class="notif-icon">${icon(NOTIF_TYPE_ICON[n.type] || 'alertTriangle', 16)}</div>
             <div style="flex:1;min-width:0;">
               <div class="flex-between"><span class="small" style="font-weight:700;">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')}</span>${n.read ? `<span class="badge received">Read</span>` : `<span class="badge flag">New</span>`}</div>
@@ -604,7 +644,7 @@ function renderTopbarSlim() {
   return `
   <header class="topbar-slim">
     <div style="display:flex;align-items:center;gap:12px;">
-      <button class="icon-btn menu-toggle" data-act="toggle-sidebar" title="Menu">${icon('grid')}</button>
+      <button class="icon-btn menu-toggle" data-act="toggle-sidebar" title="Show / hide menu" aria-label="Show or hide the menu">${icon('grid')}</button>
       <div><div class="page-eyebrow">${eyebrow}</div><h1 class="page-title">${esc(title)}</h1></div>
     </div>
     <div></div>
@@ -670,26 +710,41 @@ function renderLoginPage() {
     </div>
   </div>`;
 }
+// Redraws re-run the bind functions on the SAME elements (the page is morphed, not rebuilt), so
+// handlers must REPLACE the previous one (el.onkeydown = …) — addEventListener here used to stack
+// one more listener per redraw, and a single Enter press then sent the login (or reset, or
+// password change) request many times: duplicate "Logged in" audit entries and extra sessions.
+function onEnter(el, fn) { if (el) el.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); fn(); } }; }
+// Runs fn at most once at a time — a double click / Enter+click can't send a second request.
+function once(fn) {
+  let busy = false;
+  return async (...args) => { if (busy) return; busy = true; try { return await fn(...args); } finally { busy = false; } };
+}
+let loginInFlight = false;
 function bindLogin() {
   bindPasswordToggles();
   const submit = async () => {
+    if (loginInFlight) return;
+    loginInFlight = true;
+    const btn = document.querySelector('[data-act="login"]'); if (btn) { btn.disabled = true; btn.textContent = 'Logging in…'; }
+    try { await doLoginSubmit(); } finally { loginInFlight = false; const b = document.querySelector('[data-act="login"]'); if (b) { b.disabled = false; b.textContent = 'Log in'; } }
+  };
+  const doLoginSubmit = async () => {
     const username = document.getElementById('lg-user').value.trim();
     const password = document.getElementById('lg-pass').value;
     try {
       const data = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
       token = data.token;
       session = { username: data.user.username, role: data.user.role, name: data.user.name, mustChangePassword: data.user.mustChangePassword };
-      localStorage.setItem('ls_token', token); localStorage.setItem('ls_session', JSON.stringify(session));
-      ui.loginErr = ''; ui.adminTab = 'today'; localStorage.setItem('ls_last_tab', 'today');
+      safeStorage.setItem('ls_token', token); safeStorage.setItem('ls_session', JSON.stringify(session));
+      ui.loginErr = ''; ui.adminTab = 'today'; safeStorage.setItem('ls_last_tab', 'today');
       await afterLogin();
     } catch (e) { ui.loginErr = e.message; render(); }
   };
   const loginBtn = document.querySelector('[data-act="login"]');
   if (loginBtn) loginBtn.onclick = submit;
-  const userField = document.getElementById('lg-user');
-  if (userField) userField.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
-  const passField = document.getElementById('lg-pass');
-  if (passField) passField.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  onEnter(document.getElementById('lg-user'), submit);
+  onEnter(document.getElementById('lg-pass'), submit);
   const forgotLink = document.querySelector('[data-act="toggle-forgot-password"]');
   if (forgotLink) forgotLink.onclick = (e) => { e.preventDefault(); ui.showForgotPassword = !ui.showForgotPassword; ui.forgotPasswordStage = 'request'; ui.forgotPasswordErr = ''; render(); };
   const requestOtp = async () => {
@@ -713,7 +768,7 @@ function bindLogin() {
   const backToRequestBtn = document.querySelector('[data-act="back-to-forgot-request"]');
   if (backToRequestBtn) backToRequestBtn.onclick = () => { ui.forgotPasswordStage = 'request'; ui.forgotPasswordErr = ''; render(); };
   const fpUsernameField = document.getElementById('fp-username');
-  if (fpUsernameField) fpUsernameField.addEventListener('keydown', e => { if (e.key === 'Enter') requestOtp(); });
+  onEnter(fpUsernameField, requestOtp);
   const submitOtpReset = async () => {
     const otp = document.getElementById('fp-otp').value.trim();
     const newPassword = document.getElementById('fp-new-password').value;
@@ -730,7 +785,7 @@ function bindLogin() {
   if (submitOtpBtn) submitOtpBtn.onclick = submitOtpReset;
   ['fp-otp', 'fp-new-password'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter') submitOtpReset(); });
+    onEnter(el, submitOtpReset);
   });
 }
 function renderForcedPasswordChange() {
@@ -769,8 +824,8 @@ function bindForcedPasswordChange() {
       const data = await api('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ newPassword }) });
       token = data.token;
       session = { ...session, mustChangePassword: false };
-      localStorage.removeItem('ls_pw_reminder_dismissed');
-      localStorage.setItem('ls_token', token); localStorage.setItem('ls_session', JSON.stringify(session));
+      safeStorage.removeItem('ls_pw_reminder_dismissed');
+      safeStorage.setItem('ls_token', token); safeStorage.setItem('ls_session', JSON.stringify(session));
       ui.pwChangeErr = '';
       setBanner('Password set — welcome in.', 'ok');
       await afterLogin();
@@ -780,28 +835,676 @@ function bindForcedPasswordChange() {
   if (submitBtn) submitBtn.onclick = submit;
   ['pw-new', 'pw-confirm'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    onEnter(el, submit);
   });
   const logoutLink = document.querySelector('[data-act="logout"]');
   if (logoutLink) logoutLink.onclick = (e) => { e.preventDefault(); logout(); };
   const dismissLink = document.querySelector('[data-act="dismiss-password-change"]');
-  if (dismissLink) dismissLink.onclick = (e) => { e.preventDefault(); ui.showPasswordChangeModal = false; localStorage.setItem('ls_pw_reminder_dismissed', 'true'); render(); };
+  if (dismissLink) dismissLink.onclick = (e) => { e.preventDefault(); ui.showPasswordChangeModal = false; safeStorage.setItem('ls_pw_reminder_dismissed', 'true'); render(); };
 }
 function logout() {
+  dropPushSubscription(token);
   token = null; session = null;
-  localStorage.removeItem('ls_token'); localStorage.removeItem('ls_session'); localStorage.removeItem('ls_last_tab'); localStorage.removeItem('ls_pw_reminder_dismissed');
+  dataLoadedOnce = false; lastDataFingerprint = null; lastSyncVersion = null;
+  clearDataSnapshots(); unregisterAndroidDevice(); taskHistory.clear();
+  safeStorage.removeItem('ls_token'); safeStorage.removeItem('ls_session'); safeStorage.removeItem('ls_last_tab'); safeStorage.removeItem('ls_pw_reminder_dismissed');
   resetAllAppState();
   render();
 }
 
+/* ==================== DEVICE NOTIFICATIONS ====================
+   Real, instant, free push: the browser's own push service (Chrome → Google's, Firefox → Mozilla's,
+   iPhone home-screen app → Apple's), signed with this server's VAPID keys. Works in Chrome on
+   Android (also when the site is installed with "Install app"), desktop browsers, and on iPhone
+   once the site is added to the Home Screen (iOS 16.4+). Inside the Android APK (a WebView, which
+   has no push) the app's own background check delivers notifications instead. */
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+function pushSupported() { return !window.AndroidBridge && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
+function urlB64ToUint8Array(b64) {
+  const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+let pushPublicKey = null;
+// interactive=true only from a button tap (browsers require that for the permission question).
+async function ensurePushSubscription(interactive) {
+  if (!pushSupported() || !session || !token) return false;
+  try {
+    if (!pushPublicKey) pushPublicKey = (await api('/api/push/vapid-public-key')).publicKey;
+    if (!pushPublicKey) return false; // server not configured
+    if (Notification.permission === 'denied') return false;
+    if (Notification.permission !== 'granted') {
+      if (!interactive) return false;
+      if ((await Notification.requestPermission()) !== 'granted') return false;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    const wantKey = urlB64ToUint8Array(pushPublicKey);
+    if (sub && sub.options && sub.options.applicationServerKey) {
+      const have = new Uint8Array(sub.options.applicationServerKey);
+      if (have.length !== wantKey.length || have.some((v, i) => v !== wantKey[i])) { await sub.unsubscribe(); sub = null; } // server keys changed
+    }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: wantKey });
+    await api('/api/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: sub.toJSON() }) });
+    safeStorage.setItem('ls_push_on', session.username);
+    return true;
+  } catch (e) {
+    if (interactive) setBanner('Couldn\'t turn on notifications on this device: ' + (e.message || 'unknown error'));
+    return false;
+  }
+}
+// On logout: this device must stop receiving that person's notifications (shared phones/PCs).
+function dropPushSubscription(oldToken) {
+  if (!pushSupported()) return;
+  navigator.serviceWorker.ready.then(reg => reg.pushManager.getSubscription()).then(sub => {
+    if (!sub) return;
+    if (oldToken) fetch('/api/push/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + oldToken }, body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+    return sub.unsubscribe();
+  }).catch(() => {});
+  safeStorage.removeItem('ls_push_on');
+}
+function notifPromptHTML() {
+  if (!session || safeStorage.getItem('ls_notif_prompt_dismissed') === session.username) return '';
+  const br = window.AndroidBridge;
+  if (br && br.isIgnoringBatteryOptimizations) {
+    let ok = true; try { ok = br.isIgnoringBatteryOptimizations(); } catch (e) { ok = true; }
+    if (ok) return '';
+    return notifCard('Get task notifications on this phone', 'Allow MIHIR Tasks to run in the background so new tasks, approvals and reminders reach you even when the app is closed.', 'Allow', 'allow-background');
+  }
+  if (pushSupported()) {
+    if (Notification.permission !== 'default') return '';
+    return notifCard('Turn on notifications for this device', 'Get new tasks, approvals and reminders instantly — even when this page is closed.', 'Turn on', 'enable-push');
+  }
+  if (isIOS && !isStandalone()) {
+    return notifCard('Want notifications on your iPhone?', 'Tap the Share button ⎋ in Safari → "Add to Home Screen", then open MIHIR Tasks from your home screen and turn notifications on.', null, null);
+  }
+  return '';
+}
+function notifCard(title, text, actionLabel, action) {
+  return `<div class="notif-prompt">
+    <div class="notif-prompt-icon">🔔</div>
+    <div class="notif-prompt-text"><b>${esc(title)}</b><div class="small muted">${esc(text)}</div></div>
+    <div class="notif-prompt-actions">
+      ${action ? `<button class="btn btn-primary btn-sm" data-act="${action}">${esc(actionLabel)}</button>` : ''}
+      <button class="btn btn-sm" data-act="dismiss-notif-prompt">Not now</button>
+    </div>
+  </div>`;
+}
+function bindNotifPrompt() {
+  const on = document.querySelector('[data-act="enable-push"]');
+  if (on) on.onclick = async () => {
+    on.disabled = true;
+    const ok = await ensurePushSubscription(true);
+    if (ok) setBanner('Notifications are on for this device.', 'ok');
+    else if ('Notification' in window && Notification.permission === 'denied') setBanner('Notifications are blocked for this site — allow them in the browser\'s site settings (🔒 next to the address).');
+    render();
+  };
+  const bg = document.querySelector('[data-act="allow-background"]');
+  if (bg) bg.onclick = () => { try { window.AndroidBridge.requestBackgroundPermission(); } catch (e) { /* older app */ } setTimeout(render, 1500); };
+  const no = document.querySelector('[data-act="dismiss-notif-prompt"]');
+  if (no) no.onclick = () => { safeStorage.setItem('ls_notif_prompt_dismissed', session.username); render(); };
+}
+
+/* ==================== ASSISTANT: suggestions, voice, message → tasks, meetings, system (Phases 5–8) ==================== */
+let appFeatures = {};
+let pendingSuggestions = [];
+let meetingsList = [];
+let systemInfo = null;
+const SOURCE_BADGE = { voice: '🎤 Voice', whatsapp: '💬 WhatsApp', email: '✉️ Email', meeting: '🗓 Meeting', manual: '📋 Message', upload: '📎 Upload', api: 'API' };
+// Recording (voice tasks + meetings) — kept outside ui so redraws don't touch it.
+const rec = { recorder: null, chunks: [], stream: null, kind: null, startedAt: null, timer: null, maxMs: 0, mime: '' };
+function pickAudioMime() {
+  const c = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+  return (window.MediaRecorder && c.find(m => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m))) || '';
+}
+async function startRecording(kind, maxMs) {
+  if (!navigator.mediaDevices || !window.MediaRecorder) { setBanner('This browser cannot record audio. Please use Chrome, Edge or Safari, or create the task manually.'); return false; }
+  try { rec.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { setBanner('Microphone permission was not given. Allow the microphone for this site and try again.'); return false; }
+  rec.mime = pickAudioMime();
+  rec.recorder = new MediaRecorder(rec.stream, rec.mime ? { mimeType: rec.mime } : undefined);
+  rec.chunks = []; rec.kind = kind; rec.startedAt = Date.now(); rec.maxMs = maxMs;
+  rec.recorder.ondataavailable = e => { if (e.data && e.data.size) rec.chunks.push(e.data); };
+  rec.recorder.start(1000);
+  rec.timer = setInterval(() => { const el = document.getElementById('rec-timer'); if (el) el.textContent = fmtDuration(Date.now() - rec.startedAt); if (Date.now() - rec.startedAt >= rec.maxMs) stopRecording(); }, 500);
+  render(); return true;
+}
+function stopRecording() {
+  return new Promise(resolve => {
+    if (!rec.recorder) return resolve(null);
+    clearInterval(rec.timer);
+    const r = rec.recorder;
+    r.onstop = () => {
+      const blob = new Blob(rec.chunks, { type: (r.mimeType || rec.mime || 'audio/webm').split(';')[0] });
+      rec.stream.getTracks().forEach(t => t.stop());
+      const out = { blob, startedAt: rec.startedAt, endedAt: Date.now(), kind: rec.kind };
+      rec.recorder = null; rec.stream = null; rec.chunks = []; rec.kind = null;
+      const done = typeof rec.onDone === 'function' ? rec.onDone : null; rec.onDone = null;
+      if (done) done(out);
+      resolve(out);
+    };
+    r.stop();
+  });
+}
+const fmtDuration = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const blobToDataUrl = blob => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(blob); });
+
+function suggestionCardHTML(s) {
+  const low = Number(s.confidence) < 0.6;
+  const dl = s.deadline ? (s.deadline.includes('T') ? s.deadline.slice(0, 16) : `${s.deadline}T18:00`) : '';
+  const people = (s.assignees || []);
+  return `
+  <div class="sugg-card" data-sugg="${s.id}">
+    <div class="sugg-head">
+      <span class="badge">${esc(SOURCE_BADGE[s.source] || (s.meeting_id ? SOURCE_BADGE.meeting : 'AI'))}</span>
+      <span class="small muted">AI suggestion · ${Math.round(Number(s.confidence || 0) * 100)}% sure${s.received_at ? ` · ${fmtTime(s.received_at)}` : ''}</span>
+    </div>
+    ${low ? '<div class="sugg-warn">The assistant was not sure about this one — please check every field before creating.</div>' : ''}
+    ${(s.unresolved_names || []).length ? `<div class="sugg-warn">Could not find: ${esc(s.unresolved_names.join(', '))} — pick the right person below.</div>` : ''}
+    <label class="small muted">Task</label>
+    <input type="text" data-sugg-title="${s.id}" value="${esc(s.title)}" maxlength="200">
+    <div class="sugg-grid">
+      <div><label class="small muted">Deadline</label><input type="datetime-local" data-sugg-deadline="${s.id}" value="${esc(dl)}"></div>
+      <div><label class="small muted">Priority</label><select data-sugg-priority="${s.id}">${['low', 'medium', 'high'].map(p => `<option value="${p}" ${(s.priority || 'medium') === p ? 'selected' : ''}>${p[0].toUpperCase() + p.slice(1)}</option>`).join('')}</select></div>
+      <div><label class="small muted">Project</label><input type="text" data-sugg-project="${s.id}" value="${esc(s.project || '')}" list="sugg-projects"></div>
+    </div>
+    <label class="small muted">Assigned to</label>
+    <div class="sugg-people" data-sugg-people="${s.id}" data-people="${esc(JSON.stringify(people))}">
+      ${people.map(u => `<span class="chip">${esc(personName(u))}<button type="button" data-sugg-unassign="${s.id}" data-user="${esc(u)}" aria-label="Remove">✕</button></span>`).join('')}
+      <select data-sugg-addperson="${s.id}"><option value="">+ Add person</option>${(userDirectory || []).filter(u => !people.includes(u.username)).sort((a, b) => String(a.name).localeCompare(String(b.name))).map(u => `<option value="${esc(u.username)}">${esc(u.name)}</option>`).join('')}</select>
+    </div>
+    ${s.original_text ? `<details class="sugg-orig"><summary class="small">What was said${s.language ? ` (${esc(s.language)})` : ''}</summary><div class="small">${esc(s.original_text)}</div></details>` : ''}
+    <div class="sugg-actions">
+      <button class="btn btn-primary btn-sm" data-sugg-accept="${s.id}">Create Task</button>
+      <button class="btn btn-sm" data-sugg-ignore="${s.id}">Ignore</button>
+    </div>
+  </div>`;
+}
+function bindSuggestionCards(afterChange) {
+  const readPeople = id => { try { return JSON.parse(document.querySelector(`[data-sugg-people="${id}"]`).dataset.people || '[]'); } catch (e) { return []; } };
+  const setPeople = (id, list) => {
+    const update = arr => arr.map(x => (String(x.id) === String(id) ? { ...x, assignees: list, unresolved_names: [] } : x));
+    pendingSuggestions = update(pendingSuggestions);
+    ui.voiceResult = ui.voiceResult ? { ...ui.voiceResult, suggestions: update(ui.voiceResult.suggestions || []) } : ui.voiceResult;
+    if (ui.meetingDetail) ui.meetingDetail = { ...ui.meetingDetail, suggestions: update(ui.meetingDetail.suggestions || []) };
+    render();
+  };
+  document.querySelectorAll('[data-sugg-addperson]').forEach(sel => sel.onchange = () => { if (sel.value) setPeople(sel.dataset.suggAddperson, readPeople(sel.dataset.suggAddperson).concat(sel.value)); });
+  document.querySelectorAll('[data-sugg-unassign]').forEach(b => b.onclick = () => setPeople(b.dataset.suggUnassign, readPeople(b.dataset.suggUnassign).filter(u => u !== b.dataset.user)));
+  document.querySelectorAll('[data-sugg-accept]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.suggAccept; if (b.disabled) return; b.disabled = true;
+    const q = sel => document.querySelector(sel);
+    const body = { title: q(`[data-sugg-title="${id}"]`).value, deadline: q(`[data-sugg-deadline="${id}"]`).value, priority: q(`[data-sugg-priority="${id}"]`).value, project: q(`[data-sugg-project="${id}"]`).value, assignees: readPeople(id) };
+    try {
+      const r = await api(`/api/suggestions/${id}/accept`, { method: 'POST', body: JSON.stringify(body) });
+      setBanner(`Task ${r.taskId} created.`, 'ok');
+      dropSuggestion(id); await refreshData(); if (afterChange) afterChange();
+    } catch (e) { setBanner(e.message); b.disabled = false; render(); }
+  });
+  document.querySelectorAll('[data-sugg-ignore]').forEach(b => b.onclick = async () => {
+    try { await api(`/api/suggestions/${b.dataset.suggIgnore}/ignore`, { method: 'POST' }); dropSuggestion(b.dataset.suggIgnore); render(); if (afterChange) afterChange(); }
+    catch (e) { setBanner(e.message); render(); }
+  });
+}
+function dropSuggestion(id) {
+  pendingSuggestions = pendingSuggestions.filter(x => String(x.id) !== String(id));
+  if (ui.voiceResult) ui.voiceResult = { ...ui.voiceResult, suggestions: (ui.voiceResult.suggestions || []).filter(x => String(x.id) !== String(id)) };
+  if (ui.meetingDetail) ui.meetingDetail = { ...ui.meetingDetail, suggestions: (ui.meetingDetail.suggestions || []).map(x => String(x.id) === String(id) ? { ...x, status: 'handled' } : x) };
+}
+const projectsDatalist = () => `<datalist id="sugg-projects">${(projectsList || []).map(p => `<option value="${esc(p.name || p)}">`).join('')}</datalist>`;
+
+function renderSuggestionsView() {
+  return `
+  <div class="notice">Tasks the assistant found in your voice notes, WhatsApp messages, emails and meetings. Nothing is created until you press <b>Create Task</b> — check and edit first.</div>
+  <div class="card">
+    <div class="card-title">Suggestions <span class="task-tab-count">${pendingSuggestions.length}</span></div>
+    ${projectsDatalist()}
+    ${pendingSuggestions.length ? `<div class="sugg-list">${pendingSuggestions.map(suggestionCardHTML).join('')}</div>` : '<div class="empty">Nothing waiting for review.</div>'}
+  </div>`;
+}
+// Voice / message panel on My Tasks
+function assistantButtonsHTML() {
+  if (!appFeatures.voiceTasks && !appFeatures.aiTaskExtraction) return '';
+  return `${appFeatures.voiceTasks ? '<button class="btn btn-sm" data-act="open-voice">🎤 Create Task by Voice</button>' : ''}${appFeatures.aiTaskExtraction ? '<button class="btn btn-sm" data-act="open-paste">📋 Tasks from a message</button><button class="btn btn-sm" data-act="open-file">📎 Tasks from a document or photo</button>' : ''}`;
+}
+function assistantPanelHTML() {
+  if (!ui.assistantPanel) return '';
+  const recording = rec.recorder && rec.kind === 'voice';
+  const res = ui.voiceResult;
+  return `
+  <div class="card assistant-panel">
+    <div class="flex-between"><div class="card-title" style="margin:0;">${ui.assistantPanel === 'voice' ? '🎤 Create Task by Voice' : ui.assistantPanel === 'file' ? '📎 Tasks from a document or photo' : '📋 Tasks from a message'}</div><button class="btn btn-sm" data-act="close-assistant">Close</button></div>
+    ${ui.assistantPanel === 'file' ? `
+      <p class="small muted">PDF, Word (.docx), Excel (.xlsx), CSV, a photo (also handwritten notes or a scanned page) or a short video — up to 15 MB. The assistant proposes tasks; you check and create them.</p>
+      ${ui.assistantBusy ? '<div class="small muted">Reading the file…</div>' : '<input type="file" id="assistant-file" accept=".pdf,.docx,.xlsx,.csv,.txt,image/*,video/*">'}
+    ` : ui.assistantPanel === 'voice' ? `
+      <p class="small muted">Speak naturally — Marathi, Hindi, English or mixed. Say who, what and by when. Up to 3 minutes.</p>
+      ${recording ? `<div class="rec-live"><span class="rec-dot"></span> Recording <b id="rec-timer">0:00</b> <button class="btn btn-primary btn-sm" data-act="stop-voice">Stop & prepare task</button></div>`
+        : ui.assistantBusy ? '<div class="small muted">Understanding your voice note…</div>'
+        : '<button class="btn btn-primary" data-act="start-voice">● Start recording</button>'}
+    ` : `
+      <p class="small muted">Paste a WhatsApp message, email or note. The assistant proposes tasks; you check and create them.</p>
+      <textarea id="paste-text" rows="5" placeholder="e.g. Rohit, please send the revised Tower 2A electrical quotation by tomorrow 2 pm.">${esc(ui.pasteText || '')}</textarea>
+      <button class="btn btn-primary btn-sm" data-act="run-paste" ${ui.assistantBusy ? 'disabled' : ''}>${ui.assistantBusy ? 'Reading…' : 'Find tasks'}</button>
+    `}
+    ${res ? `
+      ${res.transcript ? `<div class="assistant-transcript"><div class="small muted">Heard${res.language ? ` (${esc(res.language)})` : ''}:</div>${esc(res.transcript)}</div>` : ''}
+      ${projectsDatalist()}
+      ${(res.suggestions || []).length ? `<div class="sugg-list">${res.suggestions.map(suggestionCardHTML).join('')}</div>` : `<div class="empty small">${res.transcript ? 'No clear task found — please try again, or create it manually.' : 'Nothing left to review.'}</div>`}
+    ` : ''}
+  </div>`;
+}
+function bindAssistantPanel() {
+  const on = (sel, fn) => { const el = document.querySelector(sel); if (el) el.onclick = fn; };
+  on('[data-act="open-voice"]', () => { ui.assistantPanel = 'voice'; ui.voiceResult = null; render(); });
+  on('[data-act="open-paste"]', () => { ui.assistantPanel = 'paste'; ui.voiceResult = null; render(); });
+  on('[data-act="open-file"]', () => { ui.assistantPanel = 'file'; ui.voiceResult = null; render(); });
+  const fileIn = document.getElementById('assistant-file');
+  if (fileIn) fileIn.onchange = async () => {
+    const f = fileIn.files && fileIn.files[0]; if (!f) return;
+    if (f.size > 15 * 1024 * 1024) { setBanner('File too large — the limit is 15 MB.'); render(); return; }
+    ui.assistantBusy = true; render();
+    try { ui.voiceResult = await api('/api/ingestion/file', { method: 'POST', body: JSON.stringify({ file: await blobToDataUrl(f), name: f.name }) }); }
+    catch (e) { setBanner(e.message); }
+    ui.assistantBusy = false; render();
+  };
+  on('[data-act="close-assistant"]', async () => { if (rec.recorder) await stopRecording(); ui.assistantPanel = null; ui.voiceResult = null; render(); });
+  on('[data-act="start-voice"]', () => startRecording('voice', 3 * 60 * 1000));
+  on('[data-act="stop-voice"]', async () => {
+    const out = await stopRecording(); if (!out) return;
+    ui.assistantBusy = true; render();
+    try { ui.voiceResult = await api('/api/ingestion/voice', { method: 'POST', body: JSON.stringify({ audio: await blobToDataUrl(out.blob) }) }); }
+    catch (e) { setBanner(e.message || 'Voice processing failed. Please try again or create the task manually.'); }
+    ui.assistantBusy = false; render();
+  });
+  const ta = document.getElementById('paste-text'); if (ta) ta.oninput = () => { ui.pasteText = ta.value; };
+  on('[data-act="run-paste"]', async () => {
+    ui.assistantBusy = true; render();
+    try { ui.voiceResult = await api('/api/ingestion', { method: 'POST', body: JSON.stringify({ text: ui.pasteText || '' }) }); }
+    catch (e) { setBanner(e.message); }
+    ui.assistantBusy = false; render();
+  });
+  // If the recording hit its time limit on its own, finish the same way as pressing Stop.
+  if (rec.recorder && rec.kind === 'voice') rec.onDone = async (out) => {
+    ui.assistantBusy = true; render();
+    try { ui.voiceResult = await api('/api/ingestion/voice', { method: 'POST', body: JSON.stringify({ audio: await blobToDataUrl(out.blob) }) }); } catch (e) { setBanner(e.message); }
+    ui.assistantBusy = false; render();
+  };
+  bindSuggestionCards();
+}
+// Meetings
+function renderMeetingsView() {
+  if (ui.meetingDetail) return renderMeetingDetail(ui.meetingDetail);
+  const recording = rec.recorder && rec.kind === 'meeting';
+  const people = (userDirectory || []).filter(u => u.username !== session.username).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  return `
+  <div class="card">
+    <div class="card-title">Record a meeting</div>
+    ${recording ? `
+      <div class="consent-note">🔴 This meeting is being recorded for generating meeting notes and action items.</div>
+      <div class="rec-live"><span class="rec-dot"></span> <b>${esc(ui.meetingTitle || 'Meeting')}</b> — <b id="rec-timer">0:00</b>
+        <button class="btn btn-primary btn-sm" data-act="stop-meeting">Stop & process</button></div>`
+    : ui.meetingUploading ? '<div class="small muted">Uploading and processing the recording — this can take a minute for long meetings…</div>' : `
+      <input type="text" id="meeting-title" placeholder="Meeting title, e.g. Electrical coordination — Wing 2A" value="${esc(ui.meetingTitle || '')}">
+      <label class="small muted">Participants (they can see the summary)</label>
+      <select id="meeting-participants" multiple size="4">${people.map(u => `<option value="${esc(u.username)}" ${(ui.meetingParticipants || []).includes(u.username) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>
+      <p class="small muted">Tell everyone the meeting will be recorded. Speech in Marathi, Hindi, English or mixed is fine. ${appFeatures.storage ? `The recording is deleted automatically after ${appFeatures.meetingRetentionDays || 30} days; the transcript and tasks stay.` : 'The recording itself is not kept — only the transcript and tasks.'}</p>
+      <button class="btn btn-primary" data-act="start-meeting">● Start meeting recording</button>`}
+  </div>
+  <div class="card">
+    <div class="card-title">Meetings</div>
+    ${meetingsList.length ? `<div class="task-list">${meetingsList.map(m => `
+      <button class="meeting-row" data-meeting="${m.id}">
+        <b>${esc(m.title)}</b>
+        <span class="small muted">${fmtTime(m.created_at)}${m.duration_sec ? ` · ${fmtDuration(m.duration_sec * 1000)}` : ''} · ${esc(personName(m.created_by))}</span>
+        <span class="badge ${m.status === 'ready' ? 'received' : m.status === 'failed' ? 'flag' : ''}">${esc(m.status)}</span>
+      </button>`).join('')}</div>` : '<div class="empty">No meetings yet.</div>'}
+  </div>`;
+}
+function renderMeetingDetail(m) {
+  const open = (m.suggestions || []).filter(s => s.status === 'pending');
+  const done = (m.suggestions || []).filter(s => s.status !== 'pending');
+  return `
+  <div class="card">
+    <div class="flex-between"><div class="card-title" style="margin:0;">${esc(m.title)}</div><button class="btn btn-sm" data-act="meeting-back">← All meetings</button></div>
+    <div class="small muted">${fmtTime(m.created_at)}${m.duration_sec ? ` · ${fmtDuration(m.duration_sec * 1000)}` : ''} · by ${esc(personName(m.created_by))}${(m.participants || []).length ? ` · with ${esc(m.participants.map(personName).join(', '))}` : ''}</div>
+    ${m.status === 'processing' || m.status === 'recorded' ? '<div class="notice">Processing the recording… this page updates by itself.</div>' : ''}
+    ${m.status === 'failed' ? `<div class="sugg-warn">Processing failed: ${esc(m.error || '')} ${m.created_by === session.username || session.role === 'admin' ? '<button class="btn btn-sm" data-act="meeting-retry">Try again</button>' : ''}</div>` : ''}
+    ${m.summary ? `<h4>Summary</h4><p>${esc(m.summary)}</p>` : ''}
+    ${(m.decisions || []).length ? `<h4>Decisions</h4><ul>${m.decisions.map(d => `<li>${esc(d)}</li>`).join('')}</ul>` : ''}
+    ${(m.risks || []).length ? `<h4>Risks</h4><ul>${m.risks.map(d => `<li>${esc(d)}</li>`).join('')}</ul>` : ''}
+    ${m.recordingAvailable && (m.created_by === session.username || session.role === 'admin') ? '<button class="btn btn-sm" data-act="meeting-play">▶ Recording</button>' : ''}
+  </div>
+  <div class="card">
+    <div class="card-title">Action items <span class="task-tab-count">${open.length}</span></div>
+    ${projectsDatalist()}
+    ${open.length ? `<div class="sugg-list">${open.map(s => suggestionCardHTML({ ...s, source: 'meeting' })).join('')}</div>` : '<div class="empty small">No action items waiting.</div>'}
+    ${done.length ? `<div class="small muted" style="margin-top:8px;">${done.length} already handled${done.filter(s => s.task_id).length ? ` — tasks ${done.filter(s => s.task_id).map(s => esc(s.task_id)).join(', ')}` : ''}.</div>` : ''}
+  </div>
+  ${m.transcript ? `<div class="card"><details><summary class="card-title" style="cursor:pointer;">Transcript${m.language ? ` (${esc(m.language)})` : ''}</summary><div class="transcript">${esc(m.transcript)}</div></details></div>` : ''}`;
+}
+async function openMeeting(id) { try { ui.meetingDetail = await api(`/api/meetings/${id}`); render(); window.scrollTo(0, 0); } catch (e) { setBanner(e.message); render(); } }
+function bindMeetingsView() {
+  const on = (sel, fn) => { const el = document.querySelector(sel); if (el) el.onclick = fn; };
+  const t = document.getElementById('meeting-title'); if (t) t.oninput = () => { ui.meetingTitle = t.value; };
+  const p = document.getElementById('meeting-participants'); if (p) p.onchange = () => { ui.meetingParticipants = [...p.selectedOptions].map(o => o.value); };
+  on('[data-act="start-meeting"]', () => startRecording('meeting', 3 * 60 * 60 * 1000));
+  const finish = async (out) => {
+    ui.meetingUploading = true; render();
+    try {
+      const r = await api('/api/meetings', { method: 'POST', body: JSON.stringify({ title: ui.meetingTitle || '', participants: ui.meetingParticipants || [], audio: await blobToDataUrl(out.blob), startedAt: new Date(out.startedAt).toISOString(), endedAt: new Date(out.endedAt).toISOString() }) });
+      ui.meetingTitle = ''; ui.meetingParticipants = [];
+      await openMeeting(r.meeting.id); loadTabExtras();
+    } catch (e) { setBanner(e.message); }
+    ui.meetingUploading = false; render();
+  };
+  on('[data-act="stop-meeting"]', async () => { const out = await stopRecording(); if (out) finish(out); });
+  if (rec.recorder && rec.kind === 'meeting') rec.onDone = finish;
+  document.querySelectorAll('[data-meeting]').forEach(b => b.onclick = () => openMeeting(b.dataset.meeting));
+  on('[data-act="meeting-back"]', () => { ui.meetingDetail = null; loadTabExtras(); render(); });
+  on('[data-act="meeting-retry"]', async () => { try { await api(`/api/meetings/${ui.meetingDetail.id}/retry`, { method: 'POST' }); setBanner('Processing again…', 'ok'); } catch (e) { setBanner(e.message); } render(); });
+  on('[data-act="meeting-play"]', async () => { try { const r = await api(`/api/meetings/${ui.meetingDetail.id}/recording`); window.open(r.url, '_blank', 'noopener'); } catch (e) { setBanner(e.message); render(); } });
+  bindSuggestionCards(() => { if (ui.meetingDetail) openMeeting(ui.meetingDetail.id); });
+}
+// Admin: System health
+function renderSystemView() {
+  const s = systemInfo;
+  if (!s) return '<div class="card"><div class="small muted">Loading system status…</div></div>';
+  const ok = v => v ? '<span class="badge received">On</span>' : '<span class="badge">Off</span>';
+  const counts = s.jobs.counts || {};
+  return `
+  <div class="card">
+    <div class="card-title">System health</div>
+    <div class="person-chips">
+      <div class="person-chip ${s.database === 'ok' ? 'good' : 'bad'}"><div class="person-chip-n">${s.database === 'ok' ? 'OK' : 'DOWN'}</div><div class="person-chip-l">Database (schema ${esc(s.schemaVersion || '?')})</div></div>
+      <div class="person-chip"><div class="person-chip-n">${Math.round(s.uptimeSec / 3600)}h</div><div class="person-chip-l">Server up since restart</div></div>
+      <div class="person-chip ${(counts.dead_letter || 0) ? 'bad' : 'good'}"><div class="person-chip-n">${counts.dead_letter || 0}</div><div class="person-chip-l">Failed jobs (gave up)</div></div>
+      <div class="person-chip"><div class="person-chip-n">${(counts.queued || 0) + (counts.retrying || 0)}</div><div class="person-chip-l">Jobs waiting / retrying</div></div>
+      <div class="person-chip ${s.deliveries.failed.length ? 'bad' : 'good'}"><div class="person-chip-n">${s.deliveries.failed.length}</div><div class="person-chip-l">Recent failed deliveries</div></div>
+    </div>
+  </div>
+  ${s.ai ? `<div class="card"><div class="card-title">AI usage</div>
+    <div class="person-chips">
+      <div class="person-chip"><div class="person-chip-n">₹${s.ai.todayInr.toFixed(2)}</div><div class="person-chip-l">Today</div></div>
+      <div class="person-chip ${s.ai.monthInr >= s.ai.budgetInr * 0.8 ? 'bad' : ''}"><div class="person-chip-n">₹${s.ai.monthInr.toFixed(2)}</div><div class="person-chip-l">This month (budget ₹${s.ai.budgetInr})</div></div>
+    </div>
+    ${s.ai.bySource.length ? `<table class="audit-table" style="min-width:0;margin-top:10px;"><tr><th>Source</th><th>Calls this month</th><th>This month</th></tr>${s.ai.bySource.map(r => `<tr><td>${esc(SOURCE_BADGE[r.k] || r.k)}</td><td>${r.calls}</td><td>₹${(r.month || 0).toFixed(2)}</td></tr>`).join('')}</table>` : ''}</div>` : ''}
+  <div class="card"><div class="card-title">Integrations & features</div>
+    <table class="audit-table" style="min-width:0;">
+      <tr><td>Phone/computer notifications (web push)</td><td>${ok(s.integrations.webPush)}</td></tr>
+      <tr><td>WhatsApp sending</td><td>${ok(s.integrations.whatsappSending)}</td></tr>
+      <tr><td>Email (password reset)</td><td>${ok(s.integrations.email)}</td></tr>
+      <tr><td>AI provider</td><td>${s.integrations.ai ? esc(s.integrations.ai) : ok(false)}</td></tr>
+      <tr><td>File storage (Supabase Storage)</td><td>${ok(s.integrations.storage)}</td></tr>
+      <tr><td>Message → tasks</td><td>${ok(s.features.aiTaskExtraction)}</td></tr>
+      <tr><td>Voice tasks</td><td>${ok(s.features.voiceTasks)}</td></tr>
+      <tr><td>WhatsApp task creation</td><td>${ok(s.features.whatsapp)}</td></tr>
+      <tr><td>Email → tasks</td><td>${ok(s.features.emailIngestion)}</td></tr>
+      <tr><td>Meeting assistant</td><td>${ok(s.features.meetingAi)}</td></tr>
+      <tr><td>AI budget limit</td><td>${ok(s.features.aiBudgetLimit)}</td></tr>
+    </table></div>
+  <div class="card"><div class="card-title">Background jobs needing attention</div>
+    ${s.jobs.problems.length ? `<div class="import-table-wrap"><table class="audit-table"><tr><th>Job</th><th>Status</th><th>Attempts</th><th>Last error</th><th></th></tr>
+      ${s.jobs.problems.map(j => `<tr><td>${esc(j.job_type)} #${j.id}<div class="small muted">${fmtTime(j.created_at)}</div></td><td>${esc(j.status)}</td><td>${j.attempt_count}/${j.max_attempts}</td><td class="small">${esc((j.last_error || '').slice(0, 160))}</td>
+        <td>${['dead_letter', 'failed', 'retrying'].includes(j.status) ? `<button class="btn btn-sm" data-job-retry="${j.id}">Retry</button>` : ''}</td></tr>`).join('')}</table></div>` : '<div class="empty small">All background jobs are healthy.</div>'}
+  </div>
+  <div class="card"><div class="card-title">Failed notification deliveries</div>
+    ${s.deliveries.failed.length ? `<div class="import-table-wrap"><table class="audit-table"><tr><th>When</th><th>To</th><th>Channel</th><th>Reason</th></tr>
+      ${s.deliveries.failed.map(d => `<tr><td class="small nowrap">${fmtTime(d.created_at)}</td><td>${esc(personName(d.recipient_username))}</td><td>${esc(d.channel)}</td><td class="small">${esc(d.failure_reason || '')}</td></tr>`).join('')}</table></div>` : '<div class="empty small">No failed deliveries.</div>'}
+  </div>`;
+}
+function bindSystemView() {
+  document.querySelectorAll('[data-job-retry]').forEach(b => b.onclick = async () => {
+    try { await api(`/api/admin/jobs/${b.dataset.jobRetry}/retry`, { method: 'POST' }); await api('/api/admin/jobs/run-now', { method: 'POST' }); setBanner('Job retried.', 'ok'); loadTabExtras(); }
+    catch (e) { setBanner(e.message); render(); }
+  });
+}
+
+/* ==================== COMPANY CHAT ====================
+   All Company + one room per department; everyone can read and post everywhere. Tag a person
+   (@username) or a whole department (@[Department]) — picked from the list as you type "@".
+   New messages arrive through the normal live sync (a few seconds). */
+let chatUnread = { unread: 0, mentions: 0 };
+let chatRoomsList = [];
+let chatMessagesResp = null;           // { messages, hasMore } for ui.chatRoom (latest page)
+const chatOlder = {};                  // room -> older messages loaded with "Load earlier"
+const chatOlderMore = {};              // room -> hasMore for older pages
+let chatStickBottom = true;
+try { ui.chatRoom = ui.chatRoom || safeStorage.getItem('ls_chat_room') || 'general'; } catch (e) { /* ui not ready */ }
+const chatRoomKey = () => ui.chatRoom || 'general';
+const chatRoomName = key => { const r = chatRoomsList.find(x => x.key === key); return r ? r.name : (key === 'general' ? 'All Company' : String(key).replace(/^dept:/, '')); };
+function chatTagsMe(m) {
+  if (m.by_username === session.username) return false;
+  return (m.mentions || []).includes(session.username) || (session.team && (m.mention_teams || []).includes(session.team)) || /(^|\s)@everyone\b/.test(m.message || '');
+}
+function chatFormat(text) {
+  return esc(text)
+    .replace(/@\[([^\]\n]{1,80})\]/g, (all, t) => (teamsList || []).some(x => x.toLowerCase() === t.trim().toLowerCase()) ? `<span class="mention-tag mention-dept">@${t}</span>` : all)
+    .replace(/(^|\s)@everyone\b/g, '$1<span class="mention-tag mention-all">@everyone</span>')
+    .replace(/@([a-zA-Z0-9._-]{3,40})/g, (all, u) => { const p = (userDirectory || []).find(x => x.username === u); return p ? `<span class="mention-tag" title="${esc(p.name)}">@${esc(p.name)}</span>` : all; })
+    .replace(/\bTASK-[A-Z0-9]{6}\b/g, id => `<a href="#" class="chat-task-link" data-chat-task="${id}">${id}</a>`)
+    .replace(/\n/g, '<br>');
+}
+const istDay = iso => new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+const istTime = iso => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+function chatDayLabel(iso) {
+  const d = istDay(iso), today = istDay(new Date().toISOString()), yest = istDay(new Date(Date.now() - 864e5).toISOString());
+  return d === today ? 'Today' : d === yest ? 'Yesterday' : d;
+}
+function renderChatView() {
+  const room = chatRoomKey();
+  const latest = (chatMessagesResp && chatMessagesResp.room === room) ? chatMessagesResp.messages : [];
+  const msgs = (chatOlder[room] || []).concat(latest);
+  const hasMoreOlder = (chatOlder[room] ? chatOlderMore[room] : chatMessagesResp && chatMessagesResp.room === room && chatMessagesResp.hasMore);
+  const rooms = chatRoomsList.length ? chatRoomsList : [{ key: 'general', name: 'All Company' }];
+  const mineFirst = rooms.slice(0, 1).concat(rooms.slice(1).sort((a, b) => (b.mine - a.mine) || a.name.localeCompare(b.name)));
+  let lastDay = null, lastAuthor = null, lastAt = 0;
+  return `
+  <div class="chat-shell">
+    <aside class="chat-rooms" aria-label="Chat rooms">
+      ${mineFirst.map(r => `
+        <button class="chat-room ${r.key === room ? 'active' : ''}" data-chat-room="${esc(r.key)}">
+          <span class="chat-room-name">${r.key === 'general' ? '🏢 ' : '# '}${esc(r.name)}${r.mine ? ' <span class="small muted">(yours)</span>' : ''}</span>
+          ${r.mentions ? `<span class="chat-badge at">@${r.mentions}</span>` : r.unread ? `<span class="chat-badge">${r.unread}</span>` : ''}
+          ${r.last ? `<span class="chat-room-last small muted">${esc(r.last.by_name || '')}: ${esc(r.last.message || '')}</span>` : ''}
+        </button>`).join('')}
+    </aside>
+    <section class="chat-main">
+      <div class="chat-head">
+        <div><b>${room === 'general' ? '🏢 ' : '# '}${esc(chatRoomName(room))}</b>
+          <div class="small muted">${room === 'general' ? 'Everyone in the company' : `Open to everyone — talk to ${esc(chatRoomName(room))} here`}</div></div>
+      </div>
+      <div class="chat-messages" id="chat-messages">
+        ${hasMoreOlder ? '<div style="text-align:center;margin:6px 0;"><button class="btn btn-sm" data-act="chat-older">Load earlier messages</button></div>' : ''}
+        ${!chatMessagesResp ? '<div class="empty small">Loading…</div>' : msgs.length === 0 ? '<div class="empty">No messages yet — say hello 👋</div>' : msgs.map(m => {
+          const day = chatDayLabel(m.created_at);
+          const t = new Date(m.created_at).getTime();
+          const grouped = day === lastDay && m.by_username === lastAuthor && t - lastAt < 5 * 60000;
+          const sep = day !== lastDay ? `<div class="chat-day"><span>${esc(day)}</span></div>` : '';
+          lastDay = day; lastAuthor = m.by_username; lastAt = t;
+          const mine = m.by_username === session.username;
+          const canDelete = !m.deleted_at && (mine || session.role === 'admin');
+          return `${sep}
+          <div class="chat-msg ${mine ? 'mine' : ''} ${chatTagsMe(m) ? 'tags-me' : ''} ${grouped ? 'grouped' : ''}" data-msg-id="${m.id}">
+            ${grouped ? '' : `<div class="chat-meta"><b>${esc(m.by_name || m.by_username)}</b>${m.by_team ? ` <span class="small muted">· ${esc(m.by_team)}</span>` : ''} <span class="small muted">${istTime(m.created_at)}</span></div>`}
+            <div class="chat-text">${m.deleted_at ? '<i class="muted">message deleted</i>' : chatFormat(m.message)}
+              ${canDelete ? `<button class="chat-del" data-chat-del="${m.id}" title="Delete message" aria-label="Delete message">✕</button>` : ''}</div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div class="chat-compose">
+        <div style="position:relative;flex:1;">
+          <textarea id="chat-input" rows="2" maxlength="2000" placeholder="Message ${esc(chatRoomName(room))} · @ to tag">${esc(ui.chatDraft || '')}</textarea>
+          <div class="tag-suggestions-dropdown" id="chat-suggest" style="display:none;bottom:calc(100% + 4px);top:auto;"></div>
+        </div>
+        <button class="btn btn-primary" data-act="chat-send" ${ui.chatSending ? 'disabled' : ''}>Send</button>
+      </div>
+      <div class="small muted chat-hint">Enter to send · Shift+Enter for a new line · @name tags a person · @[Department] tags the whole department${session.role === 'admin' || session.role === 'director' ? ' · @everyone tags the whole company' : ''}</div>
+    </section>
+  </div>`;
+}
+function chatSuggestions(q) {
+  q = q.toLowerCase();
+  const out = [];
+  if ((session.role === 'admin' || session.role === 'director') && 'everyone'.startsWith(q)) out.push({ label: '📣 everyone', sub: 'whole company', insert: '@everyone ' });
+  (teamsList || []).filter(t => t.toLowerCase().includes(q)).slice(0, 5).forEach(t => out.push({ label: `🏷 ${t}`, sub: 'whole department', insert: `@[${t}] ` }));
+  (userDirectory || []).filter(u => u.username !== session.username && (u.username.toLowerCase().includes(q) || String(u.name).toLowerCase().includes(q))).slice(0, 8)
+    .forEach(u => out.push({ label: u.name, sub: `${u.username}${u.team ? ' · ' + u.team : ''}`, insert: `@${u.username} ` }));
+  return out;
+}
+async function chatMarkRead() {
+  const room = chatRoomKey();
+  if (!chatMessagesResp || chatMessagesResp.room !== room || !chatMessagesResp.messages.length) return;
+  const lastId = Number(chatMessagesResp.messages[chatMessagesResp.messages.length - 1].id);
+  ui.chatReadMarks = ui.chatReadMarks || {};
+  if ((ui.chatReadMarks[room] || 0) >= lastId) return;
+  ui.chatReadMarks[room] = lastId;
+  try {
+    await api(`/api/chat/rooms/${encodeURIComponent(room)}/read`, { method: 'POST', body: JSON.stringify({ lastId }) });
+    const r = chatRoomsList.find(x => x.key === room); if (r) { r.unread = 0; r.mentions = 0; }
+    chatUnread = await api('/api/chat/unread');
+    render();
+  } catch (e) { /* retried next time */ }
+}
+async function chatSend() {
+  const input = document.getElementById('chat-input');
+  const text = (input ? input.value : ui.chatDraft || '').trim();
+  if (!text || ui.chatSending) return;
+  ui.chatSending = true;
+  try {
+    await api(`/api/chat/rooms/${encodeURIComponent(chatRoomKey())}/messages`, { method: 'POST', body: JSON.stringify({ message: text }) });
+    ui.chatDraft = ''; if (input) input.value = '';
+    chatStickBottom = true;
+    loadTabExtras();
+  } catch (e) { setBanner(e.message); }
+  ui.chatSending = false; render();
+  const again = document.getElementById('chat-input'); if (again) again.focus();
+}
+function bindChatView() {
+  document.querySelectorAll('[data-chat-room]').forEach(b => b.onclick = () => {
+    if (b.dataset.chatRoom === chatRoomKey()) return;
+    ui.chatRoom = b.dataset.chatRoom; ui.chatDraft = ''; chatMessagesResp = null; chatStickBottom = true;
+    safeStorage.setItem('ls_chat_room', ui.chatRoom);
+    render(); loadTabExtras();
+  });
+  const box = document.getElementById('chat-messages');
+  if (box) {
+    if (chatStickBottom) box.scrollTop = box.scrollHeight;
+    box.onscroll = () => { chatStickBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60; };
+  }
+  const input = document.getElementById('chat-input');
+  const sug = document.getElementById('chat-suggest');
+  if (input && sug) {
+    let items = [];
+    const frag = () => { const pos = input.selectionStart; const m = input.value.slice(0, pos).match(/@(\[[^\]\n]*|[a-zA-Z0-9._-]*)$/); return m ? { q: m[1].replace(/^\[/, ''), start: pos - m[0].length, end: pos } : null; };
+    const close = () => { sug.style.display = 'none'; sug.innerHTML = ''; items = []; };
+    const pick = (it) => {
+      const f = frag(); if (!f) return close();
+      const before = input.value.slice(0, f.start), after = input.value.slice(f.end);
+      input.value = before + it.insert + after; ui.chatDraft = input.value;
+      const p = before.length + it.insert.length; input.focus(); input.setSelectionRange(p, p); close();
+    };
+    const show = () => {
+      const f = frag(); if (!f) return close();
+      items = chatSuggestions(f.q); if (!items.length) return close();
+      sug.style.display = 'block';
+      sug.innerHTML = items.map((it, i) => `<div class="tag-suggestion-item" data-sugg-i="${i}">${esc(it.label)} <span class="muted small">${esc(it.sub)}</span></div>`).join('');
+      sug.querySelectorAll('[data-sugg-i]').forEach(el => el.onmousedown = (e) => { e.preventDefault(); pick(items[Number(el.dataset.suggI)]); });
+    };
+    input.oninput = () => { ui.chatDraft = input.value; show(); };
+    input.onkeydown = (e) => {
+      if (e.key === 'Escape') return close();
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        if (items.length && sug.style.display === 'block') pick(items[0]); else chatSend();
+      }
+    };
+    input.onblur = () => setTimeout(close, 150);
+  }
+  const send = document.querySelector('[data-act="chat-send"]'); if (send) send.onclick = chatSend;
+  const older = document.querySelector('[data-act="chat-older"]');
+  if (older) older.onclick = async () => {
+    const room = chatRoomKey();
+    const first = (chatOlder[room] && chatOlder[room][0]) || (chatMessagesResp && chatMessagesResp.messages[0]);
+    if (!first) return;
+    older.disabled = true;
+    try {
+      const r = await api(`/api/chat/rooms/${encodeURIComponent(room)}/messages?before=${first.id}&limit=50`);
+      const prevHeight = box ? box.scrollHeight : 0;
+      chatOlder[room] = r.messages.concat(chatOlder[room] || []); chatOlderMore[room] = r.hasMore; chatStickBottom = false;
+      render();
+      const nb = document.getElementById('chat-messages'); if (nb) nb.scrollTop = nb.scrollHeight - prevHeight;
+    } catch (e) { setBanner(e.message); render(); }
+  };
+  document.querySelectorAll('[data-chat-del]').forEach(b => b.onclick = async () => {
+    if (!confirm('Delete this message for everyone?')) return;
+    try { await api(`/api/chat/messages/${b.dataset.chatDel}`, { method: 'DELETE' }); loadTabExtras(); } catch (e) { setBanner(e.message); render(); }
+  });
+  document.querySelectorAll('[data-chat-task]').forEach(a => a.onclick = (e) => {
+    e.preventDefault();
+    ui.taskSearchQuery = a.dataset.chatTask;
+    ui.adminTab = session.role === 'admin' ? 'alltasks' : 'tasks';
+    render(); window.scrollTo(0, 0);
+  });
+  chatMarkRead();
+}
+
 /* ==================== DATA LOADING ==================== */
-async function afterLogin() { await refreshData(); }
+async function afterLogin() { await refreshData(); registerAndroidDevice(); ensurePushSubscription(false); }
 
 // ---- Push notifications (PWA) ----
 // Registering the service worker is harmless and done unconditionally (needed for the app to be
 // installable at all). The subscribe/unsubscribe UI that used to live in My Profile was removed
 // on request; the service worker registration itself stays, since it's what makes the app
 // installable as a PWA at all, independent of push notifications specifically.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !session) return;
+  if (ui.sidebarOpen) { ui.sidebarOpen = false; render(); }
+});
+// Rotating a tablet / resizing a window across the phone↔desktop width must never leave the
+// overlay menu stuck open over a desktop layout.
+window.addEventListener('resize', () => {
+  if (ui.sidebarOpen && !window.matchMedia('(max-width: 860px)').matches) { ui.sidebarOpen = false; render(); }
+});
+// ---- Android app support (the APK is a thin shell around this same site) ----
+if (window.AndroidBridge) {
+  document.documentElement.classList.add('in-android-app');
+  // Attachment links ("View file →") are data: links with a download name — save them via the app.
+  document.addEventListener('click', (ev) => {
+    const a = ev.target && ev.target.closest ? ev.target.closest('a[href^="data:"]') : null;
+    if (!a) return;
+    ev.preventDefault();
+    downloadDataUrl(a.getAttribute('href'), a.getAttribute('download') || 'attachment');
+  }, true);
+}
+// Phone notifications: give the Android app its own notifications-only device token so it can
+// check for new notifications in the background (no Firebase / paid push service needed).
+async function registerAndroidDevice() {
+  const br = window.AndroidBridge;
+  if (!br || !br.setDeviceSession || !session || !token) return;
+  try { if (br.hasDeviceSession && br.hasDeviceSession(session.username)) return; } catch (e) { /* older app */ }
+  try {
+    const r = await api('/api/device/register', { method: 'POST' });
+    br.setDeviceSession(r.deviceToken, r.username, String(r.latestId || 0));
+  } catch (e) { /* offline — tried again next start */ }
+}
+function unregisterAndroidDevice() {
+  try { if (window.AndroidBridge && window.AndroidBridge.clearDeviceSession) window.AndroidBridge.clearDeviceSession(); } catch (e) { /* ignore */ }
+}
+// The phone's Back button: close whatever is open first, then go back to Today, and only then let
+// the app close. Returns true when it handled the press.
+window.__androidBack = function () {
+  try {
+    if (ui.sidebarOpen) { ui.sidebarOpen = false; render(); return true; }
+    if (ui.notifDrawerOpen) { ui.notifDrawerOpen = false; render(); return true; }
+    if (ui.importOpen) { ui.importOpen = false; resetImportState(); render(); return true; }
+    if (ui.taskFormOpen) { ui.taskFormOpen = false; render(); return true; }
+    if (ui.deadlineEditTaskId) { ui.deadlineEditTaskId = null; render(); return true; }
+    if (session && ui.adminTab && ui.adminTab !== 'today') { ui.adminTab = 'today'; render(); window.scrollTo(0, 0); return true; }
+  } catch (e) { /* fall through to the app's own handling */ }
+  return false;
+};
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/service-worker.js').catch(() => { /* fine on browsers without support */ });
 }
@@ -810,115 +1513,238 @@ let lastDataFingerprint = null;
 // just did. For a background poll, if the fetched data is byte-for-byte identical to last time,
 // we skip render() entirely — no full-page rebuild, no flash, nothing to "blink". A real change
 // (new assignment, a reply, a status flip) always renders, same as before.
-async function refreshData(opts) {
-  if (!token || !session) return;
+/* ==================== DATA LOADING ====================
+   Core data (tasks, notifications, people, lists) loads first and appears as soon as it arrives;
+   each page's reports are fetched only while that page is open. A failed request keeps the last
+   good data instead of blanking the screen, and refreshes never overlap (a slow server used to
+   get a new full round of ~22 requests every 8 seconds stacked on top of the unfinished ones). */
+const TAB_EXTRAS = {
+  today: ['monthlyLeaderboard', 'weeklyLeaderboard'],
+  performance: ['completionStats', 'approvalStats', 'ratingsResp', 'approvalDecisionsDetail', 'quarterAwardsResp', 'yearAwardsResp'],
+  reports: ['reportsTaskList'],
+  auditlog: ['auditLogEntries'],
+  meetings: ['meetingsList'],
+  chat: ['chatRoomsList', 'chatMessagesResp'],
+  system: ['systemInfo'],
+  peakhours: ['peakHoursData'],
+  hrdashboard: ['hrRosterResp'],
+  mydashboard: ['myDashboardData'],
+};
+function dataRequests() {
+  const isAdmin = session.role === 'admin';
+  const isAdminOrDirector = isAdmin || session.role === 'director';
+  const isHR = isHRTeamName(session.team);
+  const core = {
+    myTasks: '/api/tasks/mine', userDirectory: '/api/users/directory', teamsList: '/api/teams', projectsList: '/api/projects',
+    sectionsList: '/api/drawing-sections', phasesList: '/api/task-phases', openTaskTitles: '/api/tasks/open-titles', me: '/api/auth/me',
+    notif: '/api/notifications', myApprovalRequests: '/api/approvals/mine',
+    features: '/api/features', suggestions: '/api/suggestions', chatUnread: '/api/chat/unread',
+  };
+  if (isAdmin) { core.allTasks = '/api/tasks'; core.allApprovalRequests = '/api/approvals'; }
+  const extras = {
+    meetingsList: '/api/meetings',
+    chatRoomsList: '/api/chat/rooms',
+    chatMessagesResp: `/api/chat/rooms/${encodeURIComponent(chatRoomKey())}/messages?limit=50`,
+    ...(isAdmin ? { systemInfo: '/api/admin/system' } : {}),
+    myDashboardData: `/api/reports/my-dashboard${isAdmin && ui.dashboardViewUser && ui.dashboardViewUser !== session.username ? `?username=${encodeURIComponent(ui.dashboardViewUser)}` : ''}`,
+  };
+  if (isAdmin) Object.assign(extras, {
+    monthlyLeaderboard: '/api/reports/monthly-leaderboard', weeklyLeaderboard: '/api/reports/weekly-leaderboard',
+    quarterAwardsResp: '/api/reports/period-awards?type=quarter', yearAwardsResp: '/api/reports/period-awards?type=year',
+    reportsTaskList: '/api/reports/tasks-list', auditLogEntries: auditQuery(),
+  });
+  if (isAdminOrDirector) Object.assign(extras, {
+    completionStats: '/api/reports/completion', approvalStats: '/api/reports/approvals', ratingsResp: '/api/reports/ratings',
+    approvalDecisionsDetail: '/api/reports/approval-decisions', peakHoursData: `/api/reports/peak-hours?username=${encodeURIComponent(ui.peakHoursUser || 'all')}`,
+  });
+  if (isAdmin || isHR) extras.hrRosterResp = '/api/reports/hr-roster';
+  // Only the current page's extras.
+  const wanted = new Set(TAB_EXTRAS[ui.adminTab || 'today'] || []);
+  Object.keys(extras).forEach(k => { if (!wanted.has(k)) delete extras[k]; });
+  return { core, extras };
+}
+function applyData(key, v) {
+  switch (key) {
+    case 'myTasks': myTasks = v; break;
+    case 'allTasks': allTasks = v; break;
+    case 'userDirectory': userDirectory = v; break;
+    case 'teamsList': teamsList = v; break;
+    case 'projectsList': projectsList = v; break;
+    case 'sectionsList': sectionsList = v; break;
+    case 'phasesList': phasesList = v; break;
+    case 'openTaskTitles': openTaskTitles = v; break;
+    case 'me':
+      session = { ...session, email: v.email, phone: v.phone, team: v.team, designation: v.designation, isTeamLead: !!v.isTeamLead };
+      safeStorage.setItem('ls_session', JSON.stringify(session));
+      break;
+    case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; break;
+    case 'myApprovalRequests': myApprovalRequests = v; break;
+    case 'allApprovalRequests': allApprovalRequests = v; break;
+    case 'myDashboardData': myDashboardData = v; break;
+    case 'monthlyLeaderboard': monthlyLeaderboard = v; break;
+    case 'weeklyLeaderboard': weeklyLeaderboard = v; break;
+    case 'quarterAwardsResp': quarterAwards = v.awards; break;
+    case 'yearAwardsResp': yearAwards = v.awards; break;
+    case 'reportsTaskList': reportsTaskList = v; break;
+    case 'auditLogEntries': auditLogEntries = v; break;
+    case 'completionStats': completionStats = v; break;
+    case 'approvalStats': approvalStats = v; break;
+    case 'ratingsResp': ratingsData = v.ratings; break;
+    case 'approvalDecisionsDetail': approvalDecisionsDetail = v; break;
+    case 'peakHoursData': peakHoursData = v; break;
+    case 'features': appFeatures = v || {}; break;
+    case 'suggestions': pendingSuggestions = v || []; break;
+    case 'meetingsList': meetingsList = v || []; break;
+    case 'chatUnread': chatUnread = v || { unread: 0, mentions: 0 }; break;
+    case 'chatRoomsList': chatRoomsList = v || []; break;
+    case 'chatMessagesResp': chatMessagesResp = { ...v, room: chatRoomKey() }; break;
+    case 'systemInfo': systemInfo = v; break;
+    case 'hrRosterResp': hrRosterData = v.roster; hrTotalTasksCompleted = v.totalTasksCompleted; break;
+  }
+}
+let dataLoadedOnce = false;       // true once real data (fresh or from this device's snapshot) is on screen
+let refreshInFlight = null, refreshQueued = false;
+function refreshData(opts) {
+  if (!token || !session) return Promise.resolve();
+  if (refreshInFlight) {
+    // A refresh is already running. Background ticks just ask for one more round afterwards;
+    // a refresh after the person's own action waits for it, then runs again so their change shows.
+    if (opts && opts.background) { refreshQueued = true; return refreshInFlight; }
+    return refreshInFlight.then(() => refreshData(opts));
+  }
+  refreshInFlight = doRefresh(opts).finally(() => {
+    refreshInFlight = null;
+    if (refreshQueued) { refreshQueued = false; refreshData({ background: true }); }
+  });
+  return refreshInFlight;
+}
+async function doRefresh(opts) {
   const background = !!(opts && opts.background);
-  try {
-    // Rewritten from 24 SEQUENTIAL awaits to genuinely parallel requests — none of these calls'
-    // URLs or logic ever depended on another call's result (the role-based branches below use
-    // session.role, which is already known from login, not derived from anything fetched here),
-    // so awaiting them one at a time was pure wasted latency: even at a fast ~25ms per call
-    // locally, 24 in a row adds up to well over half a second of visible delay after every
-    // single action, before the UI shows anything changed — real, felt lag on a slower
-    // connection. Running them concurrently drops the wait to roughly the one slowest call.
-    const isAdmin = session.role === 'admin';
-    const isAdminOrDirector = isAdmin || session.role === 'director';
-    const isHR = isHRTeamName(session.team);
-
-    const calls = {
-      myTasks: api('/api/tasks/mine'),
-      userDirectory: api('/api/users/directory'),
-      teamsList: api('/api/teams'),
-      projectsList: api('/api/projects'),
-      sectionsList: api('/api/drawing-sections'),
-      phasesList: api('/api/task-phases'),
-      openTaskTitles: api('/api/tasks/open-titles'),
-      me: api('/api/auth/me'),
-      notif: api('/api/notifications'),
-      myApprovalRequests: api('/api/approvals/mine'),
-      myDashboardData: api(`/api/reports/my-dashboard${isAdmin && ui.dashboardViewUser && ui.dashboardViewUser !== session.username ? `?username=${encodeURIComponent(ui.dashboardViewUser)}` : ''}`),
-    };
-    if (isAdmin) {
-      calls.monthlyLeaderboard = api('/api/reports/monthly-leaderboard');
-      calls.weeklyLeaderboard = api('/api/reports/weekly-leaderboard');
-      calls.quarterAwardsResp = api('/api/reports/period-awards?type=quarter');
-      calls.yearAwardsResp = api('/api/reports/period-awards?type=year');
-      calls.allTasks = api('/api/tasks');
-      calls.allApprovalRequests = api('/api/approvals');
-      calls.reportsTaskList = api('/api/reports/tasks-list');
-      calls.auditLogEntries = api('/api/audit-log');
-    }
-    if (isAdminOrDirector) {
-      calls.completionStats = api('/api/reports/completion');
-      calls.approvalStats = api('/api/reports/approvals');
-      calls.peakHoursData = api(`/api/reports/peak-hours?username=${encodeURIComponent(ui.peakHoursUser || 'all')}`);
-      calls.ratingsResp = api('/api/reports/ratings');
-      calls.approvalDecisionsDetail = api('/api/reports/approval-decisions');
-    }
-    if (isAdmin || isHR) {
-      calls.hrRosterResp = api('/api/reports/hr-roster');
-    }
-
-    const keys = Object.keys(calls);
-    const results = await Promise.all(keys.map(k => calls[k]));
-    const r = {};
-    keys.forEach((k, i) => { r[k] = results[i]; });
-
-    myTasks = r.myTasks;
-    userDirectory = r.userDirectory;
-    teamsList = r.teamsList;
-    projectsList = r.projectsList;
-    sectionsList = r.sectionsList;
-    phasesList = r.phasesList;
-    openTaskTitles = r.openTaskTitles;
-    session = { ...session, email: r.me.email, phone: r.me.phone, team: r.me.team, designation: r.me.designation, isTeamLead: !!r.me.isTeamLead };
-    localStorage.setItem('ls_session', JSON.stringify(session));
-    myNotifications = r.notif.items; unreadNotifCount = r.notif.unread;
-    myApprovalRequests = r.myApprovalRequests;
-    myDashboardData = r.myDashboardData;
-    if (isAdmin) {
-      monthlyLeaderboard = r.monthlyLeaderboard;
-      weeklyLeaderboard = r.weeklyLeaderboard;
-      quarterAwards = r.quarterAwardsResp.awards;
-      yearAwards = r.yearAwardsResp.awards;
-      allTasks = r.allTasks;
-      allApprovalRequests = r.allApprovalRequests;
-      reportsTaskList = r.reportsTaskList;
-      auditLogEntries = r.auditLogEntries;
-    }
-    if (isAdminOrDirector) {
-      completionStats = r.completionStats;
-      approvalStats = r.approvalStats;
-      peakHoursData = r.peakHoursData;
-      ratingsData = r.ratingsResp.ratings;
-      approvalDecisionsDetail = r.approvalDecisionsDetail;
-    }
-    if (isAdmin || isHR) {
-      hrRosterData = r.hrRosterResp.roster; hrTotalTasksCompleted = r.hrRosterResp.totalTasksCompleted;
-    }
-    if (background) {
-      // Every field a currently-visible page could actually display must be included here —
-      // otherwise a background poll could silently fetch fresh data for, say, Performance
-      // ratings or the HR roster, and then skip re-rendering because the ORIGINAL fields
-      // (myTasks, notifications, etc.) happened not to change, leaving that page showing stale
-      // numbers until something else eventually forced a render. Found this gap directly: these
-      // newer fields (added well after this fingerprint check was first written) were never
-      // added to it.
-      const fingerprint = JSON.stringify({ myTasks, allTasks, userDirectory, teamsList, myNotifications, unreadNotifCount, completionStats, ratingsData, approvalStats, approvalDecisionsDetail, peakHoursData, hrRosterData, myDashboardData, hrDashboardData, auditLogEntries });
-      if (fingerprint === lastDataFingerprint) return; // nothing changed — skip the render, no flicker
-      lastDataFingerprint = fingerprint;
-    }
-  } catch (e) { /* api() already handles session expiry */ }
-  render();
+  const { core, extras } = dataRequests();
+  const fetchGroup = async (group) => {
+    const keys = Object.keys(group);
+    const results = await Promise.allSettled(keys.map(k => api(group[k])));
+    let ok = 0;
+    results.forEach((r, i) => { if (r.status === 'fulfilled' && r.value != null) { try { applyData(keys[i], r.value); ok++; } catch (e) { /* keep old value */ } } });
+    return ok;
+  };
+  const extrasPromise = fetchGroup(extras); // runs alongside core, rendered when it lands
+  const coreOk = await fetchGroup(core);
+  if (!token || !session) return; // logged out meanwhile (expired session)
+  if (coreOk > 0) { dataLoadedOnce = true; saveDataSnapshot(); }
+  renderIfChanged(background);
+  await extrasPromise;
+  if (!token || !session) return;
+  renderIfChanged(true);
+  if (background) refreshOpenTaskHistories();
 }
 
+function renderIfChanged(background) {
+  if (background) {
+    const fingerprint = JSON.stringify({ chatUnread, chatRoomsList, chatMessagesResp, myTasks, allTasks, userDirectory, teamsList, myNotifications, unreadNotifCount, completionStats, ratingsData, approvalStats, approvalDecisionsDetail, peakHoursData, hrRosterData, myDashboardData, auditLogEntries, monthlyLeaderboard, weeklyLeaderboard, reportsTaskList, myApprovalRequests, allApprovalRequests, quarterAwards, yearAwards });
+    if (fingerprint === lastDataFingerprint) return; // nothing changed — skip the render, no flicker
+    lastDataFingerprint = fingerprint;
+  }
+  render();
+}
+// Fetch just the current page's reports (used when switching pages).
+function loadTabExtras() {
+  if (!token || !session) return;
+  const { extras } = dataRequests();
+  const keys = Object.keys(extras);
+  if (!keys.length) return;
+  Promise.allSettled(keys.map(k => api(extras[k]))).then(results => {
+    results.forEach((r, i) => { if (r.status === 'fulfilled' && r.value != null) applyData(keys[i], r.value); });
+    // Page data (reports, meetings, system status…) isn't part of the core fingerprint — always redraw.
+    if (token && session) render();
+  });
+}
+
+/* ---- Instant start: last data kept on this device (IndexedDB) ----
+   After a refresh or reopening the app the screen shows the last known tasks immediately instead
+   of an empty page, then updates in place a moment later. Per user; wiped on logout. */
+const SNAPSHOT_KEYS = ['myTasks', 'allTasks', 'userDirectory', 'teamsList', 'projectsList', 'sectionsList', 'phasesList', 'openTaskTitles', 'myNotifications', 'unreadNotifCount', 'myApprovalRequests', 'allApprovalRequests'];
+function idb() {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open('mihir-tasks', 1);
+      req.onupgradeneeded = () => req.result.createObjectStore('kv');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch (e) { resolve(null); }
+  });
+}
+let snapshotTimer = null;
+function saveDataSnapshot() {
+  clearTimeout(snapshotTimer);
+  snapshotTimer = setTimeout(async () => {
+    if (!session) return;
+    const db = await idb(); if (!db) return;
+    const data = { savedAt: Date.now() };
+    const vals = { myTasks, allTasks, userDirectory, teamsList, projectsList, sectionsList, phasesList, openTaskTitles, myNotifications, unreadNotifCount, myApprovalRequests, allApprovalRequests };
+    SNAPSHOT_KEYS.forEach(k => { data[k] = vals[k]; });
+    try { db.transaction('kv', 'readwrite').objectStore('kv').put(data, 'snap:' + session.username); } catch (e) { /* storage full or blocked — fine */ }
+  }, 1500);
+}
+async function loadDataSnapshot() {
+  if (!session) return false;
+  const db = await idb(); if (!db) return false;
+  const data = await new Promise((resolve) => {
+    try { const r = db.transaction('kv').objectStore('kv').get('snap:' + session.username); r.onsuccess = () => resolve(r.result || null); r.onerror = () => resolve(null); }
+    catch (e) { resolve(null); }
+  });
+  if (!data || dataLoadedOnce) return false; // real data already arrived — never overwrite it with older
+  myTasks = data.myTasks || []; allTasks = data.allTasks || []; userDirectory = data.userDirectory || []; teamsList = data.teamsList || [];
+  projectsList = data.projectsList || []; sectionsList = data.sectionsList || []; phasesList = data.phasesList || [];
+  openTaskTitles = data.openTaskTitles || []; myNotifications = data.myNotifications || []; unreadNotifCount = data.unreadNotifCount || 0;
+  myApprovalRequests = data.myApprovalRequests || []; allApprovalRequests = data.allApprovalRequests || [];
+  dataLoadedOnce = true;
+  return true;
+}
+async function clearDataSnapshots() {
+  const db = await idb(); if (!db) return;
+  try { db.transaction('kv', 'readwrite').objectStore('kv').clear(); } catch (e) { /* ignore */ }
+}
+
+/* ---- Live sync: website and phone app stay in step ----
+   Every 5 seconds (only while the page is visible) ask the server for its data version — a
+   ~4ms request with no database work — and reload only when something changed anywhere. Coming
+   back to the tab / app, or the connection returning, checks immediately. */
+let lastSyncVersion = null, lastFullRefreshAt = 0, syncBusy = false;
+async function syncTick(force) {
+  // (Accounts still on a temporary password sync too — they use the app normally until they change it.)
+  if (!session || !token || syncBusy) return;
+  if (document.hidden && !force) return;
+  // (On the chat page the message being typed is kept in ui.chatDraft, so new messages may arrive while typing.)
+  if (userIsActivelyTyping() && !force && ui.adminTab !== 'chat') return;
+  syncBusy = true;
+  try {
+    const r = await api('/api/sync');
+    if (r && (r.v !== lastSyncVersion || Date.now() - lastFullRefreshAt > 60000)) {
+      lastSyncVersion = r.v; lastFullRefreshAt = Date.now();
+      await refreshData({ background: true });
+    }
+  } catch (e) { /* offline or server waking up — next tick retries */ }
+  syncBusy = false;
+}
+
+// Shown only on the very first load on a device (afterwards the saved snapshot appears instantly):
+// grey placeholder cards instead of "No tasks yet", which wrongly looked like the data was gone.
+function renderLoadingSkeleton() {
+  const bar = (w) => `<div class="sk-bar" style="width:${w}%"></div>`;
+  return `<div class="sk-wrap" aria-busy="true" aria-label="Loading">
+    <div class="card sk-card">${bar(38)}${bar(70)}</div>
+    ${[0, 1, 2, 3].map(() => `<div class="card sk-card">${bar(55)}${bar(85)}${bar(30)}</div>`).join('')}
+    <div class="small muted" style="text-align:center;">Loading your tasks… if the server was asleep this can take up to a minute.</div>
+  </div>`;
+}
 /* ==================== TASKS ==================== */
 function sortTasksForDisplay(tasks) {
   const now = Date.now();
   const priorityRank = { high: 0, medium: 1, low: 2 };
   return [...tasks].sort((a, b) => {
-    const aPri = priorityRank[a.priority || 'medium'] ?? 1;
-    const bPri = priorityRank[b.priority || 'medium'] ?? 1;
+    const aPri = priorityRank[a.priority || 'medium'] != null ? priorityRank[a.priority || 'medium'] : 1;
+    const bPri = priorityRank[b.priority || 'medium'] != null ? priorityRank[b.priority || 'medium'] : 1;
     if (aPri !== bPri) return aPri - bPri;
     const aOverdue = !!(a.status === 'open' && a.deadline && new Date(a.deadline).getTime() < now);
     const bOverdue = !!(b.status === 'open' && b.deadline && new Date(b.deadline).getTime() < now);
@@ -927,6 +1753,119 @@ function sortTasksForDisplay(tasks) {
     return new Date(b.created_at) - new Date(a.created_at);
   });
 }
+/* ==================== TASK HISTORY TABLE (Phase 1) ====================
+   Stored, append-only history from /api/tasks/:id/events — every action with who, department,
+   when (IST), what, old → new, source and attachment. Loaded when a task is opened (not for every
+   task in a list), refreshed when data changes, paged with "Load older". */
+const taskHistory = new Map(); // taskId -> { events, hasMore, nextCursor, total, types, actors, sources, filters, loading, error }
+const HISTORY_ACTION_LABEL = {
+  CREATED: 'Created', TASK_IMPORTED: 'Imported', ASSIGNED: 'Assigned', PERSON_ADDED: 'Person added', PERSON_REMOVED: 'Person removed',
+  LEVEL_CHANGED: 'Level changed', LEVEL_RELEASED: 'Level released', COMMENTED: 'Comment', ATTACHMENT_ADDED: 'Attachment',
+  SUBMITTED: 'Submitted', APPROVED: 'Approved', REJECTED: 'Rejected', COMPLETED: 'Completed', REOPENED: 'Reopened', CANCELLED: 'Cancelled',
+  DEADLINE_CHANGED: 'Deadline changed', INDIVIDUAL_DEADLINE_CHANGED: 'Personal deadline', FOLLOW_UP: 'Kept informed', FOLLOW_UP_SENT: 'Follow-up sent', DRAWING_REQUESTED: 'Drawing requested',
+  CHECKLIST_ITEM_ADDED: 'Checklist item added', CHECKLIST_ITEM_TOGGLED: 'Checklist ticked', CHECKLIST_ITEM_REMOVED: 'Checklist item removed',
+  SUBTASK_CREATED: 'Subtask', ARCHIVED: 'Archived', DELETED: 'Deleted', NOTIFICATION_SENT: 'Notification',
+};
+const HISTORY_ACTION_TONE = { APPROVED: 'good', COMPLETED: 'good', REJECTED: 'bad', CANCELLED: 'bad', DELETED: 'bad', DEADLINE_CHANGED: 'warn', INDIVIDUAL_DEADLINE_CHANGED: 'warn', REOPENED: 'warn', FOLLOW_UP_SENT: 'warn' };
+const HISTORY_SOURCE_LABEL = { web: 'Web', import: 'Import', whatsapp: 'WhatsApp', email: 'Email', voice: 'Voice', meeting: 'Meeting', api: 'API', ai: 'AI' };
+const histLabel = t => HISTORY_ACTION_LABEL[t] || String(t).replace(/_/g, ' ').toLowerCase().replace(/^\w/, c => c.toUpperCase());
+function histDateParts(iso) {
+  const d = new Date(iso);
+  // Always company time (IST), whatever timezone the device is set to.
+  return { date: d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }), time: d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) };
+}
+function taskHistoryHTML(t) {
+  const h = taskHistory.get(t.id);
+  if (!h || (!h.events.length && h.loading)) return `<div class="history-box" id="history-${esc(t.id)}"><div class="small muted">Loading history…</div></div>`;
+  if (!h.events.length && h.error) return `<div class="history-box" id="history-${esc(t.id)}"><div class="err-inline small">History could not be loaded: ${esc(h.error)} <a href="#" data-hist-retry="${esc(t.id)}">Retry</a></div></div>`;
+  const f = h.filters;
+  const id = esc(t.id);
+  const anyFilter = f.q || f.type || f.actor || f.source;
+  return `
+  <div class="history-box" id="history-${id}">
+    <div class="history-head">
+      <span class="history-title">History <span class="mono small muted">${h.total || 0} event${h.total === 1 ? '' : 's'}</span></span>
+      <button class="link-btn" data-hist-order="${id}" title="Change order">${f.order === 'asc' ? 'Oldest first ↑' : 'Newest first ↓'}</button>
+    </div>
+    <div class="history-filters">
+      <input type="text" id="hist-q-${id}" data-hist-q="${id}" placeholder="Search history…" value="${esc(f.q)}">
+      <select data-hist-filter="type" data-task="${id}"><option value="">All actions</option>${(h.types || []).sort().map(x => `<option value="${esc(x)}" ${f.type === x ? 'selected' : ''}>${esc(histLabel(x))}</option>`).join('')}</select>
+      <select data-hist-filter="actor" data-task="${id}"><option value="">Everyone</option>${(h.actors || []).map(a => `<option value="${esc(a.username)}" ${f.actor === a.username ? 'selected' : ''}>${esc(a.name || a.username)}</option>`).join('')}</select>
+      ${(h.sources || []).length > 1 ? `<select data-hist-filter="source" data-task="${id}"><option value="">All sources</option>${h.sources.map(x => `<option value="${esc(x)}" ${f.source === x ? 'selected' : ''}>${esc(HISTORY_SOURCE_LABEL[x] || x)}</option>`).join('')}</select>` : ''}
+      ${anyFilter ? `<button class="btn btn-sm" data-hist-clear="${id}">Clear</button>` : ''}
+    </div>
+    ${h.events.length === 0 ? `<div class="empty small">${anyFilter ? 'No history matches these filters.' : 'No history yet.'}</div>` : `
+    <div class="history-table-wrap">
+      <table class="history-table">
+        <thead><tr><th>Date</th><th>Time</th><th>Person</th><th>Action</th><th>Details</th><th>Source</th><th>Attachment</th></tr></thead>
+        <tbody>${h.events.map(e => {
+          const d = histDateParts(e.created_at);
+          const meta = e.metadata || {};
+          const change = (e.old_value || e.new_value) ? `<div class="history-change">${e.old_value ? `<span class="old">${esc(e.old_value)}</span> → ` : ''}<span class="new">${esc(e.new_value || '—')}</span></div>` : '';
+          const att = meta.attachment_name && meta.reply_id ? lazyAttachmentHTML(true, meta.attachment_name, `/api/tasks/${t.id}/replies/${meta.reply_id}/attachment`, `hist-att-${e.id}`) : (meta.attachment_name ? esc(meta.attachment_name) : '');
+          return `<tr>
+            <td class="nowrap">${esc(d.date)}</td><td class="nowrap mono small">${esc(d.time)}</td>
+            <td><b>${esc(e.actor_name || 'System')}</b>${e.actor_team ? `<div class="small muted">${esc(e.actor_team)}</div>` : ''}</td>
+            <td><span class="history-action ${HISTORY_ACTION_TONE[e.event_type] || ''}">${esc(histLabel(e.event_type))}</span></td>
+            <td class="history-details">${highlightMentions(e.details || '')}${change}${meta.backfilled ? '<div class="small muted">reconstructed from earlier records</div>' : ''}</td>
+            <td class="small nowrap">${esc(HISTORY_SOURCE_LABEL[e.source_type] || e.source_type || '')}</td>
+            <td class="small">${att}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>`}
+    ${h.hasMore ? `<div style="margin-top:8px;"><button class="btn btn-sm" data-hist-more="${id}" ${h.loading ? 'disabled' : ''}>${h.loading ? 'Loading…' : (f.order === 'asc' ? 'Load newer' : 'Load older')}</button> <span class="small muted">Showing ${h.events.length} of ${h.total}${anyFilter ? ' (filtered)' : ''}</span></div>` : ''}
+  </div>`;
+}
+async function loadTaskHistory(taskId, opts) {
+  const append = !!(opts && opts.append);
+  let h = taskHistory.get(taskId);
+  if (!h) { h = { events: [], filters: { order: 'desc', q: '', type: '', actor: '', source: '' }, total: 0 }; taskHistory.set(taskId, h); }
+  if (h.loading) { h.reloadAfter = !append; return; }
+  h.loading = true;
+  const q = new URLSearchParams({ limit: '20', order: h.filters.order });
+  ['q', 'type', 'actor', 'source'].forEach(k => { if (h.filters[k]) q.set(k, h.filters[k]); });
+  if (append && h.nextCursor) q.set('cursor', h.nextCursor);
+  try {
+    const r = await api(`/api/tasks/${encodeURIComponent(taskId)}/events?${q}`);
+    Object.assign(h, { events: append ? h.events.concat(r.events) : r.events, hasMore: r.hasMore, nextCursor: r.nextCursor, total: r.total, types: r.types, actors: r.actors, sources: r.sources, error: null });
+  } catch (e) { h.error = e.message; }
+  h.loading = false;
+  if (h.reloadAfter) { h.reloadAfter = false; return loadTaskHistory(taskId); }
+  if (token && session) render();
+}
+// Open rows whose history is shown get fresh data after any change (called after each data refresh).
+function refreshOpenTaskHistories() {
+  for (const [taskId, h] of taskHistory) {
+    const row = document.getElementById(`task-card-${taskId}`);
+    if (row && row.open && !h.loading) loadTaskHistory(taskId);
+  }
+}
+let histSearchTimer = null;
+function bindTaskHistory() {
+  // Load history for any open task row that hasn't loaded it yet (e.g. opened before a redraw).
+  document.querySelectorAll('details.task-row[open][id^="task-card-"]').forEach(d => {
+    const taskId = d.id.slice('task-card-'.length);
+    if (!taskHistory.has(taskId)) loadTaskHistory(taskId);
+  });
+  const filt = (taskId, patch) => { const h = taskHistory.get(taskId); if (!h) return; Object.assign(h.filters, patch); h.nextCursor = null; loadTaskHistory(taskId); };
+  document.querySelectorAll('[data-hist-order]').forEach(b => b.onclick = () => { const h = taskHistory.get(b.dataset.histOrder); if (h) filt(b.dataset.histOrder, { order: h.filters.order === 'asc' ? 'desc' : 'asc' }); });
+  document.querySelectorAll('[data-hist-filter]').forEach(sel => sel.onchange = () => filt(sel.dataset.task, { [sel.dataset.histFilter]: sel.value }));
+  document.querySelectorAll('[data-hist-q]').forEach(inp => inp.oninput = () => { clearTimeout(histSearchTimer); const id = inp.dataset.histQ; histSearchTimer = setTimeout(() => filt(id, { q: inp.value.trim() }), 350); });
+  document.querySelectorAll('[data-hist-clear]').forEach(b => b.onclick = () => filt(b.dataset.histClear, { q: '', type: '', actor: '', source: '' }));
+  document.querySelectorAll('[data-hist-more]').forEach(b => b.onclick = () => loadTaskHistory(b.dataset.histMore, { append: true }));
+  document.querySelectorAll('[data-hist-retry]').forEach(a => a.onclick = (e) => { e.preventDefault(); loadTaskHistory(a.dataset.histRetry); });
+}
+// Opening a task row loads its history.
+document.addEventListener('toggle', (e) => {
+  const d = e.target;
+  if (d && d.tagName === 'DETAILS' && d.open && d.id && d.id.startsWith('task-card-')) {
+    const taskId = d.id.slice('task-card-'.length);
+    if (!taskHistory.has(taskId)) loadTaskHistory(taskId);
+  }
+}, true);
+
+// Superseded by the stored history table (taskHistoryHTML) — kept unused for reference this release.
 function renderTaskActivityFeed(t) {
   const events = [];
   events.push({ at: t.created_at, actor: t.created_by, text: `Task created — tagged by ${esc(t.created_by || 'someone')}` });
@@ -981,7 +1920,7 @@ function renderTaskItem(t) {
     else if (isApproved(a)) { cls = 'received'; label = esc(a.username) + ' ✓ Approved'; title = `Approved by ${esc(a.completed_by || 'the creator')} · ${fmtTime(a.completed_at)}`; }
     else if (a.submitted_at) { cls = 'po_pending'; label = esc(a.username) + ' • Submitted'; title = `Submitted ${fmtTime(a.submitted_at)} — awaiting creator approval`; }
     else if (repliedUsernames.has(a.username)) { cls = 'po_pending'; title = 'Commented, not yet submitted'; }
-    const canRemove = t.status === 'open' && canApproveHere && !a.submitted_at && !a.completed_at && assignees.length > 1;
+    const canRemove = t.status === 'open' && canApproveHere && !a.submitted_at && !a.completed_at;
     const removeControl = canRemove ? `<span data-remove-assignee="${t.id}" data-username="${esc(a.username)}" title="Remove — they haven't submitted or been approved yet" style="cursor:pointer;font-weight:700;margin-left:4px;">✕</span>` : '';
     const badgeHtml = `<span class="badge ${cls}" title="${title}">${label}${removeControl}</span>`;
 
@@ -1035,12 +1974,19 @@ function renderTaskItem(t) {
   if (t.status !== 'open') {
     const isCancelled = t.status === 'cancelled';
     return `
-    <details class="card" id="task-card-${esc(t.id)}" style="background:var(--panel-2);padding:10px 16px;">
-      <summary style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;list-style:none;">
-        <span><b>${esc(t.title)}</b><span class="mono small muted">${esc(t.id)}</span> <span class="small muted">— ${isCancelled ? `cancelled by ${esc(t.cancelled_by || '—')} · ${fmtTime(t.cancelled_at)}` : `closed by ${esc(t.closed_by || '—')} · ${fmtTime(t.closed_at)}`}</span></span>
-        <span class="badge ${isCancelled ? 'flag' : 'received'}">${isCancelled ? 'CANCELLED' : 'CLOSED'}</span>
+    <details class="card task-row" id="task-card-${esc(t.id)}">
+      <summary class="task-row-summary">
+        <span class="task-row-chevron" aria-hidden="true"></span>
+        <span class="task-row-text">
+          <span class="task-row-title"><b>${esc(t.title)}</b> <span class="mono small muted">${esc(t.id)}</span></span>
+          <span class="task-row-meta">
+            ${t.project ? `<span>📁 ${esc(t.project)}</span>` : ''}
+            <span>${isCancelled ? `Cancelled by ${esc(t.cancelled_by || '—')} · ${fmtTime(t.cancelled_at)}` : `Closed by ${esc(t.closed_by || '—')} · ${fmtTime(t.closed_at)}`}</span>
+          </span>
+        </span>
+        <span class="badge ${isCancelled ? 'flag' : 'received'} task-row-status">${isCancelled ? 'CANCELLED' : 'CLOSED'}</span>
       </summary>
-      <div style="margin-top:10px;">
+      <div class="task-row-body">
         <div style="margin-bottom:8px;">${taskSourceBadge(t)}</div>
         ${isCancelled && t.cancel_reason ? `<div class="notice" style="border-color:var(--danger);">Cancelled: ${esc(t.cancel_reason)}</div>` : ''}
         ${t.description ? `<div class="doc-note">${esc(t.description)}</div>` : ''}
@@ -1052,7 +1998,7 @@ function renderTaskItem(t) {
           ${checklist.map(c => `<div style="font-size:13px;padding:3px 0;${c.is_checked ? 'opacity:0.6;text-decoration:line-through;' : ''}">${c.is_checked ? '✓' : '○'} ${esc(c.text)}</div>`).join('')}
         </div>` : ''}
         <div class="small muted" style="margin-top:12px;">Full history</div>
-        ${renderTaskActivityFeed(t)}
+        ${taskHistoryHTML(t)}
         ${(session.role === 'admin' || isCreator) ? `
         <button class="btn btn-sm" style="margin-top:10px;" data-act="toggle-reopen-form" data-task-id="${t.id}" title="Only whoever created this task, or Admin, can reopen it">Reopen — more work needed</button>
         ${ui.reopenFormTaskId === t.id ? `
@@ -1071,14 +2017,43 @@ function renderTaskItem(t) {
     </details>`;
   }
   const pendingApproval = assignees.filter(a => a.submitted_at && !isApproved(a));
+  const myTurn = !!(myRow && myRow.is_released && !myRow.submitted_at && !iAmDone && !t.blocked);
+  const taggedSummary = assignees.length === 0 ? '<span class="row-flag row-flag-warn">Not tagged yet</span>'
+    : `<span>${assignees.length} tagged${assignees.length > 1 ? ` · ${doneCount}/${assignees.length} approved` : ''}</span>`;
   return `
-  <div class="card" id="task-card-${esc(t.id)}" style="background:var(--panel-2);">
-    <div class="flex-between">
-      <div><b>${esc(t.title)}</b><span class="mono small muted">${esc(t.id)}</span> ${priorityBadgeHTML(t)}${t.project ? `<span class="badge" style="margin-left:4px;" title="Project">📁 ${esc(t.project)}</span>` : ''}${t.phase ? `<span class="badge" style="margin-left:4px;" title="Phase">${esc(t.phase)}</span>` : ''}</div>
-      <span class="badge po_pending">OPEN</span>
-    </div>
+  <details class="card task-row" id="task-card-${esc(t.id)}">
+    <summary class="task-row-summary">
+      <span class="task-row-chevron" aria-hidden="true"></span>
+      <span class="task-row-text">
+        <span class="task-row-title"><b>${esc(t.title)}</b> <span class="mono small muted">${esc(t.id)}</span></span>
+        <span class="task-row-meta">
+          ${priorityBadgeHTML(t)}
+          ${t.project ? `<span>📁 ${esc(t.project)}</span>` : ''}${t.phase ? `<span>${esc(t.phase)}</span>` : ''}
+          ${t.deadline ? `<span>Due ${esc(fmtDate(t.deadline))}</span>` : ''}
+          ${overdue ? '<span class="row-flag row-flag-bad">Overdue</span>' : ''}
+          ${t.blocked ? '<span class="row-flag row-flag-warn">Blocked</span>' : ''}
+          ${myTurn ? '<span class="row-flag row-flag-me">Your turn</span>' : ''}
+          ${pendingApproval.length && canApproveHere ? `<span class="row-flag row-flag-me">${pendingApproval.length} to approve</span>` : ''}
+          ${taggedSummary}
+        </span>
+      </span>
+      <span class="badge po_pending task-row-status">OPEN</span>
+    </summary>
+    <div class="task-row-body">
     ${t.description ? `<div class="doc-note">${esc(t.description)}</div>` : ''}
-    <div class="muted small" style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${taskSourceBadge(t)}<span>${fmtTime(t.created_at)}${t.deadline ? ` · Due ${fmtDate(t.deadline)}${overdue ? ' <span class="badge flag">OVERDUE</span>' : ''}` : ''}</span></div>
+    <div class="muted small" style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${taskSourceBadge(t)}<span>${fmtTime(t.created_at)}${t.deadline ? ` · Due ${fmtDate(t.deadline)}${overdue ? ' <span class="badge flag">OVERDUE</span>' : ''}` : ''}</span>${canApproveHere && ui.deadlineEditTaskId !== t.id ? `<button class="link-btn" data-act="toggle-deadline-edit" data-task-id="${t.id}" title="Change this task's deadline — everyone on it is told">${icon('pencil', 12)} Change deadline</button>` : ''}</div>
+    ${canApproveHere && ui.deadlineEditTaskId === t.id ? `
+    <div class="deadline-edit">
+      <div class="row" style="align-items:flex-end;">
+        <div class="col"><label>New deadline</label><input type="date" id="deadline-edit-date-${t.id}" value="${esc((t.deadline || '').slice(0, 10))}"></div>
+        <div class="col"><label>Time (optional)</label><input type="time" id="deadline-edit-time-${t.id}" value="${esc(t.deadline && t.deadline.includes('T') ? t.deadline.slice(11, 16) : '')}"></div>
+        <div class="col" style="flex:2;"><label>Reason (optional — shown to everyone on the task)</label><input type="text" id="deadline-edit-reason-${t.id}" placeholder="e.g. Slab cycle moved by 10 days"></div>
+      </div>
+      <div style="margin-top:6px;">
+        <button class="btn btn-primary btn-sm" data-act="save-deadline-edit" data-task-id="${t.id}">Save deadline</button>
+        <button class="btn btn-sm" data-act="cancel-deadline-edit" style="margin-left:6px;">Cancel</button>
+      </div>
+    </div>` : ''}
     ${t.blocked ? `<div class="notice" style="border-color:var(--amber);margin-top:8px;">${icon('alertTriangle', 13)} Blocked — waiting on a prerequisite task to close first.
       ${canForceClose ? (ui.deleteTaskConfirmId === t.id ? `
         <span class="small" style="margin-left:6px;">Permanently delete this task${t.subtasks && t.subtasks.length > 0 ? ` and its ${t.subtasks.length} subtask(s)` : ''}? This cannot be undone.</span>
@@ -1088,9 +2063,9 @@ function renderTaskItem(t) {
     </div>` : ''}
     ${lazyAttachmentHTML(t.has_attachment, t.attachment_name, `/api/tasks/${t.id}/attachment`, `task-attach-${t.id}`)}
     <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
-      ${groupedAssigneeBadgesHTML()}
+      ${assignees.length === 0 ? `<span class="badge flag" title="Nobody is working on this yet — no reminders go out until someone is tagged">Not tagged yet</span>` : groupedAssigneeBadgesHTML()}
       ${assignees.length > 1 ? `<span class="small muted">${doneCount}/${assignees.length} approved</span>` : ''}
-      ${t.status === 'open' && canApproveHere ? `<button class="btn btn-sm" style="padding:2px 8px;font-size:11px;" data-act="toggle-add-assignee-form" data-task-id="${t.id}">+ Add Person</button>` : ''}
+      ${t.status === 'open' && canApproveHere ? `<button class="btn btn-sm${assignees.length === 0 ? ' btn-primary' : ''}" style="padding:2px 8px;font-size:11px;" data-act="toggle-add-assignee-form" data-task-id="${t.id}">${assignees.length === 0 ? '+ Tag People' : '+ Add Person'}</button>` : ''}
     </div>
     ${ui.addAssigneeFormTaskId === t.id ? `
     <div class="card" style="background:var(--panel-2);margin-top:6px;">
@@ -1125,8 +2100,7 @@ function renderTaskItem(t) {
       <input type="text" id="checklist-new-${t.id}" placeholder="Add a checklist item..." style="flex:1;">
       <button class="btn btn-sm" data-add-checklist="${t.id}">Add</button>
     </div>` : ''}
-    <div class="small muted" style="margin-top:12px;">History</div>
-    ${renderTaskActivityFeed(t)}
+    ${taskHistoryHTML(t)}
     ${t.status === 'open' && canCommentHere ? `
       <label style="margin-top:8px;">Reply <span class="muted small">(type @ to tag someone)</span></label>
       <div style="position:relative;">
@@ -1238,13 +2212,15 @@ function renderTaskItem(t) {
     })()}
     ${t.status === 'open' && canCommentHere ? `
     <div class="row" style="margin-top:10px;">
-      <button class="btn btn-sm" data-act="toggle-followup-form" data-task-id="${t.id}">👀 Ask for Follow-up</button>
+      ${canApproveHere || session.role === 'director' ? `<button class="btn btn-sm btn-primary" data-act="nudge-task" data-task-id="${t.id}" title="Remind everyone whose part is still open (at most once every few hours per person)">📣 Follow up</button>` : ''}
+      <button class="btn btn-sm" data-act="toggle-followup-form" data-task-id="${t.id}" title="Add people who should be kept informed — they are not assigned work">👀 Keep someone informed</button>
       <button class="btn btn-sm" data-act="toggle-subtask-form" data-task-id="${t.id}">➕ Add Subtask</button>
     </div>
     <div id="followup-form-box-${t.id}">${ui.followupFormTaskId === t.id ? followupFormHTML(t.id) : ''}</div>
     <div id="subtask-form-box-${t.id}">${ui.subtaskFormTaskId === t.id ? subtaskFormHTML(t.id) : ''}</div>
     ` : ''}
-  </div>`;
+    </div>
+  </details>`;
 }
 // Filters a task list by title/description substring match (case-insensitive) against
 // ui.taskSearchQuery — shared by both My Tasks and All Tasks so search behaves identically
@@ -1257,12 +2233,89 @@ function applyTaskSearch(tasks) {
       (t.title || '').toLowerCase().includes(q) ||
       (t.description || '').toLowerCase().includes(q) ||
       (t.id || '').toLowerCase().includes(q) ||
-      (t.assignees || []).some(a => (a.username || '').toLowerCase().includes(q))
+      (t.assignees || []).some(a => (a.username || '').toLowerCase().includes(q) || personName(a.username).toLowerCase().includes(q))
     );
   }
   if (ui.taskFilterProject) filtered = filtered.filter(t => t.project === ui.taskFilterProject);
   if (ui.taskFilterPhase) filtered = filtered.filter(t => t.phase === ui.taskFilterPhase);
+  if (ui.taskFilterTagging === 'untagged') filtered = filtered.filter(t => (t.assignees || []).length === 0);
+  if (ui.taskFilterTagging === 'tagged') filtered = filtered.filter(t => (t.assignees || []).length > 0);
   return filtered;
+}
+// ---- "Person" filter (All Tasks): one person's tasks, user-id wise ----
+function personName(username) {
+  const u = (userDirectory || []).find(x => x.username === username);
+  return u ? u.name : username;
+}
+function applyPersonFilter(tasks) {
+  const who = ui.taskFilterPerson;
+  if (!who) return tasks;
+  const role = ui.taskFilterPersonRole || 'any';
+  return tasks.filter(t => {
+    const tagged = (t.assignees || []).some(a => a.username === who);
+    const created = t.created_by_username === who;
+    return role === 'tagged' ? tagged : role === 'created' ? created : (tagged || created);
+  });
+}
+function personFilterHTML() {
+  const people = (userDirectory || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  return `
+    <div class="row task-filter-row person-filter-row" style="margin-bottom:10px;">
+      <div class="col">
+        <select id="task-filter-person" aria-label="Show one person's tasks">
+          <option value="">👤 Everyone</option>
+          ${people.map(u => `<option value="${esc(u.username)}" ${ui.taskFilterPerson === u.username ? 'selected' : ''}>${esc(u.name)} (${esc(u.username)})${u.team ? ' — ' + esc(u.team) : ''}</option>`).join('')}
+        </select>
+      </div>
+      ${ui.taskFilterPerson ? `
+      <div class="col">
+        <select id="task-filter-person-role" aria-label="Which of their tasks">
+          <option value="any" ${(ui.taskFilterPersonRole || 'any') === 'any' ? 'selected' : ''}>Tagged on or created by</option>
+          <option value="tagged" ${ui.taskFilterPersonRole === 'tagged' ? 'selected' : ''}>Tagged on (their work)</option>
+          <option value="created" ${ui.taskFilterPersonRole === 'created' ? 'selected' : ''}>Created by (they raised)</option>
+        </select>
+      </div>` : ''}
+    </div>`;
+}
+// Summary of the selected person's work, from the tasks they're tagged on.
+function personSummaryHTML(tasks) {
+  const who = ui.taskFilterPerson;
+  if (!who) return '';
+  const now = new Date();
+  let toDo = 0, submitted = 0, partDone = 0, overdue = 0, closed = 0, cancelled = 0, onTime = 0, judged = 0;
+  for (const t of tasks) {
+    const row = (t.assignees || []).find(a => a.username === who);
+    if (t.status === 'cancelled') { if (row) cancelled++; continue; }
+    if (t.status !== 'open') {
+      if (row) { closed++; if (t.deadline && row.completed_at) { judged++; if (new Date(row.completed_at) <= deadlineEnd(t.deadline)) onTime++; } }
+      continue;
+    }
+    if (!row) continue;
+    if (row.decision === 'approve' && row.completed_at) partDone++;
+    else if (row.submitted_at) submitted++;
+    else toDo++;
+    const due = deadlineEnd(row.individual_deadline || t.deadline);
+    if (due && due < now && !(row.decision === 'approve' && row.completed_at)) overdue++;
+  }
+  const createdOpen = tasks.filter(t => t.created_by_username === who && t.status === 'open').length;
+  const chip = (label, n, cls) => `<div class="person-chip ${cls || ''}"><div class="person-chip-n">${n}</div><div class="person-chip-l">${label}</div></div>`;
+  return `
+    <div class="person-summary">
+      <div class="person-summary-head"><b>${esc(personName(who))}</b> <span class="mono small muted">${esc(who)}</span>
+        <button class="link-btn" data-act="clear-person-filter" style="margin-left:auto;">✕ Show everyone</button></div>
+      <div class="person-chips">
+        ${chip('To do', toDo)}${chip('Submitted, awaiting approval', submitted)}${chip('Their part done', partDone)}
+        ${chip('Overdue', overdue, overdue ? 'bad' : '')}${chip('Closed', closed)}${cancelled ? chip('Cancelled', cancelled) : ''}
+        ${judged ? chip('On time', Math.round(onTime / judged * 100) + '%', onTime / judged >= 0.8 ? 'good' : '') : ''}
+        ${chip('Open tasks they raised', createdOpen)}
+      </div>
+    </div>`;
+}
+// End of a deadline in local time (date-only deadlines last the whole day).
+function deadlineEnd(d) {
+  if (!d) return null;
+  const s = String(d);
+  return new Date(s.includes('T') ? s : s + 'T23:59:59');
 }
 function searchBoxHTML() {
   // Project/Phase filters list only the values genuinely used by the tasks currently in view
@@ -1272,8 +2325,8 @@ function searchBoxHTML() {
   const usedPhases = Array.from(new Set(myTasks.concat(session.role === 'admin' ? allTasks : []).map(t => t.phase).filter(Boolean))).sort();
   return `
     <input type="text" id="task-search-input" placeholder="Search by title, description, task ID, or tagged person..." value="${esc(ui.taskSearchQuery)}" style="margin-bottom:8px;">
-    ${(usedProjects.length > 0 || usedPhases.length > 0) ? `
-    <div class="row" style="margin-bottom:12px;">
+    ${true ? `
+    <div class="row task-filter-row" style="margin-bottom:12px;">
       ${usedProjects.length > 0 ? `
       <div class="col">
         <select id="task-filter-project">
@@ -1288,6 +2341,13 @@ function searchBoxHTML() {
           ${usedPhases.map(p => `<option value="${esc(p)}" ${ui.taskFilterPhase === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}
         </select>
       </div>` : ''}
+      <div class="col">
+        <select id="task-filter-tagging">
+          <option value="">Tagged or not</option>
+          <option value="untagged" ${ui.taskFilterTagging === 'untagged' ? 'selected' : ''}>Not tagged yet</option>
+          <option value="tagged" ${ui.taskFilterTagging === 'tagged' ? 'selected' : ''}>Tagged</option>
+        </select>
+      </div>
     </div>` : ''}
   `;
 }
@@ -1295,16 +2355,27 @@ function searchBoxHTML() {
 // accumulating over months, rendering every single one always would slow the page down for no
 // benefit, since almost nobody scrolls back through all of it at once.
 const HISTORY_PAGE_SIZE = 20;
+const OPEN_PAGE_SIZE = 30;
+function openPaginationControls(totalCount, shownCount, moreActionAttr) {
+  if (shownCount >= totalCount) return '';
+  return `<div class="flex-between" style="margin-top:8px;flex-wrap:wrap;gap:6px;"><span class="small muted">Showing ${shownCount} of ${totalCount} open — search or filter above to narrow down.</span><button class="btn btn-sm" ${moreActionAttr}>Show ${Math.min(OPEN_PAGE_SIZE, totalCount - shownCount)} more</button></div>`;
+}
 function historyPaginationControls(totalCount, shownCount, moreActionAttr) {
   if (totalCount <= shownCount) return '';
   return `<button class="btn btn-sm" style="margin-top:8px;" ${moreActionAttr}>Show ${Math.min(HISTORY_PAGE_SIZE, totalCount - shownCount)} more (${totalCount - shownCount} remaining)</button>`;
 }
+// One card with tabs instead of separate stacked sections: Open | Your part done | Closed. Every
+// task is a compact row (title, status, deadline, flags) that expands on tap — open and closed
+// look and behave the same way.
+function taskTabsHTML(tabs, active, attr) {
+  return `<div class="task-tabs" role="tablist">${tabs.filter(t => t.show !== false).map(t => `
+    <button class="task-tab${active === t.key ? ' active' : ''}" role="tab" aria-selected="${active === t.key}" ${attr}="${t.key}">
+      ${esc(t.label)} <span class="task-tab-count">${t.count}</span></button>`).join('')}</div>`;
+}
 function renderMyTasksCard() {
   const openAll = sortTasksForDisplay(applyTaskSearch(myTasks.filter(t => t.status === 'open')));
   // "My part is done, task is still waiting on someone else" reads very differently from "I still
-  // have something to do" — splitting these means your own responsibility being finished actually
-  // FEELS finished to you, instead of the task lingering in your open list until everyone else
-  // catches up too.
+  // have something to do" — it gets its own tab so your finished work actually feels finished.
   const myPartDone = t => {
     const myRow = (t.assignees || []).find(a => a.username === session.username);
     return !!(myRow && myRow.decision === 'approve' && myRow.completed_at);
@@ -1312,7 +2383,15 @@ function renderMyTasksCard() {
   const needsMe = openAll.filter(t => !myPartDone(t));
   const waitingOnOthers = openAll.filter(t => myPartDone(t));
   const closedAll = applyTaskSearch(myTasks.filter(t => t.status !== 'open'));
-  const closedShown = closedAll.slice(0, ui.myHistoryShown || HISTORY_PAGE_SIZE);
+  let tab = ui.myTasksTab || 'open';
+  if (tab === 'waiting' && waitingOnOthers.length === 0) tab = 'open';
+  const list = tab === 'closed' ? closedAll : tab === 'waiting' ? waitingOnOthers : needsMe;
+  const pageKey = tab === 'closed' ? 'myHistoryShown' : 'myOpenShown';
+  const pageSize = tab === 'closed' ? HISTORY_PAGE_SIZE : OPEN_PAGE_SIZE;
+  const shown = list.slice(0, ui[pageKey] || pageSize);
+  const emptyText = myTasks.length === 0 ? 'No tasks yet.'
+    : ui.taskSearchQuery || ui.taskFilterProject || ui.taskFilterPhase || ui.taskFilterTagging ? 'No tasks here match your search or filters.'
+    : tab === 'closed' ? 'Nothing closed yet.' : tab === 'waiting' ? 'Nothing waiting on others.' : 'Nothing open right now. 🎉';
   return `
   <div class="card">
     <div class="flex-between">
@@ -1320,39 +2399,47 @@ function renderMyTasksCard() {
       ${needsMe.length > 0 ? `<span class="badge flag">${needsMe.length} open</span>` : ''}
     </div>
     ${searchBoxHTML()}
-    ${myTasks.length === 0 ? `<div class="empty">No tasks yet.</div>` : (needsMe.length === 0 ? `<div class="empty">${ui.taskSearchQuery ? 'No open tasks match your search.' : 'Nothing open right now.'}</div>` : '')}
-    ${needsMe.map(t => renderTaskItem(t)).join('')}
-  </div>
-  ${waitingOnOthers.length > 0 ? `
-  <div class="card">
-    <div class="card-title">Your Part Done <span class="mono small muted">(${waitingOnOthers.length} waiting on others)</span></div>
-    <p class="small muted">Your responsibility here is finished — these just haven't fully closed yet because someone else still has their part left.</p>
-    ${waitingOnOthers.map(t => renderTaskItem(t)).join('')}
-  </div>` : ''}
-  ${closedAll.length > 0 ? `
-  <div class="card">
-    <div class="card-title">Task History <span class="mono small muted">(${closedAll.length} closed/cancelled)</span></div>
-    ${closedShown.map(t => renderTaskItem(t)).join('')}
-    ${historyPaginationControls(closedAll.length, closedShown.length, 'data-act="show-more-my-history"')}
-  </div>` : ''}`;
+    ${taskTabsHTML([
+      { key: 'open', label: 'Open', count: needsMe.length },
+      { key: 'waiting', label: 'Your part done', count: waitingOnOthers.length, show: waitingOnOthers.length > 0 },
+      { key: 'closed', label: 'Closed', count: closedAll.length },
+    ], tab, 'data-my-tab')}
+    ${tab === 'waiting' ? '<p class="small muted" style="margin:0 0 8px;">Your part is approved — these are only waiting on someone else to finish theirs.</p>' : ''}
+    <div class="task-list">
+      ${shown.length === 0 ? `<div class="empty">${emptyText}</div>` : shown.map(t => renderTaskItem(t)).join('')}
+    </div>
+    ${tab === 'closed'
+      ? historyPaginationControls(list.length, shown.length, 'data-act="show-more-my-history"')
+      : openPaginationControls(list.length, shown.length, 'data-act="show-more-my-open"')}
+  </div>`;
 }
 function renderAllTasksCard() {
-  const open = sortTasksForDisplay(applyTaskSearch(allTasks.filter(t => t.status === 'open')));
-  const closedAll = applyTaskSearch(allTasks.filter(t => t.status !== 'open'));
-  const closedShown = closedAll.slice(0, ui.allHistoryShown || HISTORY_PAGE_SIZE);
+  const personTasks = applyPersonFilter(allTasks);
+  const open = sortTasksForDisplay(applyTaskSearch(personTasks.filter(t => t.status === 'open')));
+  const closedAll = applyTaskSearch(personTasks.filter(t => t.status !== 'open'));
+  const tab = ui.allTasksTab || 'open';
+  const list = tab === 'closed' ? closedAll : open;
+  const pageKey = tab === 'closed' ? 'allHistoryShown' : 'allOpenShown';
+  const shown = list.slice(0, ui[pageKey] || (tab === 'closed' ? HISTORY_PAGE_SIZE : OPEN_PAGE_SIZE));
+  const filtered = ui.taskSearchQuery || ui.taskFilterProject || ui.taskFilterPhase || ui.taskFilterTagging || ui.taskFilterPerson;
   return `
   <div class="notice">Every task in the company — tagged people submit their part for approval; only whoever created the task (or Admin) can approve, reject, cancel, or force-close it.</div>
   <div class="card">
-    <div class="card-title">Open (${open.length})</div>
+    <div class="card-title" style="margin-bottom:6px;">All Tasks</div>
+    ${personFilterHTML()}
+    ${personSummaryHTML(applyPersonFilter(allTasks))}
     ${searchBoxHTML()}
-    ${open.length === 0 ? `<div class="empty">${ui.taskSearchQuery ? 'No open tasks match your search.' : 'Nothing open.'}</div>` : open.map(t => renderTaskItem(t)).join('')}
-  </div>
-  ${closedAll.length > 0 ? `
-  <div class="card">
-    <div class="card-title">Closed / Cancelled (${closedAll.length})</div>
-    ${closedShown.map(t => renderTaskItem(t)).join('')}
-    ${historyPaginationControls(closedAll.length, closedShown.length, 'data-act="show-more-all-history"')}
-  </div>` : ''}`;
+    ${taskTabsHTML([
+      { key: 'open', label: 'Open', count: open.length },
+      { key: 'closed', label: 'Closed / Cancelled', count: closedAll.length },
+    ], tab, 'data-all-tab')}
+    <div class="task-list">
+      ${shown.length === 0 ? `<div class="empty">${filtered ? 'No tasks here match your search or filters.' : tab === 'closed' ? 'Nothing closed yet.' : 'Nothing open.'}</div>` : shown.map(t => renderTaskItem(t)).join('')}
+    </div>
+    ${tab === 'closed'
+      ? historyPaginationControls(list.length, shown.length, 'data-act="show-more-all-history"')
+      : openPaginationControls(list.length, shown.length, 'data-act="show-more-all-open"')}
+  </div>`;
 }
 // Inline @mention autocomplete for a plain <textarea> — finds the "@fragment" currently being
 // typed at the cursor, shows matching people below, and on selection replaces just that
@@ -1390,9 +2477,9 @@ function bindMentionTextarea(textareaEl, sugEl) {
       sugEl.style.display = 'none'; sugEl.innerHTML = '';
     });
   }
-  textareaEl.addEventListener('input', renderSuggestions);
-  textareaEl.addEventListener('keyup', e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') renderSuggestions(); });
-  textareaEl.addEventListener('blur', () => { setTimeout(() => { sugEl.style.display = 'none'; }, 150); });
+  textareaEl.oninput = renderSuggestions;
+  textareaEl.onkeyup = e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') renderSuggestions(); };
+  textareaEl.onblur = () => { setTimeout(() => { sugEl.style.display = 'none'; }, 150); };
 }
 // Turns valid @username mentions in already-escaped text into styled tags — invalid/unknown
 // mentions are left as plain text so a stray "@" in normal writing isn't mistaken for a tag.
@@ -1405,6 +2492,14 @@ function highlightMentions(text) {
 // onChange(currentSelectionArray) is called after every add/remove so the caller can persist the
 // selection into `ui` — required now that forms are declarative and can be re-rendered (e.g. by
 // a background poll) at any moment without losing what was picked so far.
+// All tag pickers on the page share ONE "click outside closes the suggestions" listener.
+const openTagPickers = new Map();
+document.addEventListener('click', (e) => {
+  for (const [root, sug] of openTagPickers) {
+    if (!root.isConnected) { openTagPickers.delete(root); continue; }
+    if (!root.contains(e.target)) sug.style.display = 'none';
+  }
+});
 function bindTagPicker(rootEl, initialUsernames, onChange) {
   const selected = new Set(initialUsernames || []);
   const chipsEl = rootEl.querySelector('[data-tagpicker-chips]');
@@ -1434,11 +2529,11 @@ function bindTagPicker(rootEl, initialUsernames, onChange) {
     });
   }
   inputEl.oninput = renderSuggestions;
-  inputEl.addEventListener('keydown', e => {
+  inputEl.onkeydown = e => {
     if (e.key === 'Enter') { e.preventDefault(); const first = sugEl.querySelector('[data-suggest]'); if (first) first.click(); }
     if (e.key === 'Escape') { sugEl.style.display = 'none'; sugEl.innerHTML = ''; }
-  });
-  document.addEventListener('click', e => { if (!rootEl.contains(e.target)) { sugEl.style.display = 'none'; } });
+  };
+  openTagPickers.set(rootEl, sugEl); // one shared outside-click handler (below) instead of one more per redraw
   renderChips();
   return { getSelected: () => Array.from(selected) };
 }
@@ -1494,7 +2589,7 @@ function taskFormHTML() {
           <div data-tagpicker-suggestions class="tag-suggestions-dropdown" style="display:none;"></div>
         </div>
       </div>` : `
-      <label>Tag People — split into Levels if some people should wait on others (like Level 1's material tag, then Level 2 gets released)</label>
+      <label>Tag People (optional — you can leave this empty and tag people later) — split into Levels if some people should wait on others</label>
       <div id="task-stages-container">
         ${stages.map((s, idx) => `
           <div class="level-box" data-stage-block="${idx}">
@@ -1598,7 +2693,7 @@ function bindTaskForm() {
       stagesPayload = groups;
       assignedToList = allNames;
     }
-    if (assignedToList.length === 0) { alert('At least one tagged person is required.'); return; }
+    // Tagging people is optional — the task can be created now and people tagged later.
     try {
       await api('/api/tasks', { method: 'POST', body: JSON.stringify({
         title, description, priority, deadline: fullDeadline, assignedToList,
@@ -1628,17 +2723,363 @@ function bindTaskForm() {
     });
   };
 }
+/* ==================== BULK IMPORT (CSV / Excel) ====================
+   Step 1: pick a file → the server reads it and returns a preview of every row (who got tagged,
+   what was understood, what's wrong). Step 2: press Import → all valid rows become real tasks in
+   one go. Nothing is created until step 2. */
+function importPanelHTML() {
+  if (!ui.importOpen) return '';
+  const p = ui.importPreview;
+  const r = ui.importResult;
+  const templateLinks = `<span class="small muted">Need the layout?</span>
+    <button class="btn btn-sm" data-import-template="xlsx">Excel template</button>
+    <button class="btn btn-sm" data-import-template="csv">CSV template</button>`;
+  if (r) {
+    return `
+    <div class="card import-panel">
+      <div class="import-result-head">
+        <div class="import-result-count">${r.created.length}</div>
+        <div><b>task${r.created.length === 1 ? '' : 's'} created</b> from ${esc(ui.importFileName || 'your file')}
+          ${(r.updated || []).length ? `<div class="small"><b>${r.updated.length}</b> deadline${r.updated.length === 1 ? '' : 's'} changed on tasks imported before — everyone on them has been told.</div>` : ''}
+          ${r.unchangedCount ? `<div class="small muted">${r.unchangedCount} row${r.unchangedCount === 1 ? ' was' : 's were'} already imported with the same deadline — left as they are.</div>` : ''}
+          ${r.skipped.length ? `<div class="small muted">${r.skipped.length} row${r.skipped.length === 1 ? ' was' : 's were'} skipped because of problems — listed below.</div>` : ''}
+        </div>
+      </div>
+      ${(r.updated || []).length ? `<details class="import-skipped" style="margin-top:10px;"><summary class="small">See the deadline changes</summary>${r.updated.slice(0, 300).map(u => `<div><span class="mono small">${esc(u.id)}</span> ${esc(u.title)} — ${esc(fmtDate(u.from))} → <b>${esc(fmtDate(u.to))}</b></div>`).join('')}${r.updated.length > 300 ? `<div class="small muted">…and ${r.updated.length - 300} more (all recorded in the audit log)</div>` : ''}</details>` : ''}
+      ${r.skipped.length ? `<div class="import-skipped">${r.skipped.map(x => `<div><span class="mono small">Row ${x.rowNumber}</span> ${esc(x.title || '(no title)')} — <span class="err-inline">${esc(x.errors.join(' '))}</span></div>`).join('')}</div>` : ''}
+      <div style="margin-top:12px;">
+        <button class="btn btn-primary btn-sm" data-act="import-another">Import another file</button>
+        <button class="btn btn-sm" data-act="close-import-panel" style="margin-left:6px;">Done</button>
+      </div>
+    </div>`;
+  }
+  const dropzone = `
+    <label class="import-drop" for="import-file-input">
+      <input type="file" id="import-file-input" accept=".csv,.xlsx,.xlsm,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none;">
+      <div class="import-drop-icon">${icon('upload', 22)}</div>
+      <div><b>${ui.importBusy && !p ? 'Reading ' + esc(ui.importFileName || 'file') + '…' : ui.importFileName ? 'Choose a different file' : 'Choose a CSV or Excel file'}</b></div>
+      <div class="small muted">One task per row. Columns like Title, Deadline and Assigned To are recognised automatically — extra columns are ignored.</div>
+    </label>`;
+  if (!p) {
+    return `
+    <div class="card import-panel">
+      <div class="flex-between" style="flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+        <div class="card-title" style="margin:0;">Import tasks</div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${templateLinks}</div>
+      </div>
+      ${dropzone}
+      ${ui.importError ? `<div class="err">${esc(ui.importError)}</div>` : ''}
+      <details class="import-help"><summary class="small">What can the file contain?</summary>
+        <div class="small muted" style="margin-top:6px;line-height:1.6;">
+          <b>Required:</b> Title and Deadline (DD/MM/YYYY — day first — or YYYY-MM-DD).<br>
+          <b>Assignees</b> are optional — leave blank to create tasks untagged and tag people later. They can be usernames, full names, emails, or a department name (tags everyone in it), separated by commas.<br>
+          <b>Task Key</b> (optional) is a permanent ID per row. Upload the file again later and rows already imported just get their deadline updated — no duplicates.<br>
+          Columns whose heading starts with <b>Info:</b> are kept for reference and ignored.<br>
+          <b>Optional:</b> Description, Priority (High/Medium/Low), Deadline Time, Level 2 / Level 3 (people who wait for the level before them), Auto Release (Yes/No), Follow Up, Project, Phase, Checklist (items separated by |), Depends On and Parent Task (another row's Sr No, its title, or an existing task ID), Individual Deadlines ("rohit.k: 12/10/2026").<br>
+          The Excel template has a <b>People</b> sheet listing everyone's exact username.
+        </div>
+      </details>
+      <div style="margin-top:10px;"><button class="btn btn-sm" data-act="close-import-panel">Cancel</button></div>
+    </div>`;
+  }
+  // Warnings shared by many rows (e.g. "No one tagged yet" on a whole untagged schedule) are
+  // shown once above the table instead of repeated on every row.
+  const warnFreq = {};
+  p.rows.forEach(x => x.warnings.forEach(w => { warnFreq[w] = (warnFreq[w] || 0) + 1; }));
+  const commonWarnings = Object.entries(warnFreq).filter(([, n]) => n > 20).map(([w]) => w);
+  const rowWarnings = x => x.warnings.filter(w => !commonWarnings.includes(w));
+  const view = ui.importView || 'all';
+  const inView = x => view === 'errors' ? x.errors.length > 0
+    : view === 'changes' ? (!x.errors.length && x.action === 'update')
+    : view === 'new' ? (!x.errors.length && x.action === 'create')
+    : view === 'warnings' ? (x.errors.length > 0 || rowWarnings(x).length > 0) : true;
+  const filtered = p.rows.filter(inView);
+  const MAX_ROWS_SHOWN = 200;
+  const rows = filtered.slice(0, MAX_ROWS_SHOWN);
+  const warnRowCount = p.rows.filter(x => x.errors.length || rowWarnings(x).length).length;
+  const peopleCell = x => x.levels.length === 0 ? '<span class="muted">Not tagged</span>' : x.levels.map((g, i) =>
+    `<div>${x.levels.length > 1 ? `<span class="import-level">L${i + 1}</span>` : ''}${g.map(esc).join(', ')}</div>`).join('');
+  const extras = x => [
+    x.project ? `Project: ${esc(x.project)}${x.phase ? ' · ' + esc(x.phase) : ''}` : (x.phase ? `Phase: ${esc(x.phase)}` : ''),
+    x.checklist.length ? `${x.checklist.length} checklist item${x.checklist.length === 1 ? '' : 's'}` : '',
+    x.followups.length ? `Follow-up: ${x.followups.map(esc).join(', ')}` : '',
+    x.dependsOn ? `Waits for: ${esc(x.dependsOn)}` : '',
+    x.parent ? `Subtask of: ${esc(x.parent)}` : '',
+    x.individualDeadlines.length ? `Own deadlines: ${x.individualDeadlines.map(esc).join('; ')}` : '',
+    x.autoReleaseStages ? 'Auto-release levels' : '',
+    x.taskKey ? `<span class="mono">${esc(x.taskKey)}</span>` : '',
+  ].filter(Boolean).map(e => `<div>${e}</div>`).join('');
+  const statusCell = x => {
+    if (x.errors.length) return x.errors.map(e => `<div class="err-inline">✕ ${esc(e)}</div>`).join('');
+    const main = x.action === 'update' ? `<div class="change-inline">↻ Deadline change<div class="small">${esc(fmtDate(x.existing.deadline))} → <b>${esc(fmtDate(x.deadline))}</b></div><div class="small muted mono">${esc(x.existing.id)}</div></div>`
+      : x.action === 'unchanged' ? (x.existing.keptAppChange ? `<div class="muted">= Row unchanged since last upload</div><div class="small">Deadline was changed in the app to <b>${esc(fmtDate(x.existing.deadline))}</b> — kept</div>` : `<div class="muted">= Already imported, no change</div>`)
+      : x.action === 'closed' ? `<div class="muted">Already ${esc(x.existing.status)} — left alone</div>`
+      : '<div class="ok-inline">+ New task</div>';
+    return main + rowWarnings(x).map(w => `<div class="warn-inline">! ${esc(w)}</div>`).join('');
+  };
+  const willDo = p.createCount + p.updateCount;
+  const canImport = willDo > 0 && !ui.importBusy;
+  const actionLabel = [p.createCount ? `create ${p.createCount} task${p.createCount === 1 ? '' : 's'}` : '', p.updateCount ? `change ${p.updateCount} deadline${p.updateCount === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ');
+  const viewBtn = (key, label, n) => n === 0 && key !== 'all' ? '' : `<button class="import-view-btn${view === key ? ' active' : ''}" data-import-view="${key}">${label} <span class="mono">${n}</span></button>`;
+  return `
+    <div class="card import-panel">
+      <div class="flex-between" style="flex-wrap:wrap;gap:8px;">
+        <div>
+          <div class="card-title" style="margin:0;">Review before importing</div>
+          <div class="small muted">${esc(ui.importFileName)} · ${p.totalRows} row${p.totalRows === 1 ? '' : 's'}</div>
+        </div>
+        <div class="import-tally">
+          ${p.createCount ? `<span class="import-tally-ok">${p.createCount} new</span>` : ''}
+          ${p.updateCount ? `<span class="import-tally-change">${p.updateCount} deadline change${p.updateCount === 1 ? '' : 's'}</span>` : ''}
+          ${p.unchangedCount ? `<span class="import-tally-same">${p.unchangedCount} unchanged</span>` : ''}
+          ${p.closedCount ? `<span class="import-tally-same">${p.closedCount} already closed</span>` : ''}
+          ${p.errorCount ? `<span class="import-tally-bad">${p.errorCount} with problems</span>` : ''}
+        </div>
+      </div>
+      ${p.skippedByImportColumn ? `<div class="notice small" style="margin-top:10px;">${p.skippedByImportColumn} row${p.skippedByImportColumn === 1 ? '' : 's'} with Import = No ${p.skippedByImportColumn === 1 ? 'is' : 'are'} left out for now.</div>` : ''}
+      ${commonWarnings.map(w => `<div class="notice small" style="margin-top:10px;">${warnFreq[w]} row${warnFreq[w] === 1 ? '' : 's'}: ${esc(w)}</div>`).join('')}
+      ${p.unknownColumns.length ? `<div class="notice small" style="margin-top:10px;">Ignored column${p.unknownColumns.length === 1 ? '' : 's'}: ${p.unknownColumns.map(esc).join(', ')}. Rename a column to match the template if it should be used.</div>` : ''}
+      ${p.duplicateColumns.length ? `<div class="notice small" style="margin-top:10px;">These columns repeat one that's already used and were ignored: ${p.duplicateColumns.map(esc).join(', ')}.</div>` : ''}
+      <div class="import-views">
+        ${viewBtn('all', 'All rows', p.totalRows)}${viewBtn('new', 'New', p.createCount)}${viewBtn('changes', 'Deadline changes', p.updateCount)}${viewBtn('warnings', 'Problems & warnings', warnRowCount)}${viewBtn('errors', 'Can\'t import', p.errorCount)}
+      </div>
+      <div class="import-table-wrap">
+        <table class="import-table">
+          <tr><th>Row</th><th>Task</th><th>Deadline</th><th>Tagged</th><th>Also</th><th>What will happen</th></tr>
+          ${rows.map(x => `
+          <tr class="${x.errors.length ? 'import-row-bad' : x.action === 'update' ? 'import-row-change' : rowWarnings(x).length ? 'import-row-warn' : (x.action === 'unchanged' || x.action === 'closed') ? 'import-row-same' : ''}">
+            <td class="mono small">${x.rowNumber}${x.ref ? `<div class="muted">#${esc(x.ref)}</div>` : ''}</td>
+            <td><b>${esc(x.title || '(no title)')}</b> <span class="badge priority-${x.priority}">${x.priority}</span>${x.description ? `<div class="small muted import-desc">${esc(x.description)}</div>` : ''}</td>
+            <td class="small" style="white-space:nowrap;">${x.deadline ? esc(fmtDate(x.deadline)) : '<span class="muted">—</span>'}</td>
+            <td class="small">${peopleCell(x)}</td>
+            <td class="small muted">${extras(x) || '—'}</td>
+            <td class="small">${statusCell(x)}</td>
+          </tr>`).join('')}
+        </table>
+      </div>
+      ${filtered.length > MAX_ROWS_SHOWN ? `<div class="small muted" style="margin-top:6px;">Showing the first ${MAX_ROWS_SHOWN} of ${filtered.length} rows in this view — all ${filtered.length} are included when you import. Use the buttons above to look at just the rows that need attention.</div>` : ''}
+      ${ui.importError ? `<div class="err">${esc(ui.importError)}</div>` : ''}
+      <div class="import-actions">
+        ${willDo === 0 ? `<button class="btn btn-primary btn-sm" disabled>Nothing to change — everything is already imported</button>`
+          : `<button class="btn btn-primary btn-sm" data-act="run-import" ${p.errorCount ? 'data-skip-invalid="1"' : ''} ${canImport ? '' : 'disabled'}>${ui.importBusy ? 'Working…' : `${actionLabel.charAt(0).toUpperCase() + actionLabel.slice(1)}${p.errorCount ? `, skip ${p.errorCount} with problems` : ''}`}</button>`}
+        <label class="btn btn-sm" for="import-file-input" style="margin:0;">${p.errorCount ? 'Fixed it — re-upload' : 'Choose a different file'}
+          <input type="file" id="import-file-input" accept=".csv,.xlsx,.xlsm,.txt" style="display:none;">
+        </label>
+        <button class="btn btn-sm" data-act="close-import-panel">Cancel</button>
+      </div>
+    </div>`;
+}
+function resetImportState() {
+  Object.assign(ui, { importFileName: null, importFileData: null, importPreview: null, importBusy: false, importResult: null, importOnlyProblems: false, importError: null, importView: 'all' });
+}
+function downloadDataUrl(dataUrl, name) {
+  // Inside the Android app the WebView can't save files itself — hand them to the app, which saves
+  // to the phone's Downloads folder and opens them.
+  if (window.AndroidBridge && window.AndroidBridge.saveFile) { window.AndroidBridge.saveFile(dataUrl, name || 'download'); return; }
+  const a = document.createElement('a');
+  a.href = dataUrl; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+}
+function bindImportPanel() {
+  const toggle = document.querySelector('[data-act="toggle-import-panel"]');
+  if (toggle) toggle.onclick = () => { ui.importOpen = !ui.importOpen; if (!ui.importOpen) resetImportState(); render(); };
+  if (!ui.importOpen) return;
+  document.querySelectorAll('[data-act="close-import-panel"]').forEach(b => b.onclick = () => { ui.importOpen = false; resetImportState(); render(); });
+  const again = document.querySelector('[data-act="import-another"]');
+  if (again) again.onclick = () => { resetImportState(); render(); };
+  document.querySelectorAll('[data-import-template]').forEach(b => b.onclick = async () => {
+    try { const t = await api(`/api/tasks/import/template?format=${b.dataset.importTemplate}`); downloadDataUrl(t.data, t.name); }
+    catch (e) { setBanner(e.message); render(); }
+  });
+  document.querySelectorAll('[data-import-view]').forEach(b => b.onclick = () => { ui.importView = b.dataset.importView; render(); });
+  const fileInput = document.getElementById('import-file-input');
+  if (fileInput) fileInput.onchange = (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    if (f.size > 10 * 1024 * 1024) { ui.importError = 'That file is larger than 10MB — split it into smaller files.'; render(); return; }
+    const reader = new FileReader();
+    reader.onerror = () => { ui.importError = 'Could not read that file.'; render(); };
+    reader.onload = async (e) => {
+      Object.assign(ui, { importFileName: f.name, importFileData: e.target.result, importPreview: null, importError: null, importBusy: true, importView: 'all' });
+      render();
+      try {
+        ui.importPreview = await api('/api/tasks/import/preview', { method: 'POST', body: JSON.stringify({ fileData: ui.importFileData, fileName: f.name }) });
+      } catch (err) { ui.importError = err.message; ui.importPreview = null; }
+      ui.importBusy = false;
+      render();
+    };
+    reader.readAsDataURL(f);
+  };
+  const run = document.querySelector('[data-act="run-import"]');
+  if (run) run.onclick = async () => {
+    if (ui.importBusy) return;
+    ui.importBusy = true; ui.importError = null; render();
+    try {
+      const result = await api('/api/tasks/import', { method: 'POST', body: JSON.stringify({ fileData: ui.importFileData, fileName: ui.importFileName, skipInvalid: !!run.dataset.skipInvalid }) });
+      ui.importResult = result; ui.importPreview = null; ui.importFileData = null; ui.importBusy = false;
+      celebrate(result.created.length ? `${result.created.length} task${result.created.length === 1 ? '' : 's'} imported.` : `${result.updated.length} deadline${result.updated.length === 1 ? '' : 's'} updated.`, RAISE_MESSAGES);
+      await refreshData();
+    } catch (err) { ui.importBusy = false; ui.importError = err.message; render(); }
+  };
+}
+/* ==================== EXPORT & ARCHIVE (Admin) ==================== */
+function localISODate(d) { const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; }
+function lastMonthRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() - 1, 1), end = new Date(now.getFullYear(), now.getMonth(), 0);
+  return { from: localISODate(start), to: localISODate(end), label: start.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) };
+}
+function renderExportsView() {
+  const lm = lastMonthRange();
+  if (!ui.exp) ui.exp = { mode: 'completed', from: '', to: localISODate(new Date()), project: '', archiveBefore: lm.to, archivePreview: null, downloadedHistory: false, busy: null, schedules: null };
+  const e = ui.exp;
+  const projects = Array.from(new Set((allTasks || []).map(t => t.project).filter(Boolean))).sort();
+  const sched = e.schedules;
+  return `
+  <div class="notice">Download the full history of tasks with every timestamp, get your schedule spreadsheet back with each row's status filled in, and clear finished work off the site. Nothing here changes open tasks.</div>
+
+  <div class="card">
+    <div class="card-title">1 · Your schedule spreadsheets, with timestamps</div>
+    <p class="small muted">Every file you import is saved here. Download it any time and you get the same spreadsheet back with each row's Status, Task ID, Started, Submitted, Approved, Completed At, Closed By, Days Taken and On time / late filled in — always up to date, including tasks already removed from the site.</p>
+    ${sched === null ? '<div class="empty">Loading…</div>' : sched.length === 0 ? '<div class="empty">No schedules yet — import one from My Tasks → Import from CSV / Excel.</div>' : `
+    <div class="export-list">
+      ${sched.map(f => `
+      <div class="export-row">
+        <div><b>${esc(f.file_name)}</b><div class="small muted">Last uploaded ${fmtTime(f.uploaded_at)} by ${esc(f.uploaded_by || '—')}</div></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="btn btn-primary btn-sm" data-sched-download="${f.id}" ${e.busy ? 'disabled' : ''}>${e.busy === 'sched-' + f.id ? 'Preparing…' : `${icon('upload', 13)} Download with timestamps`}</button>
+          <button class="btn btn-sm" data-sched-remove="${f.id}" title="Forget this saved copy (tasks are not affected)">Remove</button>
+        </div>
+      </div>`).join('')}
+    </div>`}
+    <div class="small" style="margin-top:12px;">Have a different copy on your computer?
+      <label class="link-btn" for="sched-fill-input" style="display:inline-flex;">Fill timestamps into a file I choose
+        <input type="file" id="sched-fill-input" accept=".xlsx,.xlsm" style="display:none;"></label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">2 · Task history export</div>
+    <div class="export-quick">
+      <button class="import-view-btn" data-exp-quick="start">From the start to today</button>
+      <button class="import-view-btn" data-exp-quick="lastmonth">${esc(lm.label)}</button>
+      <button class="import-view-btn" data-exp-quick="thismonth">This month so far</button>
+    </div>
+    <div class="row" style="align-items:flex-end;margin-top:10px;">
+      <div class="col"><label>Which tasks</label>
+        <select id="exp-mode"><option value="completed" ${e.mode === 'completed' ? 'selected' : ''}>Completed or cancelled in this period</option><option value="all" ${e.mode === 'all' ? 'selected' : ''}>Everything created in this period (incl. open)</option></select></div>
+      <div class="col"><label>From (blank = the start)</label><input type="date" id="exp-from" value="${esc(e.from)}"></div>
+      <div class="col"><label>To</label><input type="date" id="exp-to" value="${esc(e.to)}"></div>
+      <div class="col"><label>Project</label><select id="exp-project"><option value="">All projects</option>${projects.map(p => `<option value="${esc(p)}" ${e.project === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></div>
+    </div>
+    <button class="btn btn-primary btn-sm" style="margin-top:10px;" data-act="exp-download" ${e.busy ? 'disabled' : ''}>${e.busy === 'history' ? 'Preparing…' : 'Download history (.xlsx)'}</button>
+    <span class="small muted" style="margin-left:8px;">One row per task: created, deadline, tagged people, started, submitted, approved, completed, who closed it, days taken, on time / late, each person's timeline and the comment thread.</span>
+  </div>
+
+  <div class="card">
+    <div class="card-title">3 · Remove finished tasks from the site</div>
+    <p class="small muted">Completed and cancelled tasks finished on or before the date below disappear from every task screen, and their attachments, comments and checklists are deleted to free space. A summary of each stays behind, so the history export and the spreadsheet timestamps still include them, performance and leaderboards don't change, and uploading the schedule again never re-creates them. Open tasks — and finished tasks that still have an open subtask — are never touched.</p>
+    <div class="row" style="align-items:flex-end;">
+      <div class="col" style="max-width:240px;"><label>Finished on or before</label><input type="date" id="arch-before" value="${esc(e.archiveBefore)}"></div>
+      <div class="col" style="flex:0;"><button class="btn btn-sm" data-act="arch-preview">Check how many</button></div>
+    </div>
+    ${e.archivePreview ? `
+    <div class="archive-box">
+      ${e.archivePreview.count === 0 ? `<div>Nothing to remove — no finished tasks on or before ${esc(fmtDate(e.archiveBefore))} are still on the site.${e.archivePreview.alreadyArchived ? ` (${e.archivePreview.alreadyArchived} removed earlier.)` : ''}</div>` : `
+      <div><b>${e.archivePreview.count}</b> finished task${e.archivePreview.count === 1 ? '' : 's'} will be removed from the site.</div>
+      <label class="small" style="display:flex;gap:6px;align-items:center;margin:8px 0;font-weight:400;"><input type="checkbox" id="arch-confirm" style="width:auto;" ${e.downloadedHistory ? 'checked' : ''}> I've downloaded the history / schedule I need (attachments and comment files can't be recovered).</label>
+      <button class="btn btn-danger btn-sm" data-act="arch-run" ${e.downloadedHistory && !e.busy ? '' : 'disabled'}>${e.busy === 'archive' ? 'Removing…' : `Remove ${e.archivePreview.count} task${e.archivePreview.count === 1 ? '' : 's'} from the site`}</button>`}
+    </div>` : ''}
+  </div>`;
+}
+async function loadSchedules() {
+  try { ui.exp.schedules = await api('/api/schedules'); } catch (err) { ui.exp.schedules = []; setBanner(err.message); }
+  render();
+}
+function bindExportsView() {
+  const e = ui.exp; if (!e) return;
+  if (e.schedules === null && !e.loadingSchedules) { e.loadingSchedules = true; loadSchedules().then(() => { e.loadingSchedules = false; }); }
+  const busy = async (key, fn) => { if (e.busy) return; e.busy = key; render(); try { await fn(); } catch (err) { setBanner(err.message); } e.busy = null; render(); };
+  document.querySelectorAll('[data-sched-download]').forEach(b => b.onclick = () => busy('sched-' + b.dataset.schedDownload, async () => {
+    const r = await api(`/api/schedules/${b.dataset.schedDownload}/download`);
+    downloadDataUrl(r.data, r.name);
+    setBanner(`Downloaded — ${r.stats.completed} completed, ${r.stats.open} open, ${r.stats.cancelled} cancelled, ${r.stats.notImported} not imported yet.`, 'ok');
+  }));
+  document.querySelectorAll('[data-sched-remove]').forEach(b => b.onclick = async () => {
+    if (!confirm('Forget this saved schedule? Your tasks are not affected — you can import the file again any time.')) return;
+    try { await api(`/api/schedules/${b.dataset.schedRemove}`, { method: 'DELETE' }); await loadSchedules(); } catch (err) { setBanner(err.message); render(); }
+  });
+  const fillInput = document.getElementById('sched-fill-input');
+  if (fillInput) fillInput.onchange = (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => busy('fill', async () => {
+      const r = await api('/api/schedules/fill', { method: 'POST', body: JSON.stringify({ fileData: reader.result, fileName: f.name }) });
+      downloadDataUrl(r.data, r.name);
+      setBanner(`Timestamps filled for ${r.stats.matched} of ${r.stats.rows} rows.`, 'ok');
+    });
+    reader.readAsDataURL(f);
+  };
+  const v = id => (document.getElementById(id) || {}).value;
+  const syncHistory = () => { e.mode = v('exp-mode'); e.from = v('exp-from'); e.to = v('exp-to'); e.project = v('exp-project'); };
+  ['exp-mode', 'exp-from', 'exp-to', 'exp-project'].forEach(id => { const el = document.getElementById(id); if (el) el.onchange = syncHistory; });
+  document.querySelectorAll('[data-exp-quick]').forEach(b => b.onclick = () => {
+    const now = new Date();
+    if (b.dataset.expQuick === 'start') { e.from = ''; e.to = localISODate(now); }
+    if (b.dataset.expQuick === 'lastmonth') { const lm = lastMonthRange(); e.from = lm.from; e.to = lm.to; }
+    if (b.dataset.expQuick === 'thismonth') { e.from = localISODate(new Date(now.getFullYear(), now.getMonth(), 1)); e.to = localISODate(now); }
+    render();
+  });
+  const dl = document.querySelector('[data-act="exp-download"]');
+  if (dl) dl.onclick = () => { syncHistory(); busy('history', async () => {
+    const q = new URLSearchParams({ mode: e.mode, to: e.to || '' }); if (e.from) q.set('from', e.from); if (e.project) q.set('project', e.project);
+    const r = await api(`/api/tasks/history-export?${q}`);
+    downloadDataUrl(r.data, r.name);
+    e.downloadedHistory = true;
+    setBanner(`History downloaded — ${r.count} task${r.count === 1 ? '' : 's'}.`, 'ok');
+  }); };
+  const archBefore = document.getElementById('arch-before');
+  if (archBefore) archBefore.onchange = () => { e.archiveBefore = archBefore.value; e.archivePreview = null; render(); };
+  const pv = document.querySelector('[data-act="arch-preview"]');
+  if (pv) pv.onclick = () => busy('preview', async () => { e.archivePreview = await api(`/api/tasks/archive/preview?before=${encodeURIComponent(e.archiveBefore)}`); });
+  const cb = document.getElementById('arch-confirm');
+  if (cb) cb.onchange = () => { e.downloadedHistory = cb.checked; render(); };
+  const run = document.querySelector('[data-act="arch-run"]');
+  if (run) run.onclick = () => busy('archive', async () => {
+    const r = await api('/api/tasks/archive', { method: 'POST', body: JSON.stringify({ before: e.archiveBefore }) });
+    setBanner(`${r.archived} finished task${r.archived === 1 ? '' : 's'} removed from the site. Their history is still in exports and schedule downloads.`, 'ok');
+    e.archivePreview = null; e.downloadedHistory = false;
+    await refreshData();
+  });
+}
+// First week of each month: remind Admin that last month can be exported and cleared.
+function monthEndReminderHTML() {
+  if (session.role !== 'admin' || new Date().getDate() > 7) return '';
+  const lm = lastMonthRange();
+  if (safeStorage.getItem('ls_month_export_dismissed') === lm.from) return '';
+  return `<div class="notice" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+    <span>${esc(lm.label)} is over — download its task history and schedule timestamps, then clear the finished tasks off the site.</span>
+    <span><button class="btn btn-sm btn-primary" data-act="goto-exports">Export & Archive</button> <button class="btn btn-sm" data-act="dismiss-month-export" data-month="${lm.from}">Later</button></span></div>`;
+}
+function bindMonthEndReminder() {
+  const go = document.querySelector('[data-act="goto-exports"]');
+  if (go) go.onclick = () => { ui.adminTab = 'exports'; safeStorage.setItem('ls_last_tab', 'exports'); render(); };
+  const later = document.querySelector('[data-act="dismiss-month-export"]');
+  if (later) later.onclick = () => { safeStorage.setItem('ls_month_export_dismissed', later.dataset.month); render(); };
+}
 function renderTasksView() {
   return `
   <div class="card">
     <div class="flex-between">
       <div class="card-title" style="margin:0;">Create Task</div>
-      <div>
+      <div class="create-actions">
+        ${assistantButtonsHTML()}
+        <button class="btn btn-sm" data-act="toggle-import-panel">${icon('upload', 14)} Import from CSV / Excel</button>
         <button class="btn btn-sm" data-act="toggle-task-form">+ New Task</button>
       </div>
     </div>
+    <div id="import-panel-box">${importPanelHTML()}</div>
     <div id="task-form-box">${taskFormHTML()}</div>
   </div>
+  ${assistantPanelHTML()}
   <div class="card">
     <div class="flex-between">
       <div class="card-title" style="margin:0;">Send for Approval</div>
@@ -1714,12 +3155,27 @@ function renderApprovalRequestCard(r) {
   const isCreator = r.created_by_username === session.username;
   const myReview = (r.reviewers || []).find(rv => rv.username === session.username);
   const canDecide = r.status === 'pending' && myReview && !myReview.decision;
+  const reviewers = r.reviewers || [];
+  const approvedN = reviewers.filter(rv => rv.decision === 'approved').length;
+  const decidedAt = r.status === 'approved' ? (r.resolved_at || ((r.history || []).slice(-1)[0] || {}).created_at) : null;
   return `
-  <div class="card" id="approval-card-${esc(r.id)}" style="background:var(--panel-2);">
-    <div class="flex-between">
-      <div><b>${esc(r.title)}</b></div>
-      ${APPROVAL_STATUS_BADGE[r.status] || ''}
-    </div>
+  <details class="card task-row" id="approval-card-${esc(r.id)}">
+    <summary class="task-row-summary">
+      <span class="task-row-chevron" aria-hidden="true"></span>
+      <span class="task-row-text">
+        <span class="task-row-title"><b>${esc(r.title)}</b></span>
+        <span class="task-row-meta">
+          <span>📄 ${esc(r.file_name || 'Document')}</span>
+          <span>Sent by ${esc(r.created_by_name)} · ${fmtTime(r.created_at)}</span>
+          ${reviewers.length ? `<span>${approvedN}/${reviewers.length} approved</span>` : ''}
+          ${canDecide ? '<span class="row-flag row-flag-me">Your decision needed</span>' : ''}
+          ${isCreator && r.status === 'needs_revision' ? '<span class="row-flag row-flag-warn">Upload a revision</span>' : ''}
+          ${decidedAt ? `<span>Approved ${fmtTime(decidedAt)}</span>` : ''}
+        </span>
+      </span>
+      <span class="task-row-status">${APPROVAL_STATUS_BADGE[r.status] || ''}</span>
+    </summary>
+    <div class="task-row-body">
     ${r.description ? `<div class="doc-note">${esc(r.description)}</div>` : ''}
     <div class="muted small" style="margin-top:6px;">Sent by ${esc(r.created_by_name)} · ${fmtTime(r.created_at)}</div>
     ${lazyAttachmentHTML(r.has_file, r.file_name, `/api/approvals/${r.id}/attachment`, `approval-file-${r.id}`)}
@@ -1750,7 +3206,8 @@ function renderApprovalRequestCard(r) {
       <div id="approval-revise-preview-${r.id}"></div>
       <button class="btn btn-primary btn-sm" style="margin-top:6px;" data-revise-request="${r.id}">Send Revision</button>
     </div>` : ''}
-  </div>`;
+    </div>
+  </details>`;
 }
 function renderApprovalsSection() {
   const scope = (session.role === 'admin' && ui.approvalsScope === 'all') ? allApprovalRequests : myApprovalRequests;
@@ -1764,18 +3221,28 @@ function renderApprovalsSection() {
         <option value="all" ${ui.approvalsScope === 'all' ? 'selected' : ''}>All</option>
       </select>` : ''}
     </div>
-    ${scope.length === 0 ? `<div class="empty">Nothing here yet.</div>` : scope.map(renderApprovalRequestCard).join('')}
+    ${(() => {
+      // Open = someone still has to act (pending, or sent back for revision). Closed = approved.
+      const open = scope.filter(r => r.status !== 'approved');
+      const closed = scope.filter(r => r.status === 'approved');
+      const tab = ui.approvalsTab === 'closed' ? 'closed' : 'open';
+      const list = tab === 'closed' ? closed : open;
+      return `${taskTabsHTML([{ key: 'open', label: 'Open', count: open.length }, { key: 'closed', label: 'Closed (approved)', count: closed.length }], tab, 'data-approvals-tab')}
+      <div class="task-list">${list.length === 0 ? `<div class="empty">${tab === 'closed' ? 'No approved documents yet.' : 'Nothing waiting — every document is decided.'}</div>` : list.map(renderApprovalRequestCard).join('')}</div>`;
+    })()}
   </div>`;
 }
 function bindApprovalsSection() {
+  document.querySelectorAll('[data-approvals-tab]').forEach(b => b.onclick = () => { ui.approvalsTab = b.dataset.approvalsTab; render(); });
   const scopeSelect = document.getElementById('approvals-scope');
   if (scopeSelect) scopeSelect.onchange = () => { ui.approvalsScope = scopeSelect.value; render(); };
   document.querySelectorAll('[data-approve-request]').forEach(btn => btn.onclick = async () => {
     const id = btn.dataset.approveRequest;
     try {
       const result = await api(`/api/approvals/${id}/decide`, { method: 'POST', body: JSON.stringify({ decision: 'approved' }) });
-      celebrate(undefined, result.status === 'approved' ? CLOSE_MESSAGES : COMPLETION_MESSAGES);
-      setBanner('Approved.', 'ok'); await refreshData();
+      celebrate(result.status === 'approved' ? 'Document approved — moved to Closed.' : 'Your approval is recorded.', result.status === 'approved' ? CLOSE_MESSAGES : COMPLETION_MESSAGES);
+      openDetails.delete(`approval-card-${id}`); // decided → collapse it (and it moves to Closed once fully approved)
+      setBanner(result.status === 'approved' ? 'Approved — moved to the Closed tab.' : 'Approved — waiting for the other reviewers.', 'ok'); await refreshData();
     } catch (e) { setBanner(e.message); render(); }
   });
   document.querySelectorAll('[data-reject-request]').forEach(btn => btn.onclick = async () => {
@@ -1785,6 +3252,7 @@ function bindApprovalsSection() {
     if (reason.length < 5) { alert('A reason (at least 5 characters) is required to reject.'); return; }
     try {
       await api(`/api/approvals/${id}/decide`, { method: 'POST', body: JSON.stringify({ decision: 'rejected', reason }) });
+      openDetails.delete(`approval-card-${id}`);
       setBanner('Rejected — sent back for revision.', 'ok'); await refreshData();
     } catch (e) { setBanner(e.message); render(); }
   });
@@ -2040,7 +3508,13 @@ function renderTodayFeed() {
   const doneCount = relevant.filter(t => t.status === 'closed').length;
   const totalCount = relevant.length;
   const pct = totalCount === 0 ? 0 : Math.round((doneCount / totalCount) * 100);
+  // Only tagged tasks have progress to show; capped (nearest deadline first) so a large imported
+  // schedule doesn't turn this glance page into thousands of bars.
+  const ongoingTagged = openTasks.filter(t => (t.assignees || []).length > 0)
+    .sort((a, b) => String(a.deadline || '9999').localeCompare(String(b.deadline || '9999')));
+  const ongoingShown = ongoingTagged.slice(0, 25);
   return `
+  ${monthEndReminderHTML()}
   <div class="card">
     <div class="card-title">Today — ${esc(todayStr)}</div>
     <p class="small muted">A running summary of what's happened today and what's expected — not a substitute for My Tasks, just a quick daily glance.</p>
@@ -2077,7 +3551,7 @@ function renderTodayFeed() {
   <div class="card">
     <div class="card-title">Ongoing Tasks Progress</div>
     <p class="small muted">Green shows the share of tagged people whose part is approved. Click a bar to see exactly who's done and who's remaining.</p>
-    ${openTasks.length === 0 ? `<div class="empty">Nothing ongoing right now.</div>` : openTasks.map(t => {
+    ${ongoingTagged.length === 0 ? `<div class="empty">${openTasks.length ? `No tagged tasks in progress — ${openTasks.length} open task${openTasks.length === 1 ? ' is' : 's are'} still waiting for people to be tagged.` : 'Nothing ongoing right now.'}</div>` : ongoingShown.map(t => {
       const assignees = t.assignees || [];
       const approved = assignees.filter(a => a.decision === 'approve' && a.completed_at);
       const remaining = assignees.filter(a => !(a.decision === 'approve' && a.completed_at));
@@ -2098,6 +3572,7 @@ function renderTodayFeed() {
         </div>
       </div>`;
     }).join('')}
+    ${ongoingTagged.length > ongoingShown.length ? `<div class="small muted">Showing the ${ongoingShown.length} with the nearest deadlines, of ${ongoingTagged.length} — see My Tasks for all of them.</div>` : ''}
   </div>
   <div class="card">
     <div class="card-title">Completed Today</div>
@@ -2161,7 +3636,7 @@ function bindProfile() {
     try {
       const data = await api('/api/auth/update-name', { method: 'POST', body: JSON.stringify({ name }) });
       token = data.token; session = { ...session, name: data.name };
-      localStorage.setItem('ls_token', token); localStorage.setItem('ls_session', JSON.stringify(session));
+      safeStorage.setItem('ls_token', token); safeStorage.setItem('ls_session', JSON.stringify(session));
       setBanner('Name updated.', 'ok'); await refreshData();
     } catch (e) { setBanner(e.message); render(); }
   };
@@ -2171,7 +3646,7 @@ function bindProfile() {
     try {
       const data = await api('/api/auth/update-email', { method: 'POST', body: JSON.stringify({ email }) });
       session = { ...session, email: data.email };
-      localStorage.setItem('ls_session', JSON.stringify(session));
+      safeStorage.setItem('ls_session', JSON.stringify(session));
       setBanner('Email updated.', 'ok'); render();
     } catch (e) { setBanner(e.message); render(); }
   };
@@ -2185,7 +3660,7 @@ function bindProfile() {
     try {
       const data = await api('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ newPassword }) });
       token = data.token;
-      localStorage.setItem('ls_token', token);
+      safeStorage.setItem('ls_token', token);
       document.getElementById('profile-pw-new').value = ''; document.getElementById('profile-pw-confirm').value = '';
       setBanner('Password changed.', 'ok'); render();
     } catch (e) { setBanner(e.message); render(); }
@@ -2195,7 +3670,7 @@ function bindProfile() {
     if (!confirm('Log out every other device/browser signed into your account? This device will stay logged in.')) return;
     try {
       const data = await api('/api/auth/logout-everywhere', { method: 'POST' });
-      token = data.token; localStorage.setItem('ls_token', token);
+      token = data.token; safeStorage.setItem('ls_token', token);
       setBanner('Every other session has been logged out.', 'ok'); render();
     } catch (e) { setBanner(e.message); render(); }
   };
@@ -2787,7 +4262,7 @@ function bindHRDashboardView() {
 }
 
 /* ==================== AUDIT LOG (Admin) ==================== */
-const AUDIT_ACTION_LABEL = { account_created: 'Account Created', account_removed: 'Account Removed', password_reset: 'Password Reset', team_lead_changed: 'Team Lead Changed', task_cancelled: 'Task Cancelled', drawing_removed: 'Drawing Removed', account_locked: 'Account Locked', task_force_closed: 'Task Force-Closed', approval_rejected: 'Approval Rejected', username_changed: 'Username Changed', task_reopened: 'Task Reopened', department_removed: 'Department Removed' };
+const AUDIT_ACTION_LABEL = { login: 'Logged In', chat_message_deleted: 'Chat Message Deleted', account_created: 'Account Created', account_removed: 'Account Removed', password_reset: 'Password Reset', team_lead_changed: 'Team Lead Changed', task_cancelled: 'Task Cancelled', drawing_removed: 'Drawing Removed', account_locked: 'Account Locked', task_force_closed: 'Task Force-Closed', approval_rejected: 'Approval Rejected', username_changed: 'Username Changed', task_reopened: 'Task Reopened', department_removed: 'Department Removed' };
 const AUDIT_ACTION_IS_WARNING = new Set(['account_removed', 'drawing_removed', 'account_locked', 'task_force_closed', 'approval_rejected', 'task_cancelled', 'task_reopened', 'department_removed']);
 // A stable "EST-2" style code per department member — first 3 letters of their department plus
 // a number based on alphabetical position within that department (by username). Computed live
@@ -2800,57 +4275,88 @@ function departmentCode(team, username) {
   return idx >= 0 ? `${abbrev}-${idx + 1}` : abbrev;
 }
 function renderAuditLogView() {
-  // Shows every entry directly, always — a per-action-type count strip stays at the top as a
-  // quick-glance summary, but the full table below is never gated behind clicking a filter.
-  const counts = {};
-  auditLogEntries.forEach(e => { counts[e.action] = (counts[e.action] || 0) + 1; });
-  const actionTypes = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
-  const filtered = (ui.auditLogFilterAction ? auditLogEntries.filter(e => e.action === ui.auditLogFilterAction) : auditLogEntries)
-    .filter(e => {
-      const q = (ui.auditLogSearchQuery || '').trim().toLowerCase();
-      if (!q) return true;
-      return (e.actor_name || '').toLowerCase().includes(q) || (e.actor_username || '').toLowerCase().includes(q) ||
-        (e.actor_team || '').toLowerCase().includes(q) || (e.details || '').toLowerCase().includes(q);
-    });
+  const f = ui.audit || (ui.audit = { actor: '', action: '', q: '', from: '', to: '' });
+  const data = auditLogEntries && auditLogEntries.entries ? auditLogEntries : { entries: [], actions: [], actors: [], hasMore: false };
+  const rows = data.entries.concat(auditMorePages);
+  const hasMore = auditMorePages.length ? auditMoreState.hasMore : data.hasMore;
+  const label = a => AUDIT_ACTION_LABEL[a] || String(a).replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase());
+  const anyFilter = f.actor || f.action || f.q || f.from || f.to;
   return `
-  <div class="notice">A permanent record of sensitive admin actions — account changes, password resets, task cancellations/reopens, drawing removals — with the actor's department, IP address, and device. Click any row for IP/device. Most recent 200 entries tracked.</div>
+  <div class="notice">A permanent record of important actions — logins, account changes, password resets, task cancellations, deadline changes, imports, exports — with who did it, when (IST), their department, IP address and device. Click a row for full details.</div>
   <div class="card">
-    ${auditLogEntries.length === 0 ? `<div class="empty">Nothing logged yet.</div>` : `
-    <input type="text" id="audit-log-search" placeholder="Search by name, username, department, or details..." value="${esc(ui.auditLogSearchQuery || '')}" style="margin-bottom:10px;">
-    <div style="display:flex;flex-wrap:wrap;gap:8px;">
-      ${actionTypes.map(a => `
-        <span class="badge ${AUDIT_ACTION_IS_WARNING.has(a) ? 'flag' : 'received'} ${ui.auditLogFilterAction === a ? 'audit-count-active' : ''}" data-audit-filter="${esc(a)}" style="cursor:pointer;">
-          ${esc(AUDIT_ACTION_LABEL[a] || a)} · ${counts[a]}
-        </span>`).join('')}
-      <span class="badge ${!ui.auditLogFilterAction ? 'audit-count-active' : ''}" data-audit-filter="" style="cursor:pointer;background:var(--panel-2);">Show All · ${auditLogEntries.length}</span>
+    <div class="row task-filter-row audit-filters">
+      <div class="col"><select id="audit-actor"><option value="">👤 Everyone</option>${(data.actors || []).map(a => `<option value="${esc(a.username)}" ${f.actor === a.username ? 'selected' : ''}>${esc(a.name || a.username)} (${esc(a.username)})</option>`).join('')}</select></div>
+      <div class="col"><select id="audit-action"><option value="">All actions</option>${(data.actions || []).map(a => `<option value="${esc(a.action)}" ${f.action === a.action ? 'selected' : ''}>${esc(label(a.action))} · ${a.count}</option>`).join('')}</select></div>
+      <div class="col"><input type="date" id="audit-from" value="${esc(f.from)}" title="From"></div>
+      <div class="col"><input type="date" id="audit-to" value="${esc(f.to)}" title="To"></div>
     </div>
-    <table style="margin-top:14px;"><tr><th>When</th><th>Action</th><th>Department</th><th>Details</th><th></th></tr>
-    ${filtered.map((e, i) => `
-      <tr style="cursor:pointer;" data-audit-row-toggle="${i}">
-        <td class="small">${fmtTime(e.created_at)}</td>
-        <td><span class="badge ${AUDIT_ACTION_IS_WARNING.has(e.action) ? 'flag' : 'received'}">${esc(AUDIT_ACTION_LABEL[e.action] || e.action)}</span></td>
-        <td class="small"><b>${esc(departmentCode(e.actor_team, e.actor_username) || '—')}</b><br><span class="muted">${esc(e.actor_name || e.actor_username || '—')}</span></td>
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <input type="text" id="audit-q" placeholder="Search details, names, departments…" value="${esc(f.q)}" style="margin:0;">
+      ${anyFilter ? '<button class="btn btn-sm" data-act="audit-clear">Clear</button>' : ''}
+    </div>
+    ${rows.length === 0 ? `<div class="empty">${anyFilter ? 'Nothing matches these filters.' : 'Nothing logged yet.'}</div>` : `
+    <div class="import-table-wrap" style="max-height:none;">
+    <table class="audit-table">
+      <tr><th>When (IST)</th><th>Person</th><th>Action</th><th>Details</th><th>Device</th></tr>
+      ${rows.map(e => `
+      <tr class="audit-row" data-audit-row="${e.id}">
+        <td class="small nowrap">${esc(fmtTime(e.created_at))}</td>
+        <td class="small"><b>${esc(e.actor_name || e.actor_username || '—')}</b><div class="muted">${esc(departmentCode(e.actor_team, e.actor_username) || '')}</div></td>
+        <td><span class="badge ${AUDIT_ACTION_IS_WARNING.has(e.action) ? 'flag' : 'received'}">${esc(label(e.action))}</span></td>
         <td class="small">${esc(e.details || '')}</td>
-        <td class="small muted">${ui.auditLogExpandedRow === i ? '▾' : '▸'}</td>
+        <td class="small muted nowrap">${esc(shortDevice(e.device))}</td>
       </tr>
-      ${ui.auditLogExpandedRow === i ? `
-      <tr><td colspan="6" style="background:var(--panel);"><div class="small muted" style="padding:8px 4px;">IP address: ${esc(e.ip_address || 'not recorded')} · Device: ${esc(e.device || 'not recorded')}</div></td></tr>` : ''}`).join('')}
-    </table>`}
+      ${ui.auditExpanded === e.id ? `<tr><td colspan="5" class="audit-detail small">IP address: <b>${esc(e.ip_address || 'not recorded')}</b> · Username: <b>${esc(e.actor_username || '—')}</b> · Entry #${e.id}<br>Device: ${esc(e.device || 'not recorded')}</td></tr>` : ''}`).join('')}
+    </table></div>
+    <div class="flex-between" style="margin-top:10px;">
+      <span class="small muted">Showing ${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}${anyFilter ? ' matching the filters' : ''}, newest first.</span>
+      ${hasMore ? `<button class="btn btn-sm" data-act="audit-more" ${auditMoreState.loading ? 'disabled' : ''}>${auditMoreState.loading ? 'Loading…' : 'Load older entries'}</button>` : ''}
+    </div>`}
   </div>`;
 }
+// "Chrome · Android", "Safari · iPhone", "MIHIR app · Android" — readable at a glance.
+function shortDevice(ua) {
+  const s = String(ua || '');
+  if (!s) return '—';
+  const app = /MihirTasksAndroid/.test(s) ? 'MIHIR app' : /Edg\//.test(s) ? 'Edge' : /OPR\//.test(s) ? 'Opera' : /SamsungBrowser/.test(s) ? 'Samsung Internet' : /Chrome\//.test(s) ? 'Chrome' : /Firefox\//.test(s) ? 'Firefox' : /Safari\//.test(s) ? 'Safari' : /node|curl|python/i.test(s) ? 'Script' : 'Browser';
+  const os = /Android/.test(s) ? 'Android' : /iPhone/.test(s) ? 'iPhone' : /iPad/.test(s) ? 'iPad' : /Mac OS X|Macintosh/.test(s) ? 'Mac' : /Windows/.test(s) ? 'Windows' : /Linux/.test(s) ? 'Linux' : '';
+  return os ? `${app} · ${os}` : app;
+}
+let auditMorePages = [];
+let auditMoreState = { hasMore: false, nextBeforeId: null, loading: false };
+function auditQuery(extra) {
+  const f = ui.audit || {};
+  const q = new URLSearchParams({ limit: '100', format: 'page' });
+  ['actor', 'action', 'q', 'from', 'to'].forEach(k => { if (f[k]) q.set(k, f[k]); });
+  Object.entries(extra || {}).forEach(([k, v]) => q.set(k, v));
+  return '/api/audit-log?' + q.toString();
+}
+function reloadAudit() { auditMorePages = []; auditMoreState = { hasMore: false, nextBeforeId: null, loading: false }; loadTabExtras(); }
+let auditSearchTimer = null;
 function bindAuditLogView() {
-  const searchInput = document.getElementById('audit-log-search');
-  if (searchInput) searchInput.oninput = () => { ui.auditLogSearchQuery = searchInput.value; render(); };
-  document.querySelectorAll('[data-audit-filter]').forEach(el => el.onclick = () => {
-    const val = el.dataset.auditFilter;
-    ui.auditLogFilterAction = val || null;
-    render();
+  const f = ui.audit || (ui.audit = { actor: '', action: '', q: '', from: '', to: '' });
+  [['audit-actor', 'actor'], ['audit-action', 'action'], ['audit-from', 'from'], ['audit-to', 'to']].forEach(([id, key]) => {
+    const el = document.getElementById(id); if (el) el.onchange = () => { f[key] = el.value; reloadAudit(); };
   });
-  document.querySelectorAll('[data-audit-row-toggle]').forEach(el => el.onclick = () => {
-    const idx = Number(el.dataset.auditRowToggle);
-    ui.auditLogExpandedRow = (ui.auditLogExpandedRow === idx) ? null : idx;
-    render();
+  const q = document.getElementById('audit-q');
+  if (q) q.oninput = () => { f.q = q.value; clearTimeout(auditSearchTimer); auditSearchTimer = setTimeout(reloadAudit, 350); };
+  const clear = document.querySelector('[data-act="audit-clear"]');
+  if (clear) clear.onclick = () => { ui.audit = { actor: '', action: '', q: '', from: '', to: '' }; reloadAudit(); render(); };
+  document.querySelectorAll('[data-audit-row]').forEach(el => el.onclick = () => {
+    const id = Number(el.dataset.auditRow); ui.auditExpanded = ui.auditExpanded === id ? null : id; render();
   });
+  const more = document.querySelector('[data-act="audit-more"]');
+  if (more) more.onclick = async () => {
+    const base = auditLogEntries && auditLogEntries.entries ? auditLogEntries : null; if (!base) return;
+    const before = auditMorePages.length ? auditMoreState.nextBeforeId : base.nextBeforeId;
+    auditMoreState.loading = true; render();
+    try {
+      const r = await api(auditQuery({ before_id: before }));
+      auditMorePages = auditMorePages.concat(r.entries);
+      auditMoreState = { hasMore: r.hasMore, nextBeforeId: r.nextBeforeId, loading: false };
+    } catch (err) { auditMoreState.loading = false; setBanner(err.message); }
+    render();
+  };
 }
 
 /* ==================== PERFORMANCE (Admin) ==================== */
@@ -2950,7 +4456,7 @@ function renderPerformanceView() {
         <td>${esc(s.team || '—')}</td>
         <td class="mono">${s.week}</td>
         <td class="mono">${s.month}</td>
-        <td class="mono">${s.quarter ?? 0}</td>
+        <td class="mono">${s.quarter != null ? s.quarter : 0}</td>
         <td class="mono">${s.year}</td>
         <td class="mono">${s.allTime}</td>
       </tr>`).join('')}
@@ -3014,7 +4520,7 @@ function bindPerformanceView() {
     exportRows.forEach(s => {
       const r = (ratingsData || []).find(x => x.username === s.username) || {};
       rows.push([
-        s.name, s.username, s.team || '', s.week, s.month, s.quarter ?? 0, s.year, s.allTime,
+        s.name, s.username, s.team || '', s.week, s.month, s.quarter != null ? s.quarter : 0, s.year, s.allTime,
         r.rating !== undefined && r.rating !== null ? r.rating.toFixed(1) : '',
         r.volumeScore !== undefined && r.volumeScore !== null ? r.volumeScore.toFixed(1) : '',
         r.timelinessScore !== undefined && r.timelinessScore !== null ? r.timelinessScore.toFixed(1) : '',
@@ -3022,15 +4528,10 @@ function bindPerformanceView() {
       ]);
     });
     const csv = rows.map(row => row.map(cell => {
-      const s = String(cell ?? '');
+      const s = String(cell != null ? cell : '');
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     }).join(',')).join('\r\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `performance-${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadDataUrl('data:text/csv;charset=utf-8;base64,' + btoa(unescape(encodeURIComponent('\uFEFF' + csv))), `performance-${new Date().toISOString().slice(0, 10)}.csv`);
   };
 }
 
@@ -3122,7 +4623,18 @@ function renderAccountsView() {
    template. Morphing only touches nodes that actually changed, so unrelated parts of the page
    never flicker, and stateful things like scroll position and <details openness survive by
    simply never being touched. */
+// Which expandable rows (<details> with an id) the person has opened. A re-render must never
+// snap them shut — the page refreshes itself every few seconds when data changes.
+const openDetails = new Set();
+document.addEventListener('toggle', (e) => {
+  const d = e.target;
+  if (d && d.tagName === 'DETAILS' && d.id) { if (d.open) openDetails.add(d.id); else openDetails.delete(d.id); }
+}, true);
 function morphAttributes(fromEl, toEl) {
+  if (toEl.tagName === 'DETAILS') {
+    const wantOpen = (toEl.id && openDetails.has(toEl.id)) || toEl.hasAttribute('open');
+    if (wantOpen) toEl.setAttribute('open', ''); else toEl.removeAttribute('open');
+  }
   const toAttrs = toEl.attributes;
   for (let i = 0; i < toAttrs.length; i++) {
     const attr = toAttrs[i];
@@ -3156,9 +4668,10 @@ function morphNode(fromNode, toNode) {
   } else if (tag === 'SELECT') {
     if (!isFocused && fromNode.value !== toNode.value) fromNode.value = toNode.value;
   }
-  // <details> openness is user-driven UI state, not template state — never let a re-render
-  // snap an expanded closed-task entry shut again.
-  if (tag !== 'DETAILS') morphChildren(fromNode, toNode);
+  // Expanded/collapsed state of <details> is preserved in morphAttributes (openDetails), so their
+  // contents can — and must — be updated like everything else. (They used to be skipped entirely,
+  // which left reused rows showing another task's old content.)
+  morphChildren(fromNode, toNode);
 }
 function morphChildren(fromParent, toParent) {
   const toChildren = Array.from(toParent.childNodes);
@@ -3222,7 +4735,8 @@ function renderInner() {
     return;
   }
   let body = '';
-  if (ui.adminTab === 'tasks') body = renderTasksView();
+  if (!dataLoadedOnce) body = renderLoadingSkeleton();
+  else if (ui.adminTab === 'tasks') body = renderTasksView();
   else if (ui.adminTab === 'alltasks' && session.role === 'admin') body = renderAllTasksCard();
   else if (ui.adminTab === 'accounts' && session.role === 'admin') body = renderAccountsView();
   else if (ui.adminTab === 'performance' && session.role === 'admin') body = renderPerformanceView();
@@ -3231,17 +4745,23 @@ function renderInner() {
   else if (ui.adminTab === 'mydashboard') body = renderMyDashboardView();
   else if (ui.adminTab === 'hrdashboard' && (session.role === 'admin' || isHRTeamName(session.team))) body = renderHRDashboardView();
   else if (ui.adminTab === 'reports' && session.role === 'admin') body = renderReportsView();
+  else if (ui.adminTab === 'exports' && session.role === 'admin') body = renderExportsView();
+  else if (ui.adminTab === 'chat') body = renderChatView();
+  else if (ui.adminTab === 'suggestions') body = renderSuggestionsView();
+  else if (ui.adminTab === 'meetings') body = renderMeetingsView();
+  else if (ui.adminTab === 'system' && session.role === 'admin') body = renderSystemView();
   else if (ui.adminTab === 'calendar') body = renderCalendarView();
   else if (ui.adminTab === 'profile') body = renderProfileView();
   else if (ui.adminTab === 'myteam' && session.role !== 'admin' && session.isTeamLead) body = renderMyTeamView();
   else body = renderTodayFeed();
   morphHTML(app, `
-    <div class="app-shell">
+    <div class="app-shell${ui.sidebarCollapsed ? ' sidebar-collapsed' : ''}">
       ${renderSidebar()}
       <div class="main-col">
         ${renderTopbarSlim()}
         <main class="content">
           ${bannerHTML()}
+          <div id="notif-prompt-box">${dataLoadedOnce ? notifPromptHTML() : ''}</div>
           ${body}
         </main>
       </div>
@@ -3250,7 +4770,7 @@ function renderInner() {
   if (ui.adminTab === 'tasks' || ui.adminTab === 'alltasks' || ui.adminTab === 'calendar') { bindMyTasks(); bindFollowupForm(); bindSubtaskForm(); bindAddAssigneeForm(); }
   if (ui.adminTab === 'tasks') { bindApprovalForm(); bindApprovalsSection(); }
   if (ui.adminTab === 'calendar') bindCalendarView();
-  if (ui.adminTab === 'tasks') bindTaskForm();
+  if (ui.adminTab === 'tasks') { bindTaskForm(); bindImportPanel(); }
   if (ui.adminTab === 'accounts') bindAccounts();
   if (ui.adminTab === 'profile') bindProfile();
   if (ui.adminTab === 'myteam') bindMyTeam();
@@ -3260,12 +4780,22 @@ function renderInner() {
   if (ui.adminTab === 'hrdashboard') bindHRDashboardView();
   if (ui.adminTab === 'auditlog') bindAuditLogView();
   if (ui.adminTab === 'reports') bindReportsView();
+  if (ui.adminTab === 'exports') bindExportsView();
+  if (ui.adminTab === 'chat') bindChatView();
+  if (ui.adminTab === 'suggestions') bindSuggestionCards();
+  if (ui.adminTab === 'meetings') bindMeetingsView();
+  if (ui.adminTab === 'system') bindSystemView();
+  if (ui.adminTab === 'tasks') bindAssistantPanel();
+  bindMonthEndReminder();
+  bindNotifPrompt();
+  bindTaskHistory();
   if (ui.adminTab === 'today') bindTodayFeed();
 }
 function bindGlobal() {
   bindThemeToggle();
   document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => {
-    ui.adminTab = b.dataset.tab; ui.sidebarOpen = false; localStorage.setItem('ls_last_tab', ui.adminTab);
+    ui.adminTab = b.dataset.tab; ui.sidebarOpen = false; safeStorage.setItem('ls_last_tab', ui.adminTab);
+    loadTabExtras();
     render();
     // Switching tabs previously only re-rendered whatever was already in memory from login time
     // or the last background poll — meaning a page like Accounts could show stale (or, on a
@@ -3274,10 +4804,22 @@ function bindGlobal() {
     // next poll cycle.
     refreshData();
   });
-  const menuToggle = document.querySelector('[data-act="toggle-sidebar"]'); if (menuToggle) menuToggle.onclick = () => { ui.sidebarOpen = !ui.sidebarOpen; render(); };
-  document.querySelectorAll('[data-act="close-sidebar"]').forEach(b => b.onclick = () => { ui.sidebarOpen = false; render(); });
+  // Phones/narrow windows: the menu slides over the page (sidebarOpen). Wider screens: it sits
+  // beside the page and can be collapsed for a full-width view (sidebarCollapsed, remembered).
+  const isNarrow = () => window.matchMedia('(max-width: 860px)').matches;
+  const menuToggle = document.querySelector('[data-act="toggle-sidebar"]');
+  if (menuToggle) menuToggle.onclick = () => {
+    if (isNarrow()) ui.sidebarOpen = !ui.sidebarOpen;
+    else { ui.sidebarCollapsed = !ui.sidebarCollapsed; safeStorage.setItem('ls_sidebar_collapsed', ui.sidebarCollapsed ? '1' : ''); }
+    render();
+  };
+  document.querySelectorAll('[data-act="close-sidebar"]').forEach(b => b.onclick = () => {
+    ui.sidebarOpen = false;
+    if (!isNarrow()) { ui.sidebarCollapsed = true; safeStorage.setItem('ls_sidebar_collapsed', '1'); }
+    render();
+  });
   const logoutBtn = document.querySelector('[data-act="logout"]'); if (logoutBtn) logoutBtn.onclick = () => logout();
-  const reopenPwChange = document.querySelector('[data-act="reopen-password-change"]'); if (reopenPwChange) reopenPwChange.onclick = () => { ui.showPasswordChangeModal = true; localStorage.removeItem('ls_pw_reminder_dismissed'); render(); };
+  const reopenPwChange = document.querySelector('[data-act="reopen-password-change"]'); if (reopenPwChange) reopenPwChange.onclick = () => { ui.showPasswordChangeModal = true; safeStorage.removeItem('ls_pw_reminder_dismissed'); render(); };
   const openNotif = document.querySelector('[data-act="open-notifications"]');
   if (openNotif) openNotif.onclick = () => {
     ui.notifDrawerOpen = true; render();
@@ -3293,6 +4835,7 @@ function bindGlobal() {
     const id = el.dataset.markNotifRead;
     try { await api(`/api/notifications/${id}/read`, { method: 'POST' }); } catch (e) { /* ignore */ }
     if (el.dataset.notifGotoTask) { ui.notifDrawerOpen = false; ui.adminTab = 'tasks'; }
+    if (el.dataset.notifGotoChat) { ui.notifDrawerOpen = false; ui.adminTab = 'chat'; ui.chatRoom = el.dataset.notifGotoChat; chatMessagesResp = null; chatStickBottom = true; }
     await refreshData();
   });
   const toggleForm = document.querySelector('[data-act="toggle-task-form"]'); if (toggleForm) toggleForm.onclick = () => { ui.taskFormOpen = true; ui.taskFormIsDrawing = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; render(); };
@@ -3397,11 +4940,51 @@ function bindMyTasks() {
     catch (e) { setBanner(e.message); render(); }
   });
   const searchInput = document.getElementById('task-search-input');
-  if (searchInput) searchInput.oninput = () => { ui.taskSearchQuery = searchInput.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; render(); };
+  if (searchInput) searchInput.oninput = () => { ui.taskSearchQuery = searchInput.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; ui.myOpenShown = OPEN_PAGE_SIZE; ui.allOpenShown = OPEN_PAGE_SIZE; render(); };
   const filterProjectSelect = document.getElementById('task-filter-project');
-  if (filterProjectSelect) filterProjectSelect.onchange = () => { ui.taskFilterProject = filterProjectSelect.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; render(); };
+  if (filterProjectSelect) filterProjectSelect.onchange = () => { ui.taskFilterProject = filterProjectSelect.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; ui.myOpenShown = OPEN_PAGE_SIZE; ui.allOpenShown = OPEN_PAGE_SIZE; render(); };
   const filterPhaseSelect = document.getElementById('task-filter-phase');
-  if (filterPhaseSelect) filterPhaseSelect.onchange = () => { ui.taskFilterPhase = filterPhaseSelect.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; render(); };
+  if (filterPhaseSelect) filterPhaseSelect.onchange = () => { ui.taskFilterPhase = filterPhaseSelect.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; ui.myOpenShown = OPEN_PAGE_SIZE; ui.allOpenShown = OPEN_PAGE_SIZE; render(); };
+  const filterTaggingSelect = document.getElementById('task-filter-tagging');
+  if (filterTaggingSelect) filterTaggingSelect.onchange = () => { ui.taskFilterTagging = filterTaggingSelect.value; ui.myOpenShown = OPEN_PAGE_SIZE; ui.allOpenShown = OPEN_PAGE_SIZE; render(); };
+  document.querySelectorAll('[data-act="nudge-task"]').forEach(b => b.onclick = async () => {
+    if (b.disabled) return;
+    b.disabled = true;
+    try {
+      const r = await api(`/api/tasks/${b.dataset.taskId}/nudge`, { method: 'POST' });
+      const names = r.sent.map(u => personName(u)).join(', ');
+      setBanner(`Follow-up sent to ${names}.${r.skipped.length ? ` Not re-sent to ${r.skipped.map(x => personName(x.username)).join(', ')} (followed up recently).` : ''}`, 'ok');
+      await refreshData();
+    } catch (e) { setBanner(e.message); render(); }
+    b.disabled = false;
+  });
+  document.querySelectorAll('[data-act="toggle-deadline-edit"]').forEach(b => b.onclick = () => { ui.deadlineEditTaskId = b.dataset.taskId; render(); });
+  document.querySelectorAll('[data-act="cancel-deadline-edit"]').forEach(b => b.onclick = () => { ui.deadlineEditTaskId = null; render(); });
+  document.querySelectorAll('[data-act="save-deadline-edit"]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.taskId;
+    const date = document.getElementById(`deadline-edit-date-${id}`).value;
+    const time = document.getElementById(`deadline-edit-time-${id}`).value;
+    const reason = document.getElementById(`deadline-edit-reason-${id}`).value.trim();
+    if (!date) { setBanner('Pick the new deadline date.'); render(); return; }
+    try {
+      const r = await api(`/api/tasks/${id}/deadline`, { method: 'POST', body: JSON.stringify({ deadline: time ? `${date}T${time}` : date, reason }) });
+      ui.deadlineEditTaskId = null;
+      setBanner(r.unchanged ? 'That is already the deadline.' : 'Deadline changed — everyone on the task has been told.', 'ok');
+      await refreshData();
+    } catch (e) { setBanner(e.message); render(); }
+  });
+  document.querySelectorAll('[data-my-tab]').forEach(b => b.onclick = () => { ui.myTasksTab = b.dataset.myTab; ui.myOpenShown = OPEN_PAGE_SIZE; ui.myHistoryShown = HISTORY_PAGE_SIZE; render(); });
+  const personSel = document.getElementById('task-filter-person');
+  if (personSel) personSel.onchange = () => { ui.taskFilterPerson = personSel.value; ui.allOpenShown = OPEN_PAGE_SIZE; ui.allHistoryShown = HISTORY_PAGE_SIZE; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  const personRoleSel = document.getElementById('task-filter-person-role');
+  if (personRoleSel) personRoleSel.onchange = () => { ui.taskFilterPersonRole = personRoleSel.value; ui.allOpenShown = OPEN_PAGE_SIZE; render(); };
+  const clearPerson = document.querySelector('[data-act="clear-person-filter"]');
+  if (clearPerson) clearPerson.onclick = () => { ui.taskFilterPerson = ''; ui.taskFilterPersonRole = 'any'; render(); };
+  document.querySelectorAll('[data-all-tab]').forEach(b => b.onclick = () => { ui.allTasksTab = b.dataset.allTab; ui.allOpenShown = OPEN_PAGE_SIZE; ui.allHistoryShown = HISTORY_PAGE_SIZE; render(); });
+  const showMoreMyOpen = document.querySelector('[data-act="show-more-my-open"]');
+  if (showMoreMyOpen) showMoreMyOpen.onclick = () => { ui.myOpenShown = (ui.myOpenShown || OPEN_PAGE_SIZE) + OPEN_PAGE_SIZE; render(); };
+  const showMoreAllOpen = document.querySelector('[data-act="show-more-all-open"]');
+  if (showMoreAllOpen) showMoreAllOpen.onclick = () => { ui.allOpenShown = (ui.allOpenShown || OPEN_PAGE_SIZE) + OPEN_PAGE_SIZE; render(); };
   const showMoreMy = document.querySelector('[data-act="show-more-my-history"]');
   if (showMoreMy) showMoreMy.onclick = () => { ui.myHistoryShown = (ui.myHistoryShown || 20) + HISTORY_PAGE_SIZE; render(); };
   const showMoreAll = document.querySelector('[data-act="show-more-all-history"]');
@@ -3712,10 +5295,37 @@ function bindAccounts() {
     try { await api(`/api/users/${username}/visible-departments`, { method: 'POST', body: JSON.stringify({ departments }) }); setBanner('Visibility updated.', 'ok'); await refreshData(); }
     catch (e) { setBanner(e.message); render(); }
   });
+  // Removing an account now deletes everything tied to it — so Admin sees exactly what will go
+  // before confirming, and decides separately about drawings (project documents others may need).
   document.querySelectorAll('[data-remove-user]').forEach(btn => btn.onclick = async () => {
-    if (!confirm(`Remove account "${btn.dataset.removeUser}"?`)) return;
-    try { await api(`/api/users/${btn.dataset.removeUser}`, { method: 'DELETE' }); setBanner('Account removed.', 'ok'); await refreshData(); }
-    catch (e) { setBanner(e.message); render(); }
+    const username = btn.dataset.removeUser;
+    let impact;
+    try { impact = await api(`/api/users/${encodeURIComponent(username)}/deletion-impact`); }
+    catch (e) { setBanner(e.message); render(); return; }
+    const lines = [
+      impact.tasksCreated ? `• ${impact.tasksCreated} task(s) they created${impact.openTasksCreated ? ` (${impact.openTasksCreated} still open)` : ''}, with their subtasks` : '',
+      impact.soleAssigneeTasks ? `• ${impact.soleAssigneeTasks} task(s) where they're the only person tagged` : '',
+      impact.sharedTasks ? `• Their tag on ${impact.sharedTasks} shared task(s) — the others on those tasks carry on` : '',
+      impact.replies ? `• ${impact.replies} comment(s) they wrote` : '',
+      impact.followups ? `• ${impact.followups} follow-up tag(s)` : '',
+      impact.approvalsCreated ? `• ${impact.approvalsCreated} approval request(s) they sent` : '',
+      impact.approvalReviews ? `• Their approver slot on ${impact.approvalReviews} approval request(s)` : '',
+      impact.notifications ? `• ${impact.notifications} notification(s), plus their logins and devices` : '• Their logins and devices',
+    ].filter(Boolean);
+    if (!confirm(`Permanently remove ${impact.name} (${username})?\n\nThis will also delete:\n${lines.join('\n')}\n\nThe audit log keeps a record of the removal. This cannot be undone.`)) return;
+    let deleteDrawings = false;
+    if (impact.drawings > 0) {
+      deleteDrawings = confirm(`${impact.name} uploaded ${impact.drawings} drawing(s) to the project library.\n\nOK = delete those drawings too\nCancel = keep the drawings (recommended if others still use them)`);
+    }
+    try {
+      await api(`/api/users/${encodeURIComponent(username)}${deleteDrawings ? '?deleteDrawings=1' : ''}`, { method: 'DELETE' });
+      // Drop them from what's on screen AND from this device's saved copy right away, so reopening
+      // the app can never show the removed account, not even for the second before fresh data loads.
+      userDirectory = userDirectory.filter(u => u.username !== username);
+      saveDataSnapshot();
+      setBanner(`${impact.name}'s account and all related data were removed.`, 'ok');
+      await refreshData();
+    } catch (e) { setBanner(e.message); render(); }
   });
   document.querySelectorAll('[data-reset-password-for]').forEach(btn => btn.onclick = () => {
     const row = document.getElementById(`reset-pw-row-${btn.dataset.resetPasswordFor}`);
@@ -3733,7 +5343,11 @@ function bindAccounts() {
 
 /* ==================== BOOT ==================== */
 render();
-if (session && token) refreshData();
+if (session && token) {
+  // Paint the last known data from this device instantly, then fetch fresh data.
+  loadDataSnapshot().then(had => { if (had) render(); });
+  refreshData().then(() => { lastFullRefreshAt = Date.now(); registerAndroidDevice(); ensurePushSubscription(false); });
+}
 // Guard against interrupting active typing: a full-DOM rebuild every 30s (see refreshData)
 // causes a visible flash and can even make a cursor mid-sentence jump or feel like it "vanished"
 // for a moment. If the person currently has focus in a text field WITH something typed into it,
@@ -3752,4 +5366,7 @@ function userIsActivelyTyping() {
 // wasteful. A person's OWN actions (creating a task, approving, etc.) already refresh
 // immediately via their own explicit refreshData() call right after that action succeeds —
 // this interval only covers picking up everyone else's changes.
-setInterval(() => { if (session && token && !session.mustChangePassword && !userIsActivelyTyping()) refreshData({ background: true }); }, 8000);
+setInterval(() => syncTick(false), 5000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) syncTick(true); });
+window.addEventListener('focus', () => syncTick(true));
+window.addEventListener('online', () => syncTick(true));

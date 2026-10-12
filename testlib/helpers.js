@@ -76,8 +76,17 @@ async function createMember(baseUrl, adminToken, username, name, team) {
   return login(baseUrl, username, 'TestPass123');
 }
 
-function futureDate(daysFromNow) {
-  return new Date(Date.now() + (daysFromNow ?? 5) * 86400000).toISOString().slice(0, 10);
+// Deadlines are wall-clock times in the business timezone (what people type in the app), so test
+// dates must be built in Asia/Kolkata too — toISOString() gives UTC wall-clock, which is 5.5 hours
+// off (and the wrong DATE between midnight and 05:30 IST).
+const BUSINESS_TZ = process.env.APP_TIMEZONE || 'Asia/Kolkata';
+function wallClock(ms) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: BUSINESS_TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date(ms)).filter(x => x.type !== 'literal').map(x => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
 }
+function futureDate(daysFromNow) { return wallClock(Date.now() + (daysFromNow ?? 5) * 86400000).slice(0, 10); }
+// "YYYY-MM-DDTHH:MM" in business time, msFromNow from now.
+function localDateTime(msFromNow) { return wallClock(Date.now() + (msFromNow || 0)); }
 
-module.exports = { startTestServer, api, login, createMember, futureDate };
+module.exports = { startTestServer, api, login, createMember, futureDate, localDateTime };

@@ -1,6 +1,6 @@
 # LOAD_TEST_RESULTS.md
 
-Real measurements from `test/manual-load-test.js`, run directly against a live instance of this
+Real measurements from `scripts/load-benchmark.js`, run directly against a live instance of this
 app in this development sandbox. **Environment caveat that matters for every number below**:
 this sandbox has exactly 1 CPU core (confirmed via `nproc`). Any endpoint whose cost is
 CPU-bound (specifically: bcrypt password hashing) is measuring this sandbox's single-core
@@ -52,7 +52,7 @@ improvement I couldn't measure.
   main request path already, but their own latency under load wasn't separately measured)
 
 ## Recommendation before treating this app as verified for 100+ real concurrent users
-Re-run `node test/manual-load-test.js` directly on the actual target production server (or a
+Re-run `node scripts/load-benchmark.js` directly on the actual target production server (or a
 hardware-equivalent staging box), specifically to get a real login-latency number on real
 multi-core hardware — the number in this document for login is a sandbox artifact, not
 production truth, and shouldn't be quoted as this app's real login performance.

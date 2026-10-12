@@ -1,0 +1,28 @@
+# Nightly off-site database backup (free on GitHub Actions).
+# Setup once: GitHub repo → Settings → Secrets and variables → Actions → New secret
+#   DATABASE_URL = the Supabase connection string (Project Settings → Database → URI, "Session" pooler)
+# Each run uploads the backup as a workflow artifact kept for 30 days (Actions → this workflow → run →
+# Artifacts). Monthly: download one and test-restore it (docs/DISASTER_RECOVERY.md).
+name: Nightly database backup
+on:
+  schedule:
+    - cron: '30 20 * * *'   # 02:00 IST every day
+  workflow_dispatch: {}
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: npm ci --omit=dev --ignore-scripts || npm install --omit=dev --ignore-scripts
+      - name: Back up
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: node scripts/backup-database.js backups
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mihir-db-backup-${{ github.run_id }}
+          path: backups/
+          retention-days: 30

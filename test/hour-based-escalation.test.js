@@ -1,3 +1,6 @@
+// Deterministic regardless of time of day: the 10:00/14:00/18:00 window rules are tested in
+// test/reminder-engine.test.js; here they are switched off so only the rules under test fire.
+process.env.REMINDER_WINDOWS = 'none';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Client } = require('pg');
@@ -27,6 +30,8 @@ test('hour-based escalation: 6hr recurring reminder, 48hr urgent warning, 60hr a
     const raw = await getRawClient();
     await raw.query('UPDATE task_assignees SET escalation_baseline_at=$1, last_recurring_reminder_at=$2 WHERE task_id=$3',
       [new Date(Date.now() - 13 * 3600000).toISOString(), new Date(Date.now() - 6.5 * 3600000).toISOString(), id]);
+    // Move the delivery log back by the same 6.5 hours, so the simulated time is consistent (anti-spam gap).
+    await raw.query("UPDATE notification_deliveries SET sent_at = sent_at - interval '6.5 hours' WHERE sent_at IS NOT NULL");
     await raw.end();
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
     const notifs = (await api(baseUrl, '/api/notifications', { token: lateToken })).data.items;

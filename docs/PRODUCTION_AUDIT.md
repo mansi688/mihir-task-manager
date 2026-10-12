@@ -1,176 +1,100 @@
-# PRODUCTION_AUDIT.md
+# MIHIR Task Manager — Production Audit
 
-Findings from an actual code audit and live testing against this specific codebase — every
-item below was found by inspecting the real implementation and, where possible, verified by
-actually running it, not inferred from the architecture in the abstract.
+Updated October 2026 from the code in this repository and read-only checks of the live
+Render service and Supabase database. Replaces the earlier audit (SQLite era).
+Companion documents: `docs/PHASE0_REPORT.md` (what Phase 0 fixed), `docs/IMPLEMENTATION_PLAN.md`.
 
-## Legend
-**P0** = data loss / security breach / outage risk. **P1** = major feature failure or serious
-concurrency risk. **P2** = degraded UX or inefficiency, recoverable. **P3** = minor/cosmetic.
-**Status**: FIXED (verified) / MITIGATED (partially addressed) / NOT FIXED (documented gap)
+## 1. Architecture
 
----
+```
+Browser / installed web app / Android APK (WebView)
+        │  HTTPS (Cloudflare → Render)
+        ▼
+Node 22 + Express — ONE process: API + static PWA + background timers   (Render free, Oregon)
+        │  pg pool (max 10, 25 s statement timeout)
+        ▼
+PostgreSQL — Supabase free, ap-northeast-1 (Tokyo)          ~120 ms per query round trip
+```
+- Code size: backend ≈ 4,000 lines (`server.js`, `db.js`, `task-import.js`, `task-export.js`, `migrations.js`); frontend ≈ 5,000 lines (`app.js`, vanilla JS, morph-based re-render).
+- Android app: thin WebView shell (`android/`), built with `android/build-apk.sh`.
 
-## P0 — CRITICAL
+## 2. Database (28 tables)
 
-### P0-1 — Task creation was not atomic — FIXED, verified
-**File**: `server.js` (task creation handler), `db.js` (`createTask`/`addTaskAssignee`)
-**Problem**: creating a task did a separate INSERT for the task row, then a separate INSERT per
-assignee, then a separate INSERT per notification — with no transaction. If any statement in the
-middle threw, everything before the throw was already permanently committed, leaving an orphaned
-partial task.
-**Fix**: wrapped the whole sequence in a real better-sqlite3 transaction (`db.runInTransaction`).
-**Verified**: a dedicated fault-injection test (`test/transaction-rollback.test.js`) deliberately
-throws mid-sequence and confirms zero rows survive.
-**Affects 100+ users**: yes. **Affects data integrity**: yes, directly.
+| Group | Tables |
+|---|---|
+| People & access | users, teams, sessions, push_subscriptions |
+| Tasks | tasks, task_assignees, task_checklist_items, task_followups, task_replies, task_phases, projects |
+| Approvals | approval_requests, approval_reviewers, approval_history |
+| Documents | drawings, drawing_sections, import_files |
+| Notifications & audit | notifications, audit_log |
+| Reports | period_awards, period_tracking |
+| Phase 0 foundation (empty) | schema_migrations, task_activity_events, notification_deliveries, automation_jobs, automation_job_runs, integration_events, ai_usage_events, file_objects |
 
-### P0-2 — A code-ordering bug that would have crashed the server on startup — FIXED, verified
-**File**: `server.js`
-**Problem**: introduced this session while adding rate limiting — a `const` rate limiter was
-referenced by a route registered before its own declaration, throwing a ReferenceError at
-startup (const is not hoisted).
-**Caught by**: actually starting the server and reading the crash, not by review alone.
-**Fix**: moved the rate-limiter definitions before their first use. Verified: fresh process
-start succeeds and `/health` responds.
+Facts: 87 tasks, 26 users, 24 MB (≈10 MB of it attached files stored as base64 text). RLS enabled
+on all tables (app connects as the owner role). **No foreign keys** — integrity is enforced in code;
+0 orphan rows found. Timestamps: TEXT ISO-8601 in older tables, TIMESTAMPTZ in new ones.
 
----
+## 3. APIs (107 routes)
 
-### P0-3 — Real employee PII file was not excluded from git — FIXED, verified
-**File**: `employees-data.json` (74 real employees' names and emails)
-**Problem**: this file was present in the project but not listed in `.gitignore` — if pushed to
-any git repository, even a private one that later gets made public or shared by mistake, this
-real PII would be permanently committed to history.
-**Fix**: added to `.gitignore`. Verified directly: simulated a fresh `git add -A` and confirmed
-the file is correctly excluded (only `.gitignore` itself gets staged) — not just assumed from
-reading the ignore pattern.
-**Strengthened guidance**: `DEPLOY.md` now instructs deleting this file from the server entirely
-once the one-time import completes, rather than merely offering that as an option.
-**Affects security/privacy**: yes, directly — this was flagged and fixed at the user's own
-request after they identified the real deployment risk.
+| Area | Routes | Notes |
+|---|---|---|
+| Tasks | 34 | create, import/export, assign, submit/approve/reject, deadline, archive, checklist, follow-ups, subtasks |
+| Reports | 14 | dashboards, leaderboards, performance, HR roster, peak hours (cached, version-invalidated) |
+| Users / teams | 16 | accounts, departments, directory |
+| Auth | 9 | login, password change/reset (email OTP), logout everywhere, `/me` |
+| Approvals | 6 | document approvals |
+| Push / device | 6 | web push subscribe, Android device token + polling |
+| Other | 22 | drawings, projects, phases, notifications, schedules, sync, audit log, AI deadline check, health/readiness/version |
 
----
+No API versioning yet (`/api/...`). Clients: the bundled frontend only.
 
-## P1 — HIGH
+## 4. Current task history (the thing Phase 1 replaces)
 
-### P1-1 — Login collapses under concurrent load — MITIGATED, not fully resolved
-**File**: `server.js` (`/api/auth/login`)
-**Problem**: password verification used bcryptjs (pure JavaScript) with synchronous
-`compareSync`. A synchronous CPU-bound call fully blocks Node's single JS thread — 100
-concurrent logins had to complete one full hash comparison each before the next could begin.
-**Measured before**: 100 concurrent logins -> p50 4.4s, p99 8.8s, 1 request errored.
-**Fix applied**: swapped bcryptjs for native `bcrypt` (real native addon, prebuilt binary
-confirmed present and loadable, 0 npm vulnerabilities), converted the login handler to async
-`bcrypt.compare()`, which offloads the comparison to libuv's thread pool instead of blocking.
-**Measured after**: p50 3.5s, p99 6.9s — a real but modest improvement, not the dramatic fix
-this architecture change should normally produce.
-**Root cause of the modest improvement, found by direct measurement**: this sandbox has exactly
-1 CPU core (confirmed via `nproc`). Async bcrypt genuinely offloads to a thread pool, but with
-only one physical core, there is no real hardware parallelism to exploit. A single
-`bcrypt.compare` at cost factor 10 measured 68ms here; 100 of them on 1 core will always take
-roughly 100 x 68ms regardless of sync or async.
-**What this means for real production**: on any server with more than 1 CPU core, this same fix
-should show dramatically better results, since libuv's thread pool can genuinely run multiple
-bcrypt operations across multiple physical cores at once. This was NOT re-verified on multi-core
-hardware in this pass — architecturally correct, mechanism proven, but the actual multi-core
-number could not be produced in this sandbox.
-**Deliberately not done**: reducing bcrypt's cost factor to improve the timing. That trades real
-password-hash security for a sandbox-specific artifact.
-**Recommendation**: provision at least 2 vCPUs for the real server, and re-run
-`test/manual-load-test.js` on the actual target hardware before trusting these numbers there.
+The task "history" is **not stored as history**. The browser rebuilds a timeline each time from
+scattered columns: `tasks.created_at`, per-assignee `submitted_at` / `completed_at` / decisions,
+`task_replies`, `closed_at` / `cancelled_at`. Consequences:
+- deadline changes, people added/removed, level reshuffles, follow-ups, reassignments, imports and
+  archive actions **never appear** in a task's history (some appear only in the admin audit log);
+- old submission/approval timestamps are overwritten when work is resubmitted, so earlier rounds
+  are lost;
+- there is no actor/department/source per event, no filtering, no paging.
 
-### P1-2 — No general rate limiting beyond login and OTP — PARTIALLY MITIGATED
-Login now has an IP-based limiter (200 req/5min — deliberately generous so a shared-office IP
-with many real employees is never falsely blocked; the per-account lockout after 5 failed
-attempts is the real defense against a targeted brute-force). Not yet covered: AI endpoint,
-report-generation endpoints, general API abuse. Documented limitation: this limiter is in-memory
-and per-process — multiple concurrent server instances would each track separate counts, meaning
-the real effective limit becomes (configured limit x instance count). Not needed at this app's
-current single-instance scale.
+## 5. Integrations
 
-### P1-3 — listAllTasks() has no limit at all — MITIGATED (defensive cap added)
-**File**: `db.js`
-`SELECT * FROM tasks ORDER BY created_at DESC` with no LIMIT, feeding Admin's All Tasks view and
-several reports. At this app's current scale this is not an active crisis, but it's a genuinely
-unbounded query that will degrade as history accumulates over years. Added a defensive
-`LIMIT 5000` — far above any realistic near-term task count for this company's scale, and enough
-to prevent literal unbounded memory growth. **Still recommended as a real follow-up**: proper
-pagination (LIMIT/OFFSET or a cursor) across every consumer of this function, since a hard cap
-alone means the 5001st-oldest task would eventually silently stop appearing rather than being
-paginated to — acceptable for now given the timescale involved, not a permanent solution.
+| Integration | State | Notes |
+|---|---|---|
+| Web Push (VAPID) | Live (keys set Oct 1) | free; prompt per device |
+| Android notifications | Polling every ~15 min (07–22 h) | device token, notifications-only scope |
+| Email (SMTP) | Optional | password-reset codes only |
+| WhatsApp (Meta Cloud API) | **Outbound only** | reminder messages; **no webhook / no inbound messages** |
+| AI (Anthropic, `claude-haiku-4-5`) | One feature | deadline-risk wording; hard-coded provider; **no usage/cost logging** |
+| Excel / CSV | Import, export, schedule timestamps | exceljs |
+| Gmail, Google Meet, document/audio/video AI | None | future phases |
 
-### P1-4 — No uncaughtException handler — FIXED
-Only `unhandledRejection` existed; a genuinely uncaught synchronous exception had no handler at
-all. Added one that logs the real error and exits cleanly for a process manager to restart.
+## 6. Background work
 
-### P1-5 — No graceful shutdown — FIXED
-SIGTERM/SIGINT previously killed the process outright, mid-request if one was in flight. Added
-real graceful shutdown with a 10-second forced-exit safety net.
+Five `setInterval` timers inside the web process: task reminders, escalations, deadline reminders,
+weekly admin digest (hourly/daily), period awards (daily). Not persisted, not retried, run on every
+instance, stop while the free server sleeps. → Phase 7 (job engine).
 
-### P1-6 — No health/readiness endpoints — FIXED
-Added `/health` and `/ready` (confirms the database connection is genuinely responsive). Neither
-requires auth, neither exposes anything sensitive.
+## 7. Deployment
 
----
+GitHub → Render auto-deploy on push (`npm install`, `node backend/server.js`). No render.yaml, no
+CI workflow, no staging environment. A second Render service `mihir-task-manager-1` exists from the
+same repo (appears unused). Free plans everywhere: server sleeps after 15 idle minutes; Supabase
+free has daily backups without point-in-time restore.
 
-## P2 — MEDIUM
+## 8. Risks and technical debt (prioritised)
 
-### P2-1 — No security headers — FIXED
-Added X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy. Deliberately
-NOT added: a strict Content-Security-Policy — this app's inline-script/style usage hasn't been
-audited against one, and adding an untested CSP risks silently breaking the frontend. Flagged as
-a real follow-up, not shipped untested.
-
-### P2-2 — Permissive CORS by default — MITIGATED
-Made configurable via `ALLOWED_ORIGINS`, defaulting to permissive only when unset so existing
-same-origin deployments aren't silently broken. A real deployment should set this explicitly.
-
-### P2-3 — No dedicated dependency-audit sweep this session — PARTIAL
-npm audit is currently clean, but a genuine vulnerability (qs array-limit bypass,
-GHSA-x5fp-wj9c-mxmx, disclosed within the last week) was found and fixed only as a side effect
-of this session's own dependency changes, not a deliberate sweep. Recommend running npm audit
-routinely, not just reactively.
-
-### P2-4 — No structured/correlated logging — FIXED
-Added a request-ID/timing middleware and a level-filtered JSON logger (LOG_LEVEL env var:
-ERROR/WARN/INFO/DEBUG). Every request now logs method, path, status, duration, and username
-where known. Verified directly: the login password never appears in any log line (the one
-match found during testing was the pre-existing, intentional first-run setup banner, not a leak
-from this new code). Error responses now also surface their request ID to the caller.
-
-### P1-2 — No general rate limiting beyond login and OTP — FURTHER MITIGATED
-Added a rate limiter to the AI deadline-check endpoint specifically (30 req/5min per IP), since
-it calls a real external paid API — worth protecting against runaway abuse. Report-generation
-endpoints remain unlimited; given this app's actual usage pattern (one company's own
-~75-100 employees, not a public API), the practical risk is low, but it's an honest remaining
-gap, not claimed as fully covered.
-
-### New — Authorization matrix — DONE
-`AUTHORIZATION_MATRIX.md` built from this project's actual existing test coverage (cross-checked
-two entries directly against the real test files rather than trusting the summary), not invented
-as an abstract exercise. Explicitly notes its own limitation: it reflects what's *tested*, not an
-independent from-scratch enumeration of every possible boundary.
-
-### New — Multi-instance readiness analysis — DONE
-`MULTI_INSTANCE_READINESS.md` identifies every piece of process-local state. The most important,
-concrete finding: **the 4 scheduled background jobs (reminders/escalation/digest) have no
-cross-instance locking** — running 2 server instances today would double-send every reminder and
-escalation, a real bug, not a theoretical one. Rate limiters have the same category of issue but
-lower severity (a security degradation, not an incorrect user-facing action).
-
----
-
-## P3 — LOW
-- No API version/build info exposed anywhere.
-- No full accessibility audit this session (earlier session covered static checks only: viewport
-  meta, responsive breakpoints).
-
----
-
-## Summary counts
-- P0: 3 found, 3 fixed and verified
-- P1: 6 found, 4 fixed/verified, 1 partially mitigated, 1 not fixed
-- P2: 4 found, 2 fixed, 1 mitigated, 1 not done
-- P3: 2 found, deferred
-
-Every status above reflects something actually found in this codebase and, where marked FIXED,
-verified by running real code against a real server — not asserted from reading alone.
+| # | Risk | Impact | Phase |
+|---|---|---|---|
+| 1 | Backups: daily only (free), no automated off-site copy | Data-loss window up to 24 h; RPO ≤ 15 min **not achievable on the free plan** | 8 (paid decision) |
+| 2 | Timers inside the web process; lost while sleeping; no retry | Missed/duplicate reminders | 2, 7 |
+| 3 | Task history incomplete (section 4) | Weak auditability | 1 |
+| 4 | Files inside PostgreSQL | DB fills (500 MB free limit); slow backups | 8 (storage) — before any media/AI work |
+| 5 | No foreign keys | Integrity depends on code | 8 |
+| 6 | Server (Oregon) far from DB (Tokyo) and users (India) | Latency | 8 |
+| 7 | AI provider hard-coded, no cost tracking | Uncontrolled cost once AI grows | before 3 |
+| 8 | Large files: `server.js` ~2,600 lines, `app.js` ~5,000 lines | Change risk | refactor only where a phase touches code |
+| 9 | No staging environment | Changes go straight to production | 8 (can start now) |
+| 10 | CORS open by default | Low (bearer tokens) | set `ALLOWED_ORIGINS` |

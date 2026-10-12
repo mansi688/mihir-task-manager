@@ -1,51 +1,75 @@
-// Restores the database from a backup file created by backup-database.js.
-// Run from the project folder:   node scripts/restore-database.js backups/taskmanager-2026-09-01T....db
+#!/usr/bin/env node
+// Restores a backup made by scripts/backup-database.js into an EMPTY database.
 //
-// STOP THE SERVER FIRST — restoring while it's running would restore into a file the live
-// server has open, which is not safe. This script refuses to run if it looks like something is
-// actively holding the current database open, but stopping the server yourself is still the
-// right first step.
+//   DATABASE_URL=<NEW, EMPTY database> node scripts/restore-database.js backups/mihir-backup-….json.gz
+//
+// Safety: refuses to run if the target already has any users or tasks — it can never overwrite
+// live data. Creates the schema with the app's own startup code (same version as this code),
+// inserts every row in ONE transaction (all-or-nothing), resets ID sequences, then verifies
+// row counts against the backup. Point the app at the restored database only after it says OK.
+require('dotenv').config();
 const fs = require('fs');
-const path = require('path');
+const zlib = require('zlib');
 
-// Resolved relative to the PROJECT ROOT, matching backup-database.js and backend/db.js exactly
-// — all three must agree on this path, or a restore could silently target the wrong file.
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'taskmanager.db');
-const backupFile = process.argv[2];
-
-if (!backupFile) {
-  console.error('Usage: node scripts/restore-database.js <path-to-backup-file>');
-  console.error('Example: node scripts/restore-database.js backups/taskmanager-2026-09-01T12-00-00-000Z.db');
-  process.exit(1);
-}
-if (!fs.existsSync(backupFile)) {
-  console.error(`Backup file not found: ${backupFile}`);
-  process.exit(1);
-}
-
-// A quick, honest safety check — not foolproof, but catches the most common mistake (forgetting
-// to stop the server) by refusing if the current DB's WAL file is unusually large/recent,
-// which usually means something is actively writing to it right now.
-const walPath = DB_PATH + '-wal';
-if (fs.existsSync(walPath)) {
-  const walAgeMs = Date.now() - fs.statSync(walPath).mtimeMs;
-  if (walAgeMs < 5000) {
-    console.error('The database\'s WAL file was just modified — it looks like the server may still be running.');
-    console.error('Stop the server first (Ctrl+C in its terminal, or however you normally stop it), then run this again.');
-    process.exit(1);
+(async () => {
+  const file = process.argv[2];
+  if (!file || !fs.existsSync(file)) { console.error('Usage: node scripts/restore-database.js <backup .json.gz>'); process.exit(1); }
+  if (!process.env.DATABASE_URL) { console.error('Set DATABASE_URL to the EMPTY target database first.'); process.exit(1); }
+  const dump = JSON.parse(zlib.gunzipSync(fs.readFileSync(file)).toString('utf8'));
+  if (dump.format !== 'mihir-backup/1') { console.error('Not a MIHIR backup file.'); process.exit(1); }
+  const db = require('../backend/db');
+  const pool = db.pool;
+  // Refuse non-empty targets BEFORE touching anything.
+  try {
+    const r = await pool.query("SELECT (SELECT COUNT(*) FROM users) u, (SELECT COUNT(*) FROM tasks) t");
+    if (Number(r.rows[0].u) > 0 || Number(r.rows[0].t) > 0) { console.error('REFUSED: the target database already has users or tasks. Restore only into a new, empty database.'); process.exit(2); }
+  } catch (e) { /* tables don't exist yet — empty database, fine */ }
+  await db.init(); // creates the full schema (and a first-run admin, removed below)
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const target = new Set((await client.query("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()")).rows.map(r => r.tablename));
+    // Task history is append-only: allow the restore's own cleanup of the fresh schema.
+    await client.query("SET LOCAL mihir.allow_history_delete = 'on'");
+    for (const t of ['task_activity_events', 'task_assignees', 'task_replies', 'task_checklist_items', 'task_followups', 'approval_reviewers', 'approval_history', 'automation_job_runs'])
+      if (target.has(t)) await client.query(`DELETE FROM "${t}"`);
+    for (const t of Object.keys(dump.tables)) if (target.has(t) && t !== 'schema_migrations') await client.query(`DELETE FROM "${t}"`);
+    // Parents before children (foreign keys since migration 003).
+    const FIRST = ['users', 'teams', 'projects', 'task_phases', 'tasks', 'approval_requests', 'automation_jobs'];
+    const ordered = Object.entries(dump.tables).sort(([a], [b]) => {
+      const ia = FIRST.indexOf(a), ib = FIRST.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+    });
+    for (const [t, { columns, rows }] of ordered) {
+      if (!target.has(t) || t === 'schema_migrations' || rows.length === 0) continue;
+      const cols = columns.map(c => `"${c}"`).join(',');
+      const per = Math.max(1, Math.floor(30000 / columns.length));
+      for (let i = 0; i < rows.length; i += per) {
+        const chunk = rows.slice(i, i + per);
+        let n = 0;
+        const values = chunk.map(() => `(${columns.map(() => `$${++n}`).join(',')})`).join(',');
+        await client.query(`INSERT INTO "${t}" (${cols}) VALUES ${values}`, chunk.flat().map(v => (v && typeof v === 'object' && !(v instanceof Date) ? JSON.stringify(v) : v)));
+      }
+    }
+    // Make new rows continue after the restored IDs.
+    const seqs = (await client.query(`SELECT c.relname AS tbl, a.attname AS col, pg_get_serial_sequence(c.relname, a.attname) AS seq
+      FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid JOIN pg_namespace ns ON ns.oid = c.relnamespace
+      WHERE ns.nspname = current_schema() AND c.relkind = 'r' AND a.attnum > 0 AND pg_get_serial_sequence(c.relname, a.attname) IS NOT NULL`)).rows;
+    for (const s of seqs) await client.query(`SELECT setval('${s.seq}', COALESCE((SELECT MAX("${s.col}") FROM "${s.tbl}"), 0) + 1, false)`);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK'); client.release();
+    console.error('Restore FAILED and was rolled back — the target is unchanged:', e.message); process.exit(1);
   }
-}
-
-if (fs.existsSync(DB_PATH)) {
-  const safetyCopy = `${DB_PATH}.before-restore-${Date.now()}`;
-  fs.copyFileSync(DB_PATH, safetyCopy);
-  console.log(`Your current database was saved to "${safetyCopy}" first, just in case — delete it once you've confirmed the restore worked.`);
-}
-
-fs.copyFileSync(backupFile, DB_PATH);
-// A restored file may carry stale WAL/SHM files from its own backup moment — remove any leftover
-// ones from the CURRENT location so the server starts clean against the restored file.
-[DB_PATH + '-wal', DB_PATH + '-shm'].forEach(f => { try { fs.unlinkSync(f); } catch (e) { /* fine if none existed */ } });
-
-console.log(`Restored "${DB_PATH}" from "${backupFile}".`);
-console.log('Start the server normally now (npm start) and confirm your data looks right.');
+  client.release();
+  let ok = true;
+  for (const [t, { rows }] of Object.entries(dump.tables)) {
+    if (t === 'schema_migrations') continue;
+    const n = Number((await pool.query(`SELECT COUNT(*) c FROM "${t}"`)).rows[0].c);
+    const good = n === rows.length; if (!good) ok = false;
+    console.log(`  ${good ? 'OK ' : 'BAD'} ${t.padEnd(28)} ${n}/${rows.length}`);
+  }
+  console.log(ok ? `Restore OK — ${file} (backup taken ${dump.createdAt}).` : 'Restore finished with MISMATCHES — do not use this database.');
+  await pool.end();
+  process.exit(ok ? 0 : 1);
+})();

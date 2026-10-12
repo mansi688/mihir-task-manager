@@ -1,6 +1,9 @@
+// Deterministic regardless of time of day: the 10:00/14:00/18:00 window rules are tested in
+// test/reminder-engine.test.js; here they are switched off so only the rules under test fire.
+process.env.REMINDER_WINDOWS = 'none';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
+const { startTestServer, api, login, createMember, futureDate, localDateTime } = require('../testlib/helpers');
 
 test('individual deadlines: correctly set, retrievable, and reset the reminder cycle when reassigned', async (t) => {
   const { baseUrl, getRawClient, stop } = await startTestServer();
@@ -12,7 +15,7 @@ test('individual deadlines: correctly set, retrievable, and reset the reminder c
   const id = create.data.id;
 
   await t.test('setting an individual deadline stores and returns it correctly', async () => {
-    const indivDeadline = new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 16);
+    const indivDeadline = localDateTime(3 * 3600000);
     const res = await api(baseUrl, `/api/tasks/${id}/assignees/bob_deadline/deadline`, { method: 'POST', token: adminToken, body: { deadline: indivDeadline } });
     assert.equal(res.status, 200);
     const task = await api(baseUrl, `/api/tasks/${id}`, { token: adminToken });
@@ -31,7 +34,7 @@ test('individual deadlines: correctly set, retrievable, and reset the reminder c
       [new Date().toISOString(), new Date().toISOString(), id]);
     await raw.end();
 
-    const newDeadline = new Date(Date.now() + 20 * 3600000).toISOString().slice(0, 16);
+    const newDeadline = localDateTime(20 * 3600000);
     await api(baseUrl, `/api/tasks/${id}/assignees/bob_deadline/deadline`, { method: 'POST', token: adminToken, body: { deadline: newDeadline } });
 
     const task = await api(baseUrl, `/api/tasks/${id}`, { token: adminToken });
@@ -47,7 +50,7 @@ test('individual deadlines: correctly set, retrievable, and reset the reminder c
   });
 });
 
-test('deadline-approaching reminders fire at 24h, 12h, 6h, and 2h tiers independently, each exactly once', async (t) => {
+test('deadline-approaching reminders: tiers fire once each; tiers crossed together are combined into one message', async (t) => {
   const { baseUrl, getRawClient, stop } = await startTestServer();
   t.after(() => stop());
   const adminToken = await login(baseUrl, 'admin', 'admin123');
@@ -55,32 +58,36 @@ test('deadline-approaching reminders fire at 24h, 12h, 6h, and 2h tiers independ
 
   const create = await api(baseUrl, '/api/tasks', { method: 'POST', token: adminToken, body: { title: 'Tiered Reminder Task', priority: 'medium', deadline: futureDate(10), assignedToList: ['bob_tiers'] } });
   const id = create.data.id;
-  const indivDeadline = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 16);
+  const indivDeadline = localDateTime(8 * 3600000);
   await api(baseUrl, `/api/tasks/${id}/assignees/bob_tiers/deadline`, { method: 'POST', token: adminToken, body: { deadline: indivDeadline } });
 
-  await t.test('at 8 hours remaining: the 24h AND 12h tiers fire (both thresholds already crossed), but not 6h or 2h yet', async () => {
+  await t.test('at 8 hours remaining: the 24h and 12h tiers are combined into ONE message (12h), not 6h or 2h yet', async () => {
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
+    // Phase 2: tiers that fire in the same run are COMBINED into one message (the most urgent).
     const notifs = (await api(baseUrl, '/api/notifications', { token: bobToken })).data.items.filter(n => n.type === 'deadline_soon');
-    assert.equal(notifs.length, 2, 'both the 24h and 12h tiers should fire in the same check once 8 hours remain');
-    assert.ok(notifs.some(n => n.message.includes('24 hours')));
-    assert.ok(notifs.some(n => n.message.includes('12 hours')));
+    assert.equal(notifs.length, 1, 'the 24h and 12h tiers crossed together are combined into one message');
+    assert.ok(notifs[0].message.includes('12 hours'), 'the more urgent tier is the one sent');
     assert.ok(!notifs.some(n => n.message.includes('6 hours')), '6-hour tier must not fire yet with 8 hours remaining');
+    const raw = await getRawClient();
+    const combined = (await raw.query("SELECT status, failure_reason FROM notification_deliveries WHERE idempotency_key LIKE 'tier24:%'")).rows;
+    await raw.end();
+    assert.equal(combined[0].status, 'cancelled'); assert.match(combined[0].failure_reason, /combined into tier12/);
   });
 
-  await t.test('running the check again immediately does not duplicate the 24h or 12h notifications', async () => {
+  await t.test('running the check again immediately does not duplicate it', async () => {
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
     const notifs = (await api(baseUrl, '/api/notifications', { token: bobToken })).data.items.filter(n => n.type === 'deadline_soon');
-    assert.equal(notifs.length, 2, 'no tier should ever fire twice');
+    assert.equal(notifs.length, 1, 'no tier should ever fire twice');
   });
 
   await t.test('once only 5 hours remain, the 6-hour tier fires as a NEW, additional notification', async () => {
     const raw = await getRawClient();
-    const fiveHoursOut = new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 16);
+    const fiveHoursOut = localDateTime(5 * 3600000);
     await raw.query("UPDATE task_assignees SET individual_deadline=$1 WHERE task_id=$2 AND username='bob_tiers'", [fiveHoursOut, id]);
     await raw.end();
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
     const notifs = (await api(baseUrl, '/api/notifications', { token: bobToken })).data.items.filter(n => n.type === 'deadline_soon');
-    assert.equal(notifs.length, 3, 'the 6-hour tier should now have fired in addition to the earlier two');
+    assert.equal(notifs.length, 2, 'the 6-hour tier fires as a new message in addition to the earlier one');
     assert.ok(notifs.some(n => n.message.includes('6 hours')));
   });
 });

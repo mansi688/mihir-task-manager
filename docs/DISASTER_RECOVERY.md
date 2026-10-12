@@ -1,44 +1,35 @@
-# DISASTER_RECOVERY.md
+# Disaster recovery
 
-## Database corruption or accidental deletion
-1. Stop the server.
-2. `node scripts/restore-database.js backups/<most-recent-backup>.db` — automatically saves a safety
-   copy of whatever's currently there first, refuses to run if the server looks still active.
-3. Start the server, verify data looks right before telling anyone it's back up.
-**Verified this session**: a real backup → total deletion → restore round trip, confirmed both
-a real task and a real imported employee's data survived intact.
+## Targets (proposed — to be approved by management)
+| | Now (Supabase Free) | After Supabase Pro + PITR |
+|---|---|---|
+| RPO (max data lost) | ≤ 24 h (nightly GitHub backup + Supabase daily) | ≤ 15 min (point-in-time recovery add-on) |
+| RTO (time to restore service) | ≤ 2 h | ≤ 2 h |
+| Restore test | Monthly (download a nightly backup, `npm run restore` into a scratch database) | Monthly |
+| Backup retention | 30 days (GitHub artifacts) + Supabase's own | Per Pro plan + 30 days |
+| Owner | Admin (Mihir Sabadra) | |
 
-## Server failure (hardware/hosting failure)
-1. Provision a new server following `DEPLOY.md`.
-2. Restore the most recent backup (see above) onto it before starting the app for the first time.
-3. Point DNS/whatever routes traffic at the new server.
-**Gap, honestly**: backups are currently local to the server they're taken on
-(`backups/` folder) — if the server itself is destroyed (not just its database corrupted), the
-backup goes with it unless it's also been copied off-server. Recommend: a cron job that also
-copies each backup to separate storage (another machine, cloud storage) — not built this
-session; `backup-database.js` produces the file, but off-server replication of it is a real
-follow-up, not yet automated.
+A backup counts only after a successful test restore.
 
-## Deployment rollback
-1. Before every deploy: `node scripts/backup-database.js`.
-2. If a deploy introduces a bug: revert the code (git) to the previous known-good commit,
-   restart the server. The database schema in this app is additive (new columns via
-   `ensureColumn`, never destructive), so an old code version reading a newer database is
-   generally safe — but this has not been exhaustively tested across every possible version
-   pairing.
-3. Only restore the database from backup if the bad deploy actually corrupted data, not merely
-   introduced a bug — restoring loses everything written since that backup, so it's the more
-   drastic option, not the default one.
+## Backups
+- **Nightly:** `.github/workflows/backup.yml` (02:00 IST) → artifact kept 30 days. Setup: repo secret `DATABASE_URL`.
+- **Before every deploy / risky change:** `DATABASE_URL=… npm run backup`.
+- Files (recordings, voice notes): Supabase Storage — recordings are temporary by design (30 days); tasks/history do not depend on them.
 
-## Credential compromise (JWT_SECRET or a real account leaked)
-1. Generate a fresh `JWT_SECRET`, update `.env`, restart the server — this immediately
-   invalidates every existing login token for everyone (a real, if blunt, mitigation).
-2. For a specific compromised account: `node scripts/reset-password.js <username> <newpassword>`, or use
-   Admin's own Accounts page — either way forces that account through a real password change.
-3. Review `Audit Log` for anything the compromised account did while compromised.
+## Restore (database)
+1. Create a new empty database (new Supabase project, or local PostgreSQL to test).
+2. `DATABASE_URL="<new empty DB>" npm run restore -- backups/mihir-backup-<time>.json.gz` → refuses non-empty
+   targets; restores everything in one transaction; prints OK per table.
+3. Render → Environment → `DATABASE_URL` = new database → save (redeploys). 4. `/readiness` ready, log in, spot-check tasks.
 
-## What has NOT been tested as a disaster scenario this session
-- Actual hardware/hosting-provider failure (can't simulate real infrastructure loss in a sandbox).
-- Backup restoration onto a genuinely different machine/OS than where the backup was taken.
-- Recovery timing (how long a real restore takes at real production data volume, not this
-  sandbox's small test dataset).
+## Scenarios
+| Failure | Do this |
+|---|---|
+| Database down (Supabase incident) | Status: status.supabase.com. App shows errors; data safe. If prolonged: restore latest backup to a new project (above). |
+| Bad migration | Migrations are transactional — a failed one leaves nothing half-done and the new deploy fails to start; Render keeps the old version. Roll back in Render. |
+| Accidental deletion / data corruption | Restore the last good backup into a scratch DB, copy the needed rows back (or switch DATABASE_URL). With Pro + PITR: restore to the minute before. |
+| Render outage / service broken | Rollback to previous deploy; if Render is down, deploy the same repo to another Node host with the same env vars. |
+| Worker / jobs stuck | System Health → dead-letter jobs → fix cause → Retry. Jobs left "running" by a crashed process are recovered automatically after 10 min. |
+| Storage failure | Uploads of recordings fail clearly; tasks unaffected. Meetings can still be processed without storage (recording not kept). |
+| External API failure (AI, WhatsApp, push) | Normal task management continues. AI endpoints return a clear message; WhatsApp/ingestion jobs retry with backoff, then dead-letter for manual retry. |
+| Credential compromise | See SECURITY.md → rotate, redeploy, review Audit Log. |

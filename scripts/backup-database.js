@@ -1,55 +1,51 @@
-// Creates a timestamped backup of the database — safe to run while the server is live, since
-// better-sqlite3's WAL mode allows reading a consistent snapshot without locking out real users.
-// Run manually any time, or schedule it (e.g. a nightly cron job / Windows Task Scheduler entry)
-// calling: node scripts/backup-database.js
+#!/usr/bin/env node
+// Logical backup of the PostgreSQL database — every table in the app's schema — into ONE gzip
+// file. Pure Node + pg (no pg_dump needed), so it runs on a laptop, on Render, or in a scheduled
+// GitHub Action. Read-only: it never changes the database.
 //
-// Keeps the most recent 14 backups by default and deletes older ones automatically, so backups
-// don't silently fill up the disk forever. Change KEEP_COUNT below if you want more/fewer.
+//   DATABASE_URL=postgres://… node scripts/backup-database.js [output-dir]
+//
+// Output: backups/mihir-backup-YYYY-MM-DDTHH-MM-SS.json.gz plus a printed summary
+// (row counts per table + SHA-256 of the file). Keep copies OFF the database provider
+// (e.g. Google Drive) — see docs/DISASTER_RECOVERY.md. A backup only counts once a test
+// restore of it has succeeded (scripts/restore-database.js into an EMPTY database).
+require('dotenv').config();
+const { Pool } = require('pg');
+const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
+const crypto = require('crypto');
 
-// Resolved relative to the PROJECT ROOT (this script's own folder, one level up), not
-// process.cwd() — so this always finds the same database file regardless of which directory
-// you happen to run this script from.
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'taskmanager.db');
-const BACKUP_DIR = process.env.BACKUP_DIR || path.join(__dirname, '..', 'backups');
-const KEEP_COUNT = 14;
-
-if (!fs.existsSync(DB_PATH)) {
-  console.error(`No database found at "${DB_PATH}" — nothing to back up yet. Has the server been started at least once?`);
-  process.exit(1);
-}
-
-if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
-
-const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-const backupPath = path.join(BACKUP_DIR, `taskmanager-${timestamp}.db`);
-
-// Uses SQLite's own online backup API (via better-sqlite3's .backup()) rather than a plain file
-// copy — this produces a genuinely consistent snapshot even if the server is actively writing
-// to the database at the exact same moment, which a raw filesystem copy cannot safely guarantee.
-const db = new Database(DB_PATH, { readonly: true });
-db.backup(backupPath)
-  .then(() => {
-    db.close();
-    const sizeKb = (fs.statSync(backupPath).size / 1024).toFixed(1);
-    console.log(`Backup created: ${backupPath} (${sizeKb} KB)`);
-
-    // Prune old backups beyond KEEP_COUNT, oldest first.
-    const existing = fs.readdirSync(BACKUP_DIR)
-      .filter(f => f.startsWith('taskmanager-') && f.endsWith('.db'))
-      .map(f => ({ name: f, time: fs.statSync(path.join(BACKUP_DIR, f)).mtimeMs }))
-      .sort((a, b) => b.time - a.time);
-    const toDelete = existing.slice(KEEP_COUNT);
-    toDelete.forEach(f => {
-      fs.unlinkSync(path.join(BACKUP_DIR, f.name));
-      console.log(`Removed old backup: ${f.name}`);
-    });
-    console.log(`\nKeeping the most recent ${Math.min(existing.length, KEEP_COUNT)} backup(s) in "${BACKUP_DIR}/".`);
-    console.log('Reminder: a backup only counts as reliable once you\'ve actually tested restoring from it — see RESTORE instructions in the guide.');
-  })
-  .catch(err => {
-    console.error('Backup failed:', err.message);
-    process.exit(1);
-  });
+(async () => {
+  if (!process.env.DATABASE_URL) { console.error('Set DATABASE_URL first.'); process.exit(1); }
+  const outDir = process.argv[2] || process.env.BACKUP_DIR || path.join(__dirname, '..', 'backups');
+  fs.mkdirSync(outDir, { recursive: true });
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false } });
+  const client = await pool.connect();
+  try {
+    // A consistent snapshot: every table read in one REPEATABLE READ, read-only transaction.
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    const tables = (await client.query("SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY tablename")).rows.map(r => r.tablename);
+    let version = null;
+    const hasMigrations = (await client.query("SELECT to_regclass('schema_migrations') IS NOT NULL AS ok")).rows[0].ok;
+    if (hasMigrations) version = (await client.query('SELECT max(version) v FROM schema_migrations')).rows[0].v;
+    const dump = { format: 'mihir-backup/1', createdAt: new Date().toISOString(), schemaVersion: version, tables: {} };
+    for (const t of tables) {
+      const r = await client.query(`SELECT * FROM "${t}"`);
+      dump.tables[t] = { columns: r.fields.map(f => f.name), rows: r.rows.map(row => r.fields.map(f => row[f.name])) };
+    }
+    await client.query('COMMIT');
+    const stamp = dump.createdAt.replace(/[:.]/g, '-').slice(0, 19);
+    const file = path.join(outDir, `mihir-backup-${stamp}.json.gz`);
+    const gz = zlib.gzipSync(Buffer.from(JSON.stringify(dump)), { level: 9 });
+    fs.writeFileSync(file, gz);
+    const sha = crypto.createHash('sha256').update(gz).digest('hex');
+    fs.writeFileSync(file + '.sha256', `${sha}  ${path.basename(file)}\n`);
+    console.log(`Backup written: ${file} (${(gz.length / 1048576).toFixed(2)} MB, schema ${version || 'n/a'})`);
+    console.log(`SHA-256: ${sha}`);
+    for (const [t, v] of Object.entries(dump.tables)) console.log(`  ${t.padEnd(28)} ${v.rows.length} rows`);
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('Backup FAILED:', e.message); process.exitCode = 1;
+  } finally { client.release(); await pool.end(); }
+})();

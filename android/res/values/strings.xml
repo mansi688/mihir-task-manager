@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MIHIR Tasks</string>
+    <!-- Your site address. Filled in by build-apk.sh; if empty the app asks for it on first launch. -->
+    <string name="site_url">__SITE_URL__</string>
+</resources>

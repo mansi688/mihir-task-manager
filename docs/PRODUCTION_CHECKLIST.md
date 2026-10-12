@@ -95,8 +95,8 @@ email delivery needs real SMTP credentials I don't have access to from here.
 
 ## 9. Configure Push/VAPID — ✅ Keys generated and verified this session
 ```
-VAPID_PUBLIC_KEY=BErurTtVrN1O_w6fStMzui9GTWZSEfBsZKSJ7XuGwygHDGInV-qEzIba72ucE8Oc7WKTSIYObEX8XTE8lagl-TY
-VAPID_PRIVATE_KEY=Pk3MrKhvVFNnLXOUA96Ah5DYxvD9K1ucZhBJ8XVA6is
+VAPID_PUBLIC_KEY=<set in Render → Environment>
+VAPID_PRIVATE_KEY=<set in Render → Environment — never in files>
 ```
 Verified directly: with these set, `/api/push/vapid-public-key` correctly returns the real key
 instead of `null`. **Remember**: push notifications require HTTPS in production (localhost is

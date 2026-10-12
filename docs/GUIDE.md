@@ -1,3 +1,5 @@
+> **Note (October 2026):** this guide is a historical log. Sections describing SQLite (`taskmanager.db`, `better-sqlite3`, `DB_PATH`) are superseded — the app runs on PostgreSQL (Supabase). Current procedures: `docs/DISASTER_RECOVERY.md`, `docs/MIGRATIONS.md`, `docs/PHASE0_REPORT.md`.
+
 # Guide: Adding Departments (Teams) and Users
 
 > **Note on this file's history**: this is a running development log, added to

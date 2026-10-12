@@ -1,3 +1,6 @@
+// Deterministic regardless of time of day: the 10:00/14:00/18:00 window rules are tested in
+// test/reminder-engine.test.js; here they are switched off so only the rules under test fire.
+process.env.REMINDER_WINDOWS = 'none';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
@@ -30,10 +33,12 @@ test('daily reminders fire for an ongoing task, and stop the moment the person c
     const raw = await getRawClient();
     await raw.query('UPDATE task_assignees SET last_reminded_at=$1 WHERE task_id=$2', [new Date(Date.now() - 25 * 3600000).toISOString(), id]);
     await raw.end();
-    await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
+    // Run the engine as of 25 hours later (a real "fresh day" — new date, anti-spam gap long passed).
+    await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken, body: { at: new Date(Date.now() + 25 * 3600000).toISOString() } });
     const notifs = (await api(baseUrl, '/api/notifications', { token: bobToken })).data.items;
-    const reminderCount = notifs.filter(n => n.type === 'task_reminder' && n.task_id === id).length;
-    assert.equal(reminderCount, 2, 'a full day later, still incomplete, should get a second daily reminder');
+    // Phase 2 combines the daily nudge with the 3-hourly nudge that is also due → one reminder (either wording).
+    const reminderCount = notifs.filter(n => ['task_reminder', 'task_reminder_recurring'].includes(n.type) && n.task_id === id).length;
+    assert.equal(reminderCount, 2, 'a full day later, still incomplete, should get a second reminder');
   });
 
   await t.test('once the person completes their part, reminders stop immediately — even the same day', async () => {
