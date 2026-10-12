@@ -385,6 +385,263 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_chat_private_members_user ON chat_private_members (username);
     `,
   },
+  {
+    version: '007',
+    name: 'employee location tracking: sessions, points, places, visits, alerts, indoor positioning, privacy',
+    sql: `
+      -- Everything here is NEW tables only (additive). Nothing is collected until ENABLE_LOCATION_TRACKING
+      -- is on AND an employee accepts the notice AND starts a work session themselves.
+      -- Coordinates are plain WGS84 doubles (lat/lng). PostGIS can be added later with a generated
+      -- geography column without moving data (see docs/LOCATION_TRACKING.md).
+
+      -- Admin-editable policy (single row, id = 1).
+      CREATE TABLE IF NOT EXISTS location_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_by TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      INSERT INTO location_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+      -- The employee's acceptance of the tracking notice (versioned; withdrawable).
+      CREATE TABLE IF NOT EXISTS location_consents (
+        id BIGSERIAL PRIMARY KEY,
+        username TEXT NOT NULL,
+        policy_version INTEGER NOT NULL,
+        accepted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        withdrawn_at TIMESTAMPTZ,
+        ip_address TEXT,
+        device TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_location_consents_user ON location_consents (username, accepted_at DESC);
+
+      -- A work session = the only time location is collected. Started and stopped by the employee
+      -- (or auto-stopped by policy / Admin). Latest fix is denormalised here for a cheap live map.
+      CREATE TABLE IF NOT EXISTS location_sessions (
+        id BIGSERIAL PRIMARY KEY,
+        username TEXT NOT NULL,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        ended_at TIMESTAMPTZ,
+        end_reason TEXT,
+        ended_by TEXT,
+        platform TEXT,
+        device_id TEXT,
+        device_label TEXT,
+        app_version TEXT,
+        last_point_at TIMESTAMPTZ,
+        last_received_at TIMESTAMPTZ,
+        last_lat DOUBLE PRECISION,
+        last_lng DOUBLE PRECISION,
+        last_accuracy_m REAL,
+        last_speed_mps REAL,
+        last_battery REAL,
+        last_is_moving BOOLEAN,
+        current_geofence_id BIGINT,
+        points_count INTEGER NOT NULL DEFAULT 0,
+        distance_m DOUBLE PRECISION NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_location_sessions_user ON location_sessions (username, started_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_location_sessions_one_active ON location_sessions (username) WHERE ended_at IS NULL;
+
+      -- Raw GPS/network fixes. client_point_id makes offline re-uploads idempotent.
+      CREATE TABLE IF NOT EXISTS location_points (
+        id BIGSERIAL PRIMARY KEY,
+        session_id BIGINT NOT NULL REFERENCES location_sessions(id) ON DELETE CASCADE,
+        username TEXT NOT NULL,
+        recorded_at TIMESTAMPTZ NOT NULL,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        lat DOUBLE PRECISION NOT NULL,
+        lng DOUBLE PRECISION NOT NULL,
+        accuracy_m REAL,
+        altitude_m REAL,
+        speed_mps REAL,
+        heading REAL,
+        battery REAL,
+        is_moving BOOLEAN,
+        source TEXT,
+        client_point_id TEXT NOT NULL,
+        UNIQUE (session_id, client_point_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_location_points_user_time ON location_points (username, recorded_at);
+      CREATE INDEX IF NOT EXISTS idx_location_points_session_time ON location_points (session_id, recorded_at);
+      CREATE INDEX IF NOT EXISTS brin_location_points_recorded ON location_points USING BRIN (recorded_at);
+
+      -- Places: office, construction site, warehouse, supplier… Circle or polygon.
+      CREATE TABLE IF NOT EXISTS geofences (
+        id BIGSERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'site',
+        shape TEXT NOT NULL DEFAULT 'circle',
+        center_lat DOUBLE PRECISION NOT NULL,
+        center_lng DOUBLE PRECISION NOT NULL,
+        radius_m REAL NOT NULL DEFAULT 150,
+        polygon JSONB,
+        project TEXT,
+        address TEXT,
+        notes TEXT,
+        min_dwell_seconds INTEGER NOT NULL DEFAULT 120,
+        restricted BOOLEAN NOT NULL DEFAULT false,
+        active BOOLEAN NOT NULL DEFAULT true,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+
+      -- Arrivals/departures (one row per stay). departed_at NULL = still there.
+      CREATE TABLE IF NOT EXISTS geofence_visits (
+        id BIGSERIAL PRIMARY KEY,
+        geofence_id BIGINT NOT NULL REFERENCES geofences(id) ON DELETE CASCADE,
+        username TEXT NOT NULL,
+        session_id BIGINT REFERENCES location_sessions(id) ON DELETE SET NULL,
+        arrived_at TIMESTAMPTZ NOT NULL,
+        departed_at TIMESTAMPTZ,
+        last_inside_at TIMESTAMPTZ NOT NULL,
+        -- Set once the person has stayed min_dwell_seconds (drive-bys are discarded, never alerted).
+        confirmed_at TIMESTAMPTZ,
+        duration_s INTEGER,
+        outside_streak INTEGER NOT NULL DEFAULT 0,
+        end_reason TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_geofence_visits_user ON geofence_visits (username, arrived_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_geofence_visits_place ON geofence_visits (geofence_id, arrived_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_geofence_visits_open ON geofence_visits (username, geofence_id) WHERE departed_at IS NULL;
+
+      -- Task integration: a task can be tied to places (deliver to site, collect from supplier…);
+      -- visits are linked to tasks automatically (assignee visited a linked place / the task's
+      -- project site) or by hand ("check in to this task").
+      CREATE TABLE IF NOT EXISTS task_places (
+        task_id TEXT NOT NULL,
+        geofence_id BIGINT NOT NULL REFERENCES geofences(id) ON DELETE CASCADE,
+        purpose TEXT,
+        added_by TEXT,
+        added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (task_id, geofence_id)
+      );
+      CREATE TABLE IF NOT EXISTS visit_task_links (
+        visit_id BIGINT NOT NULL REFERENCES geofence_visits(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL,
+        how TEXT NOT NULL DEFAULT 'auto',
+        linked_by TEXT,
+        linked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (visit_id, task_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_visit_task_links_task ON visit_task_links (task_id);
+
+      -- Alerts.
+      CREATE TABLE IF NOT EXISTS location_alert_rules (
+        id BIGSERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        geofence_id BIGINT REFERENCES geofences(id) ON DELETE CASCADE,
+        departments JSONB NOT NULL DEFAULT '[]'::jsonb,
+        usernames JSONB NOT NULL DEFAULT '[]'::jsonb,
+        threshold REAL,
+        recipients JSONB NOT NULL DEFAULT '[]'::jsonb,
+        notify_employee BOOLEAN NOT NULL DEFAULT false,
+        active BOOLEAN NOT NULL DEFAULT true,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS location_alert_events (
+        id BIGSERIAL PRIMARY KEY,
+        rule_id BIGINT REFERENCES location_alert_rules(id) ON DELETE SET NULL,
+        kind TEXT NOT NULL,
+        username TEXT NOT NULL,
+        session_id BIGINT,
+        geofence_id BIGINT,
+        message TEXT NOT NULL,
+        dedupe_key TEXT UNIQUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        acknowledged_by TEXT,
+        acknowledged_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_location_alert_events_time ON location_alert_events (created_at DESC);
+
+      -- Every time someone looks at ANOTHER person's location data. Employees can see their own rows.
+      CREATE TABLE IF NOT EXISTS location_access_log (
+        id BIGSERIAL PRIMARY KEY,
+        viewer_username TEXT NOT NULL,
+        viewer_role TEXT,
+        subject_username TEXT,
+        action TEXT NOT NULL,
+        detail TEXT,
+        ip_address TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_location_access_subject ON location_access_log (subject_username, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_location_access_time ON location_access_log (created_at DESC);
+
+      -- Indoor positioning. GPS cannot place people on a floor or at a desk: this needs BLE beacons
+      -- (room/zone level) or a UWB system (desk level). Coordinates are floor-plan pixels.
+      CREATE TABLE IF NOT EXISTS indoor_floors (
+        id BIGSERIAL PRIMARY KEY,
+        geofence_id BIGINT REFERENCES geofences(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        level INTEGER NOT NULL DEFAULT 0,
+        plan_image TEXT,
+        width_px INTEGER,
+        height_px INTEGER,
+        meters_per_px REAL,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS indoor_zones (
+        id BIGSERIAL PRIMARY KEY,
+        floor_id BIGINT NOT NULL REFERENCES indoor_floors(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'room',
+        polygon JSONB NOT NULL,
+        restricted BOOLEAN NOT NULL DEFAULT false,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS indoor_anchors (
+        id BIGSERIAL PRIMARY KEY,
+        floor_id BIGINT NOT NULL REFERENCES indoor_floors(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL DEFAULT 'ble',
+        identifier TEXT NOT NULL UNIQUE,
+        label TEXT,
+        x REAL NOT NULL,
+        y REAL NOT NULL,
+        tx_power REAL,
+        last_seen_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      -- UWB / RTLS badges handed to employees (vendor tag id -> person).
+      CREATE TABLE IF NOT EXISTS indoor_tags (
+        tag_id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        assigned_by TEXT,
+        assigned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS indoor_positions (
+        id BIGSERIAL PRIMARY KEY,
+        username TEXT NOT NULL,
+        session_id BIGINT REFERENCES location_sessions(id) ON DELETE CASCADE,
+        floor_id BIGINT NOT NULL REFERENCES indoor_floors(id) ON DELETE CASCADE,
+        zone_id BIGINT REFERENCES indoor_zones(id) ON DELETE SET NULL,
+        x REAL,
+        y REAL,
+        accuracy_m REAL,
+        method TEXT NOT NULL,
+        recorded_at TIMESTAMPTZ NOT NULL,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_indoor_positions_user_time ON indoor_positions (username, recorded_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_indoor_positions_floor_time ON indoor_positions (floor_id, recorded_at DESC);
+
+      -- Machine-to-machine keys for RTLS vendors pushing indoor positions (only a hash is stored).
+      CREATE TABLE IF NOT EXISTS location_integration_keys (
+        id BIGSERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        key_prefix TEXT NOT NULL,
+        key_hash TEXT NOT NULL UNIQUE,
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_used_at TIMESTAMPTZ,
+        revoked_at TIMESTAMPTZ
+      );
+    `,
+  },
 ];
 
 async function runMigrations(pool, log = console.log) {

@@ -1,0 +1,38 @@
+# XcodeGen spec — generates MIHIRTasks.xcodeproj on a Mac:
+#   brew install xcodegen && cd ios && xcodegen generate && open MIHIRTasks.xcodeproj
+# NOT compiled or run in the environment that wrote it (no Xcode there) — see docs/LOCATION_MOBILE.md.
+name: MIHIRTasks
+options:
+  bundleIdPrefix: com.mihir
+  deploymentTarget:
+    iOS: "15.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  MIHIRTasks:
+    type: application
+    platform: iOS
+    sources: [MIHIRTasks]
+    info:
+      path: MIHIRTasks/Info.plist
+      properties:
+        CFBundleDisplayName: MIHIR Tasks
+        MIHIRSiteURL: https://mihir-task-manager.onrender.com
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UIBackgroundModes: [location]
+        NSLocationWhenInUseUsageDescription: "MIHIR records your location only during a work session you start, to confirm site visits and deliveries. You can stop at any time."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "MIHIR records your location only during a work session you start. The blue location indicator is shown while it does."
+        NSBluetoothAlwaysUsageDescription: "Used only inside offices with MIHIR indoor beacons, to tell which room you are in during a work session."
+        NSMicrophoneUsageDescription: "Used for voice tasks and meeting recordings when you choose to record."
+        NSCameraUsageDescription: "Used to attach site photos when you choose to take one."
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mihir.taskmanager
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # Set your Apple Developer team here (Xcode → Signing & Capabilities).
+        DEVELOPMENT_TEAM: ""

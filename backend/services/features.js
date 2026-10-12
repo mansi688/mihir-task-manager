@@ -10,6 +10,9 @@ function flags(env = process.env) {
     emailIngestion: on(env.ENABLE_EMAIL_INGESTION),
     meetingAi: on(env.ENABLE_MEETING_AI),
     aiBudgetLimit: on(env.ENABLE_AI_BUDGET_LIMIT, true),
+    // Employee location tracking (docs/LOCATION_TRACKING.md). Off until Admin has set the policy and
+    // places and decided to roll it out.
+    locationTracking: on(env.ENABLE_LOCATION_TRACKING),
     autoTaskCreation: false,
   };
 }

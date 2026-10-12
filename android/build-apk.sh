@@ -11,7 +11,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 SITE_URL="${1:-https://mihir-task-manager.onrender.com}"
-ANDROID_JAR="${ANDROID_JAR:-/usr/lib/android-sdk/platforms/android-23/android.jar}"
+# Needs an android.jar for API 29 or newer (the location service uses foregroundServiceType="location").
+# Android Studio's SDK: $ANDROID_HOME/platforms/android-34/android.jar. See docs/LOCATION_MOBILE.md.
+if [ -z "${ANDROID_JAR:-}" ]; then
+  for c in "${ANDROID_HOME:-/nonexistent}/platforms/android-34/android.jar" "$HOME/Android/Sdk/platforms/android-34/android.jar" /usr/lib/android-sdk/platforms/android-34/android.jar /usr/lib/android-sdk/platforms/android-23/android.jar; do
+    if [ -f "$c" ]; then ANDROID_JAR="$c"; break; fi
+  done
+fi
+FGS_ATTR=$(aapt dump resources "$ANDROID_JAR" 2>/dev/null | grep -c "attr/foregroundServiceType" || true)
+if [ "${FGS_ATTR:-0}" = "0" ]; then
+  echo "android.jar at $ANDROID_JAR is older than API 29 — set ANDROID_JAR to an API 34 android.jar (see docs/LOCATION_MOBILE.md)."; exit 1
+fi
 KEYSTORE="${KEYSTORE:-mihir-tasks.keystore}"
 KS_PASS="${KS_PASS:-mihirtasks2026}"
 VERSION_CODE="${VERSION_CODE:-}"

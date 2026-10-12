@@ -244,7 +244,7 @@ app.use((req, res, next) => {
   if (len <= 1024 * 1024) return smallJson(req, res, next);
   const header = String(req.headers.authorization || '');
   let ok = false;
-  if (header.startsWith('Bearer ')) { try { const p = jwt.verify(header.slice(7), JWT_SECRET); ok = p && p.scope !== 'device'; } catch (e) { ok = false; } }
+  if (header.startsWith('Bearer ')) { try { const p = jwt.verify(header.slice(7), JWT_SECRET); ok = p && !p.scope; } catch (e) { ok = false; } }
   if (!ok) return res.status(413).json({ error: 'That upload is too large. Log in again and retry.' });
   return largeJson(req, res, next);
 });
@@ -258,7 +258,8 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   // Microphone/camera allowed for THIS site only (voice tasks, meeting recording, site photos);
   // blocked for anything embedded. (Was microphone=() — which silently broke voice recording.)
-  res.setHeader('Permissions-Policy', 'geolocation=(), camera=(self), microphone=(self)');
+  // Geolocation for THIS site only: the opt-in "Start work" location tracking (docs/LOCATION_TRACKING.md).
+  res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(self), microphone=(self)');
   if (process.env.NODE_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
 });
@@ -517,8 +518,9 @@ function auth(roles) {
     if (!token) return res.status(401).json({ error: 'Not logged in.' });
     let payload;
     try { payload = jwt.verify(token, JWT_SECRET); } catch (e) { return res.status(401).json({ error: 'Session expired — please log in again.' }); }
-    // Phone-app device tokens can ONLY read that person's notifications (below) — never anything else.
-    if (payload.scope === 'device') return res.status(401).json({ error: 'Not logged in.' });
+    // Narrow tokens are never logins: phone-app device tokens can ONLY read notifications, and
+    // location upload tokens ('loc') can ONLY add points to one work session. Any scoped token is refused.
+    if (payload.scope) return res.status(401).json({ error: 'Not logged in.' });
     const user = await db.getUser(payload.username);
     if (!user) return res.status(401).json({ error: 'Session invalid — please log in again.' });
     if ((user.token_version || 0) !== (payload.tv || 0)) return res.status(401).json({ error: 'Session revoked — please log in again.' });
@@ -3191,7 +3193,7 @@ app.post('/api/ingestion/voice', auth(ALL_ROLES), aiCallLimiter, async (req, res
 // Which optional features this page should show (no secrets — on/off only).
 app.get('/api/features', auth(ALL_ROLES), (req, res) => {
   const f = featureFlags();
-  res.json({ aiTaskExtraction: f.aiTaskExtraction && ai.configured, voiceTasks: f.voiceTasks && ai.configured, meetingAi: f.meetingAi && ai.configured, storage: storage.configured, meetingRetentionDays: MEETING_RETENTION_DAYS });
+  res.json({ aiTaskExtraction: f.aiTaskExtraction && ai.configured, voiceTasks: f.voiceTasks && ai.configured, meetingAi: f.meetingAi && ai.configured, storage: storage.configured, meetingRetentionDays: MEETING_RETENTION_DAYS, locationTracking: f.locationTracking });
 });
 // Document / photo / video → suggestions (PDF, Word, Excel, CSV, images, short videos).
 app.post('/api/ingestion/file', auth(ALL_ROLES), aiCallLimiter, async (req, res) => {
@@ -3475,6 +3477,16 @@ app.post('/api/meetings/:id/retry', auth(ALL_ROLES), async (req, res) => {
   setImmediate(() => jobs.tick().catch(() => {}));
   res.json({ ok: true });
 });
+
+/* ============ EMPLOYEE LOCATION TRACKING ============
+   backend/location/* — off unless ENABLE_LOCATION_TRACKING=true (docs/LOCATION_TRACKING.md). */
+const { mountLocation } = require('./location/routes');
+mountLocation(app, {
+  db, auth, ALL_ROLES, auditFromReq, clientIp, log, jobs, jwt, JWT_SECRET, directorAllowedTeams, canViewTask,
+  featureEnabled: () => featureFlags().locationTracking,
+});
+// Leaflet (map library) served from our own origin — no third-party script CDN.
+app.use('/vendor/leaflet', express.static(path.join(__dirname, '..', 'node_modules', 'leaflet', 'dist'), { maxAge: '7d' }));
 
 /* ============ JOB ENGINE (Phase 7A) ============
    All background work runs as database jobs (backend/services/jobs.js): scheduled, retried with

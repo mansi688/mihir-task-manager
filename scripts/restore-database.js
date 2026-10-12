@@ -35,7 +35,9 @@ const zlib = require('zlib');
       if (target.has(t)) await client.query(`DELETE FROM "${t}"`);
     for (const t of Object.keys(dump.tables)) if (target.has(t) && t !== 'schema_migrations') await client.query(`DELETE FROM "${t}"`);
     // Parents before children (foreign keys since migration 003).
-    const FIRST = ['users', 'teams', 'projects', 'task_phases', 'tasks', 'approval_requests', 'automation_jobs'];
+    // (chat_messages before chat_files; location parents before their children.)
+    const FIRST = ['users', 'teams', 'projects', 'task_phases', 'tasks', 'approval_requests', 'automation_jobs', 'chat_messages', 'chat_private',
+      'geofences', 'location_sessions', 'location_alert_rules', 'indoor_floors', 'indoor_zones', 'geofence_visits'];
     const ordered = Object.entries(dump.tables).sort(([a], [b]) => {
       const ia = FIRST.indexOf(a), ib = FIRST.indexOf(b);
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);

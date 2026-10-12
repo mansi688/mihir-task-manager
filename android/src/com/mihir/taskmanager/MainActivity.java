@@ -40,6 +40,8 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
@@ -70,6 +72,8 @@ public class MainActivity extends Activity {
     private static final int AUDIO_PERMISSION_REQUEST = 1004;
     private android.webkit.PermissionRequest pendingAudioRequest = null;
     private static final int NOTIFICATION_PERMISSION_REQUEST = 1003;
+    private static final int LOCATION_PERMISSION_REQUEST = 1005;
+    private String pendingLocationConfig = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -269,6 +273,56 @@ public class MainActivity extends Activity {
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("device_token").remove("device_user").remove("last_notification_id").apply();
             NotifyJobService.cancel(MainActivity.this);
         }
+        // ---- Location tracking for work sessions (see LocationService) ----
+        // locationStart: "ok" (started), "asking" (Android permission dialog shown; the page is told
+        // the outcome through window.__mihirLocationResult), or "denied" (permission refused before).
+        @JavascriptInterface public String locationStart(final String configJson) {
+            try {
+                JSONObject c = new JSONObject(configJson);
+                String url = c.optString("uploadUrl", "");
+                Uri home = Uri.parse(siteUrl);
+                if (!url.startsWith("https://") || home.getHost() == null || !home.getHost().equalsIgnoreCase(Uri.parse(url).getHost())) return "bad_config";
+            } catch (Exception e) { return "bad_config"; }
+            if (hasLocationPermission()) {
+                runOnUiThread(new Runnable() { @Override public void run() { LocationService.start(MainActivity.this, configJson); askExtrasForTracking(configJson); } });
+                return "ok";
+            }
+            pendingLocationConfig = configJson;
+            runOnUiThread(new Runnable() { @Override public void run() {
+                java.util.List<String> want = new java.util.ArrayList<String>();
+                want.add("android.permission.ACCESS_FINE_LOCATION");
+                want.add("android.permission.ACCESS_COARSE_LOCATION");
+                if (Build.VERSION.SDK_INT >= 33) want.add("android.permission.POST_NOTIFICATIONS");
+                if (Build.VERSION.SDK_INT >= 31 && configJson.contains("\"uuids\":[\"")) want.add("android.permission.BLUETOOTH_SCAN");
+                requestPermissions(want.toArray(new String[0]), LOCATION_PERMISSION_REQUEST);
+            } });
+            return "asking";
+        }
+        @JavascriptInterface public void locationStop() { LocationService.stop(MainActivity.this); }
+        @JavascriptInterface public String locationStatus() {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("running", LocationService.running);
+                o.put("queued", LocationService.queued(MainActivity.this));
+                o.put("lastFixAt", LocationService.lastFixAt);
+                o.put("lastAccuracy", LocationService.lastAccuracy);
+                o.put("permission", hasLocationPermission() ? "granted" : "missing");
+                android.location.LocationManager lm = (android.location.LocationManager) getSystemService(LOCATION_SERVICE);
+                o.put("gpsEnabled", lm != null && lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER));
+                if (LocationService.lastError != null) o.put("error", LocationService.lastError);
+                return o.toString();
+            } catch (Exception e) { return "{}"; }
+        }
+        @JavascriptInterface public void openLocationSettings() {
+            runOnUiThread(new Runnable() { @Override public void run() {
+                try { startActivity(new Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)); } catch (Exception e) { /* none */ }
+            } });
+        }
+        @JavascriptInterface public void openAppSettings() {
+            runOnUiThread(new Runnable() { @Override public void run() {
+                try { startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))); } catch (Exception e) { /* none */ }
+            } });
+        }
         @JavascriptInterface public void saveFile(final String dataUrl, final String fileName) {
             new Handler(Looper.getMainLooper()).post(new Runnable() { @Override public void run() {
                 if (Build.VERSION.SDK_INT < 29 && MainActivity.this.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
@@ -325,7 +379,34 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean hasLocationPermission() {
+        return Build.VERSION.SDK_INT < 23 || checkSelfPermission("android.permission.ACCESS_FINE_LOCATION") == PackageManager.PERMISSION_GRANTED
+            || checkSelfPermission("android.permission.ACCESS_COARSE_LOCATION") == PackageManager.PERMISSION_GRANTED;
+    }
+    // GPS switched off in quick settings = no fixes at all; send the person to the switch.
+    private void askExtrasForTracking(String configJson) {
+        android.location.LocationManager lm = (android.location.LocationManager) getSystemService(LOCATION_SERVICE);
+        if (lm != null && !lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER)) {
+            Toast.makeText(this, "Turn on Location (GPS) so your work session can record where you are.", Toast.LENGTH_LONG).show();
+            try { startActivity(new Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS)); } catch (Exception e) { /* none */ }
+        }
+    }
+    private void tellPage(String result) {
+        if (webView == null) return;
+        webView.evaluateJavascript("window.__mihirLocationResult && window.__mihirLocationResult('" + result + "')", null);
+    }
+
     @Override public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        if (code == LOCATION_PERMISSION_REQUEST) {
+            String cfg = pendingLocationConfig;
+            pendingLocationConfig = null;
+            if (cfg != null && hasLocationPermission()) { LocationService.start(this, cfg); askExtrasForTracking(cfg); tellPage("started"); }
+            else {
+                Toast.makeText(this, "Location permission is needed for work-session tracking. You can allow it in Settings → Apps → MIHIR Tasks → Permissions.", Toast.LENGTH_LONG).show();
+                tellPage("denied");
+            }
+            return;
+        }
         if (code == AUDIO_PERMISSION_REQUEST && pendingAudioRequest != null) {
             if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) pendingAudioRequest.grant(new String[]{android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE});
             else { pendingAudioRequest.deny(); Toast.makeText(this, "Microphone permission is needed for voice tasks", Toast.LENGTH_LONG).show(); }

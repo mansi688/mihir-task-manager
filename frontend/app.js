@@ -211,6 +211,7 @@ const ICONS = {
   pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/>',
   chat: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/>',
   megaphone: '<path d="M3 10v4h3l7 4V6L6 10z"/><path d="M16 9a4 4 0 010 6M18.5 6.5a7.5 7.5 0 010 11"/>',
+  mapPin: '<path d="M12 21s-7-6.1-7-11.5a7 7 0 0114 0C19 14.9 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
 };
 function icon(name, size) {
   return `<svg viewBox="0 0 24 24" width="${size || 17}" height="${size || 17}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
@@ -553,7 +554,7 @@ const CAD_DRAWING_EXTENSIONS = ['.dwg', '.dxf', '.rvt', '.rfa', '.skp', '.dgn', 
 
 /* ==================== ROLES / NAV ==================== */
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -658,6 +659,7 @@ function renderSidebar() {
   if (appFeatures.meetingAi) assistantItems.push({ key: 'meetings', label: 'Meetings', icon: 'clock' });
   if (assistantItems.length) { const ci = groups.findIndex(g => g.group === 'Communicate'); groups.splice(ci >= 0 ? ci + 1 : 2, 0, { group: 'Assistant', items: assistantItems }); }
   if (session.role === 'admin') { const g = groups.find(x => x.group === 'Admin'); if (g && !g.items.some(i => i.key === 'system')) g.items = g.items.concat({ key: 'system', label: 'System Health', icon: 'clipboard' }); }
+  if (window.LocationUI) window.LocationUI.navGroups(groups); // frontend/location.js (only when switched on)
   const active = currentTabKey();
   return `
   ${ui.sidebarOpen ? `<div class="sidebar-backdrop" data-act="close-sidebar"></div>` : ''}
@@ -691,8 +693,8 @@ function renderSidebar() {
     </div>
   </aside>`;
 }
-const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'bell', task_closed: 'checkCircle', task_reminder: 'clock', task_reminder_3day: 'clock', task_warning: 'alertTriangle', task_warning_creator: 'alertTriangle', weekly_warning_digest: 'alertTriangle', followup_tagged: 'eye', task_submitted: 'checkCircle', mentioned_in_comment: 'bell', approval_requested: 'checkCircle', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', deadline_soon: 'clock', deadline_passed: 'alertTriangle', admin_late_flag: 'alertTriangle', task_reopened: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone' };
-const NOTIF_TYPE_LABEL = { task_assigned: 'Task Assigned', task_reply: 'Task Update', task_closed: 'Task Closed', task_reminder: 'Task Reminder', task_reminder_3day: '3-Day Reminder', task_warning: '7-Day Warning', task_warning_creator: 'Task Overdue Warning', weekly_warning_digest: 'Weekly Warning Summary', followup_tagged: 'Follow-up Requested', task_submitted: 'Awaiting Your Approval', mentioned_in_comment: 'Mentioned You', approval_requested: 'Approval Requested', approval_rejected: 'Approval Rejected', approval_approved: 'Fully Approved', deadline_soon: 'Deadline Soon', deadline_passed: 'Deadline Passed', admin_late_flag: 'Late User Flagged', task_reopened: 'Task Reopened', chat_mention: '💬 Mentioned in Chat', announcement: '📢 Announcement' };
+const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'bell', task_closed: 'checkCircle', task_reminder: 'clock', task_reminder_3day: 'clock', task_warning: 'alertTriangle', task_warning_creator: 'alertTriangle', weekly_warning_digest: 'alertTriangle', followup_tagged: 'eye', task_submitted: 'checkCircle', mentioned_in_comment: 'bell', approval_requested: 'checkCircle', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', deadline_soon: 'clock', deadline_passed: 'alertTriangle', admin_late_flag: 'alertTriangle', task_reopened: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin' };
+const NOTIF_TYPE_LABEL = { task_assigned: 'Task Assigned', task_reply: 'Task Update', task_closed: 'Task Closed', task_reminder: 'Task Reminder', task_reminder_3day: '3-Day Reminder', task_warning: '7-Day Warning', task_warning_creator: 'Task Overdue Warning', weekly_warning_digest: 'Weekly Warning Summary', followup_tagged: 'Follow-up Requested', task_submitted: 'Awaiting Your Approval', mentioned_in_comment: 'Mentioned You', approval_requested: 'Approval Requested', approval_rejected: 'Approval Rejected', approval_approved: 'Fully Approved', deadline_soon: 'Deadline Soon', deadline_passed: 'Deadline Passed', admin_late_flag: 'Late User Flagged', task_reopened: 'Task Reopened', chat_mention: '💬 Mentioned in Chat', announcement: '📢 Announcement', location: '📍 Location', location_alert: '📍 Location Alert' };
 function renderNotifDrawer() {
   const sorted = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   return `
@@ -704,7 +706,7 @@ function renderNotifDrawer() {
       </div>
       <div style="padding:8px 12px;max-height:calc(100vh - 60px);overflow-y:auto;">
         ${sorted.length === 0 ? `<div class="empty">Nothing to show — all quiet.</div>` : sorted.map(n => `
-          <div class="notif-item" ${n.task_id ? `data-notif-goto-task="${esc(n.task_id)}"` : n.type === 'chat_mention' ? `data-notif-goto-tab="chat"${n.chat_room ? ` data-notif-chat-room="${esc(n.chat_room)}"` : ''}` : n.type === 'announcement' ? 'data-notif-goto-tab="announcements"' : ''} style="${n.task_id || n.type === 'chat_mention' || n.type === 'announcement' ? 'cursor:pointer;' : ''}" data-mark-notif-read="${n.id}">
+          <div class="notif-item" ${n.task_id ? `data-notif-goto-task="${esc(n.task_id)}"` : n.type === 'chat_mention' ? `data-notif-goto-tab="chat"${n.chat_room ? ` data-notif-chat-room="${esc(n.chat_room)}"` : ''}` : n.type === 'announcement' ? 'data-notif-goto-tab="announcements"' : n.type === 'location_alert' ? 'data-notif-goto-tab="locations"' : n.type === 'location' ? 'data-notif-goto-tab="mytracking"' : ''} style="${n.task_id || ['chat_mention', 'announcement', 'location', 'location_alert'].includes(n.type) ? 'cursor:pointer;' : ''}" data-mark-notif-read="${n.id}">
             <div class="notif-icon">${icon(NOTIF_TYPE_ICON[n.type] || 'alertTriangle', 16)}</div>
             <div style="flex:1;min-width:0;">
               <div class="flex-between"><span class="small" style="font-weight:700;">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')}</span>${n.read ? `<span class="badge received">Read</span>` : `<span class="badge flag">New</span>`}</div>
@@ -727,6 +729,7 @@ function renderTopbarSlim() {
     </div>
     <div></div>
     <div class="topbar-actions">
+      ${window.LocationUI ? window.LocationUI.statusPill() : ''}
       <button class="icon-btn" data-act="open-notifications" title="Notifications">${icon('bell')}${unreadNotifCount ? `<span class="dot">${unreadNotifCount}</span>` : ''}</button>
     </div>
   </header>
@@ -1908,6 +1911,7 @@ function renderTaskItem(t) {
         </div>` : ''}
         <div class="small muted" style="margin-top:12px;">Full history</div>
         ${taskHistoryHTML(t)}
+        ${window.LocationUI ? window.LocationUI.taskBlock(t) : ''}
         ${(session.role === 'admin' || isCreator) ? `
         <button class="btn btn-sm" style="margin-top:10px;" data-act="toggle-reopen-form" data-task-id="${t.id}" title="Only whoever created this task, or Admin, can reopen it">Reopen — more work needed</button>
         ${ui.reopenFormTaskId === t.id ? `
@@ -2010,6 +2014,7 @@ function renderTaskItem(t) {
       <button class="btn btn-sm" data-add-checklist="${t.id}">Add</button>
     </div>` : ''}
     ${taskHistoryHTML(t)}
+    ${window.LocationUI ? window.LocationUI.taskBlock(t) : ''}
     ${t.status === 'open' && canCommentHere ? `
       <label style="margin-top:8px;">Reply <span class="muted small">(type @ to tag someone)</span></label>
       <div style="position:relative;">
@@ -5336,6 +5341,8 @@ function morphNode(fromNode, toNode) {
     if (fromNode.nodeValue !== toNode.nodeValue) fromNode.nodeValue = toNode.nodeValue;
     return;
   }
+  // A widget that manages its own DOM (the Leaflet map) is left alone once it exists.
+  if (fromNode.hasAttribute && fromNode.hasAttribute('data-morph-skip') && toNode.hasAttribute('data-morph-skip') && fromNode.id === toNode.id) return;
   morphAttributes(fromNode, toNode);
   const tag = fromNode.tagName;
   const isFocused = document.activeElement === fromNode;
@@ -5440,6 +5447,8 @@ function renderInner() {
   else if (ui.adminTab === 'announcements') body = renderAnnouncementsView();
   else if (ui.adminTab === 'profile') body = renderProfileView();
   else if (ui.adminTab === 'myteam' && session.role !== 'admin' && session.isTeamLead) body = renderMyTeamView();
+  else if (ui.adminTab === 'locations' && window.LocationUI && window.LocationUI.canManage()) body = window.LocationUI.renderManager();
+  else if (ui.adminTab === 'mytracking' && window.LocationUI && window.LocationUI.isOn()) body = window.LocationUI.renderMine();
   else { body = renderTodayFeed(); showingToday = true; }
   morphHTML(app, `
     <div class="app-shell${ui.sidebarCollapsed ? ' sidebar-collapsed' : ''}">
@@ -5478,6 +5487,7 @@ function renderInner() {
   bindNotifPrompt();
   bindTaskHistory();
   if (showingToday) bindTodayFeed();
+  if (window.LocationUI) window.LocationUI.afterRender();
 }
 function bindGlobal() {
   bindThemeToggle();

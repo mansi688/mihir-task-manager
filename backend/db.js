@@ -27,6 +27,9 @@ const pool = new Pool({
   idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS) || 10 * 60 * 1000,
   keepAlive: true,
   keepAliveInitialDelayMillis: 30000,
+  // Idle connections must never keep a command-line script (backup, restore, reset-password…)
+  // running after it has finished; the web server stays up because it is listening anyway.
+  allowExitOnIdle: true,
   // No single query may run longer than this — a stuck query fails fast instead of holding a pool
   // slot for minutes while every other request queues behind it (the 15–140s request durations).
   statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS) || 25000,

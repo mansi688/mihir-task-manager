@@ -4,7 +4,29 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
-## [Unreleased] — Chat Room open to all departments + department tagging
+## [Unreleased] — Employee location & movement tracking (off by default)
+### Added
+- Work-session location tracking behind `ENABLE_LOCATION_TRACKING` (default **off** — deploying changes
+  nothing until it is set). Employees accept a versioned notice, then start/stop sessions themselves;
+  status is always visible (Android notification, iOS blue indicator, web "Tracking on" pill).
+- Locations page: live map, route history + replay, places/geofences (office, site, warehouse, supplier,
+  client) with arrival/departure/visit time, reports + CSV, configurable alerts, indoor floors/zones/beacons,
+  privacy & policy screen. My Location page: consent, start/stop, own day, who viewed me, export, withdraw.
+- Task/project integration: places linked to projects and tasks; confirmed visits auto-link to the
+  assignees' open tasks and appear in task history (procurement pickups, deliveries, site visits).
+- Indoor: BLE beacon positioning (room/zone level) and a UWB/RTLS vendor connector (desk level, needs hardware).
+- Android app 1.5: foreground location service, SQLite offline queue, adaptive battery intervals, BLE scan,
+  Stop button in the notification. iOS app source (not compiled — needs a Mac).
+- Role-scoped access (Admin all; Directors own + granted departments; team leads own department, each
+  switchable), access log of every view, retention purge job, per-person export and deletion.
+- docs/LOCATION_TRACKING.md, LOCATION_MOBILE.md, LOCATION_INDOOR.md.
+### Fixed
+- `scripts/restore-database.js` restores chat and location tables in foreign-key order; command-line
+  scripts no longer hang after finishing (pool `allowExitOnIdle`).
+### Database: migration 007 — new tables only. Environment: `ENABLE_LOCATION_TRACKING` (off),
+`MAP_TILE_URL`, `MAP_TILE_ATTRIBUTION` (optional). Rollback: set the flag to false.
+
+## [2026-10-12] — Chat Room open to all departments + department tagging
 ### Restored
 - The Communicate menu group (Chat Room + Announcements), chat files, task multi-attachments, announcements
   calendar entries and the approvals history view from the Oct 10 build (a7de138). They were dropped when a
