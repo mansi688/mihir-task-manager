@@ -373,6 +373,22 @@ function validateUploadedFile(dataUrl, fileName, maxSizeChars) {
   if (DANGEROUS_EXTENSIONS.some(ext => lower.endsWith(ext))) return 'This file type is not allowed for security reasons.';
   return null; // valid
 }
+// Multiple attachments: body.attachments = [{ name, data }] (data = data: URL). Every file gets
+// the same checks as a single attachment; returns { files } or { error }.
+const MAX_FILES_PER_UPLOAD = 10;
+function collectUploads(body, maxSizeChars) {
+  const list = Array.isArray((body || {}).attachments) ? body.attachments : [];
+  if (list.length > MAX_FILES_PER_UPLOAD) return { error: `Attach at most ${MAX_FILES_PER_UPLOAD} files at a time.` };
+  const files = [];
+  for (const f of list) {
+    const name = str((f || {}).name).trim().slice(0, 255) || 'file';
+    const data = (f || {}).data;
+    const err = validateUploadedFile(data, name, maxSizeChars);
+    if (err) return { error: `${name}: ${err}` };
+    files.push({ name, data });
+  }
+  return { files };
+}
 // A sane upper bound on free-text fields — not for security, just data hygiene. Nothing here
 // enforces a MINIMUM beyond what already exists (e.g. submission notes, rejection reasons);
 // this only guards against an accidental giant paste bloating a database row indefinitely.
@@ -541,7 +557,170 @@ app.get('/api/device/notifications', async (req, res) => {
 // every device — website or phone app — picks up changes within seconds of each other.
 app.get('/api/sync', auth(ALL_ROLES), (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ v: `${BOOT_ID}.${db.getDataVersion()}` });
+  res.json({ v: `${BOOT_ID}.${db.getDataVersion()}`, c: `${BOOT_ID}.${db.getChatVersion()}` });
+});
+
+/* ============ CHAT ROOM ============
+   Rooms: 'general' (everyone) and one 'team:<department>' room per department. Every employee can
+   read and post in every room — department rooms are where you go to talk to that department.
+   Tagging (same idea as task tagging): @username notifies that person, @[Department] notifies
+   everyone in that department, @everyone (Admin/Directors only) notifies the whole company.
+   A tag notification opens the room it came from. */
+const CHAT_MAX_LEN = 4000;
+async function chatDepartments() {
+  const fromTeams = (await db.listTeams()).map(t => (t && t.name) || t).filter(Boolean);
+  const fromUsers = (await db.listUsers()).map(u => u.team).filter(Boolean);
+  return Array.from(new Set([...fromTeams, ...fromUsers])).sort((a, b) => a.localeCompare(b));
+}
+async function chatRoomsFor(user) {
+  const rooms = [{ key: 'general', name: 'General', emoji: '💬', hint: 'Everyone in the company' }];
+  for (const t of await chatDepartments()) {
+    rooms.push({ key: `team:${t}`, name: t, emoji: '👥', hint: `${t} department — open to everyone`, mine: !!user.team && user.team === t });
+  }
+  return rooms;
+}
+async function canUseChatRoom(user, room) {
+  if (room === 'general') return true;
+  if (!room.startsWith('team:')) return false;
+  return (await chatDepartments()).includes(room.slice(5));
+}
+const canTagEveryone = (user) => user.role === 'admin' || user.role === 'director';
+async function chatUser(req) { return (await db.getUser(req.user.username)) || { username: req.user.username, role: req.user.role }; }
+app.get('/api/chat/rooms', auth(ALL_ROLES), async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const rooms = await chatRoomsFor(await chatUser(req));
+  const stats = await db.chatRoomStats(req.user.username, rooms.map(r => r.key));
+  res.json(rooms.map(r => { const s = stats.find(x => x.room === r.key) || {}; return { ...r, unread: Number(s.unread || 0), lastId: Number(s.last_id || 0) }; }));
+});
+app.get('/api/chat/messages', auth(ALL_ROLES), async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const room = str(req.query.room).trim() || 'general';
+  if (!await canUseChatRoom(await chatUser(req), room)) return res.status(403).json({ error: "You don't have access to this room." });
+  res.json(await db.listChatMessages(room, { afterId: Number(req.query.after) || 0, beforeId: Number(req.query.before) || null, limit: Number(req.query.limit) || 60 }));
+});
+app.post('/api/chat/messages', auth(ALL_ROLES), async (req, res) => {
+  const room = str((req.body || {}).room).trim() || 'general';
+  const user = await chatUser(req);
+  if (!await canUseChatRoom(user, room)) return res.status(403).json({ error: "You don't have access to this room." });
+  const message = str((req.body || {}).message).trim();
+  if (tooLong(message, CHAT_MAX_LEN)) return res.status(400).json({ error: `Message is too long (max ${CHAT_MAX_LEN} characters).` });
+  const uploads = collectUploads(req.body, MAX_FILE_CHARS);
+  if (uploads.error) return res.status(400).json({ error: uploads.error });
+  if (!message && uploads.files.length === 0) return res.status(400).json({ error: 'Write a message or attach a file.' });
+  const id = await db.addChatMessage({ room, by_username: req.user.username, by_name: req.user.name, message, files: uploads.files });
+  // Tags → notify. Everyone can see every room, so anyone tagged is notified.
+  const roomName = room === 'general' ? 'General' : room.slice(5);
+  const allUsers = await db.listUsers();
+  const byUsername = new Map(allUsers.map(u => [u.username.toLowerCase(), u]));
+  const departments = await chatDepartments();
+  const mentioned = new Set();
+  const taggedDepartments = new Set();
+  let taggedEveryone = false;
+  // @[Department Name] — brackets allow spaces in the name.
+  for (const m of message.matchAll(/@\[([^\]\n]{1,60})\]/g)) {
+    const dept = departments.find(d => d.toLowerCase() === m[1].trim().toLowerCase());
+    if (dept) taggedDepartments.add(dept);
+  }
+  // @word — a username, a one-word department name, or @everyone.
+  for (const m of message.matchAll(/(^|[^\w@])@([a-zA-Z0-9._-]{2,40})\b/g)) {
+    const word = m[2];
+    if (word.toLowerCase() === 'everyone') { if (canTagEveryone(user)) taggedEveryone = true; continue; }
+    const u = byUsername.get(word.toLowerCase());
+    if (u) { mentioned.add(u.username); continue; }
+    const dept = departments.find(d => d.toLowerCase() === word.toLowerCase());
+    if (dept) taggedDepartments.add(dept);
+  }
+  const deptMembers = new Set();
+  for (const u of allUsers) {
+    if (taggedEveryone || (u.team && taggedDepartments.has(u.team))) deptMembers.add(u.username);
+  }
+  const snippet = message.length > 80 ? message.slice(0, 79) + '…' : message;
+  const notify = new Set([...mentioned, ...deptMembers]);
+  notify.delete(req.user.username);
+  for (const u of notify) {
+    const how = mentioned.has(u) ? 'mentioned you' : taggedEveryone ? 'tagged @everyone' : `tagged your department`;
+    await db.createNotification({ username: u, type: 'chat_mention', chat_room: room, message: `${req.user.name} ${how} in #${roomName}: "${snippet}"` });
+  }
+  mentioned.delete(req.user.username);
+  await db.markChatRead(req.user.username, room, id);
+  res.json({ id, mentioned: Array.from(mentioned), departments: Array.from(taggedDepartments), everyone: taggedEveryone, notified: notify.size });
+});
+app.post('/api/chat/read', auth(ALL_ROLES), async (req, res) => {
+  const room = str((req.body || {}).room).trim() || 'general';
+  if (!await canUseChatRoom(await chatUser(req), room)) return res.status(403).json({ error: "You don't have access to this room." });
+  await db.markChatRead(req.user.username, room, Number((req.body || {}).lastId) || 0);
+  res.json({ ok: true });
+});
+app.delete('/api/chat/messages/:id', auth(ALL_ROLES), async (req, res) => {
+  const msg = await db.getChatMessage(req.params.id);
+  if (!msg || msg.deleted_at) return res.status(404).json({ error: 'Message not found.' });
+  if (msg.by_username !== req.user.username && req.user.role !== 'admin') return res.status(403).json({ error: 'You can only delete your own messages.' });
+  await db.deleteChatMessage(msg.id);
+  if (msg.by_username !== req.user.username) await auditFromReq(req, 'chat_message_deleted', `Deleted a chat message by ${msg.by_name || msg.by_username} in ${msg.room}.`);
+  res.json({ ok: true });
+});
+app.get('/api/chat/files/:id', auth(ALL_ROLES), async (req, res) => {
+  const f = await db.getChatFile(req.params.id);
+  if (!f) return res.status(404).json({ error: 'File not found.' });
+  if (!await canUseChatRoom(await chatUser(req), f.room)) return res.status(403).json({ error: "You don't have access to this file." });
+  res.json({ data: f.data, name: f.name });
+});
+
+/* ============ ANNOUNCEMENTS ============
+   Circulated to everyone. Admin, Directors and HR can post; everyone reads. An optional date puts
+   the announcement on the calendar. Posting notifies everyone (in-app + push). */
+const ANNOUNCEMENT_CATEGORIES = ['general', 'holiday', 'event', 'safety', 'policy', 'celebration', 'meeting', 'urgent'];
+async function canPostAnnouncements(req) {
+  if (req.user.role === 'admin' || req.user.role === 'director') return true;
+  const u = await db.getUser(req.user.username);
+  return !!(u && isHRTeam(u.team));
+}
+function cleanAnnouncement(body) {
+  const b = body || {};
+  const title = str(b.title).trim();
+  const text = str(b.body).trim();
+  const emoji = str(b.emoji).trim().slice(0, 16);
+  const category = ANNOUNCEMENT_CATEGORIES.includes(str(b.category)) ? str(b.category) : 'general';
+  const eventDate = str(b.eventDate).trim();
+  if (!title) return { error: 'A title is required.' };
+  if (tooLong(title, 160)) return { error: 'Title is too long (max 160 characters).' };
+  if (tooLong(text, 5000)) return { error: 'Message is too long (max 5000 characters).' };
+  if (eventDate && !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return { error: 'Date is not valid.' };
+  return { value: { title, body: text, emoji, category, event_date: eventDate || null, pinned: !!b.pinned } };
+}
+app.get('/api/announcements', auth(ALL_ROLES), async (req, res) => {
+  res.json({ items: await db.listAnnouncements(), canPost: await canPostAnnouncements(req) });
+});
+app.post('/api/announcements', auth(ALL_ROLES), async (req, res) => {
+  if (!await canPostAnnouncements(req)) return res.status(403).json({ error: 'Only Admin, Directors and HR can post announcements.' });
+  const a = cleanAnnouncement(req.body);
+  if (a.error) return res.status(400).json({ error: a.error });
+  const id = await db.createAnnouncement({ ...a.value, created_by_username: req.user.username, created_by_name: req.user.name });
+  await auditFromReq(req, 'announcement_posted', `Posted announcement "${a.value.title}".`);
+  const users = await db.listUsers();
+  for (const u of users) {
+    if (u.username === req.user.username) continue;
+    await db.createNotification({ username: u.username, type: 'announcement', message: `${a.value.emoji ? a.value.emoji + ' ' : '📢 '}${a.value.title}` });
+  }
+  res.json({ id });
+});
+app.put('/api/announcements/:id', auth(ALL_ROLES), async (req, res) => {
+  const existing = await db.getAnnouncement(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Announcement not found.' });
+  if (!await canPostAnnouncements(req)) return res.status(403).json({ error: 'Only Admin, Directors and HR can edit announcements.' });
+  if (existing.created_by_username !== req.user.username && req.user.role !== 'admin') return res.status(403).json({ error: 'Only the person who posted it (or Admin) can edit it.' });
+  const a = cleanAnnouncement(req.body);
+  if (a.error) return res.status(400).json({ error: a.error });
+  await db.updateAnnouncement(existing.id, a.value);
+  res.json({ ok: true });
+});
+app.delete('/api/announcements/:id', auth(ALL_ROLES), async (req, res) => {
+  const existing = await db.getAnnouncement(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Announcement not found.' });
+  if (existing.created_by_username !== req.user.username && req.user.role !== 'admin') return res.status(403).json({ error: 'Only the person who posted it (or Admin) can remove it.' });
+  await db.deleteAnnouncement(existing.id);
+  await auditFromReq(req, 'announcement_removed', `Removed announcement "${existing.title}".`);
+  res.json({ ok: true });
 });
 
 /* ============ RESPONSE CACHE + LIVE SYNC ============
@@ -1689,6 +1868,8 @@ app.post('/api/tasks', auth(ALL_ROLES), async (req, res) => {
     const uploadError = validateUploadedFile(attachment, attachmentName, fileLimit);
     if (uploadError) return res.status(400).json({ error: uploadError });
   }
+  const uploads = collectUploads(req.body, fileLimit);
+  if (uploads.error) return res.status(400).json({ error: uploads.error });
   if (dependsOnTaskId && !await db.getTask(dependsOnTaskId)) return res.status(400).json({ error: 'The task this depends on was not found.' });
   let parentTask = null;
   if (parentTaskId) {
@@ -1729,6 +1910,7 @@ app.post('/api/tasks', auth(ALL_ROLES), async (req, res) => {
       id, title, description, priority, deadline, dependsOnTaskId, parentTaskId, project, phase,
       attachment, attachmentName, isDrawingRequest, autoReleaseStages, stageGroups, usersByUsername, individualDeadlines,
     });
+    if (uploads.files.length) await db.addTaskFiles(id, null, uploads.files, req.user.username, tx);
   });
   // Tell the prerequisite task's creator and assignees that something new now depends on it —
   // clears up "does picking this send a notification?": yes, but only to the task it depends
@@ -2047,6 +2229,22 @@ app.get('/api/tasks/:id/attachment', auth(ALL_ROLES), async (req, res) => {
   if (!row || !row.attachment) return res.status(404).json({ error: 'No attachment on this task.' });
   res.json({ data: row.attachment, name: row.attachment_name });
 });
+app.get('/api/tasks/:id/files/:fileId', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: 'Task not found.' });
+  if (!(await isInvolvedInTask(req.user, task))) return res.status(403).json({ error: "You're not involved in this task." });
+  const f = await db.getTaskFile(req.params.fileId);
+  if (!f || f.task_id !== task.id || f.reply_id) return res.status(404).json({ error: 'File not found.' });
+  res.json({ data: f.data, name: f.name });
+});
+app.get('/api/tasks/:id/replies/:replyId/files/:fileId', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: 'Task not found.' });
+  if (!(await isInvolvedInTask(req.user, task))) return res.status(403).json({ error: "You're not involved in this task." });
+  const f = await db.getTaskFile(req.params.fileId);
+  if (!f || f.task_id !== task.id || String(f.reply_id) !== String(req.params.replyId)) return res.status(404).json({ error: 'File not found.' });
+  res.json({ data: f.data, name: f.name });
+});
 app.get('/api/tasks/:id/replies/:replyId/attachment', auth(ALL_ROLES), async (req, res) => {
   const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
@@ -2062,7 +2260,9 @@ app.post('/api/tasks/:id/reply', auth(ALL_ROLES), async (req, res) => {
   const message = str((req.body || {}).message).trim();
   const { attachment } = req.body || {};
   const attachmentName = str((req.body || {}).attachmentName).trim();
-  if (!message && !attachment) return res.status(400).json({ error: 'A message or attachment is required.' });
+  const replyUploads = collectUploads(req.body, task.is_drawing_request ? MAX_DRAWING_FILE_CHARS : MAX_FILE_CHARS);
+  if (replyUploads.error) return res.status(400).json({ error: replyUploads.error });
+  if (!message && !attachment && replyUploads.files.length === 0) return res.status(400).json({ error: 'A message or attachment is required.' });
   if (tooLong(message, 5000)) return res.status(400).json({ error: 'Message is too long (max 5000 characters).' });
   // A task originally flagged as a drawing request (or later marked one via "Ask for Drawing"
   // on an existing task) keeps the larger CAD file-size allowance for every reply too — not
@@ -2074,6 +2274,7 @@ app.post('/api/tasks/:id/reply', auth(ALL_ROLES), async (req, res) => {
     if (uploadError) return res.status(400).json({ error: uploadError });
   }
   const replyId = await db.addReply(task.id, { by_username: req.user.username, by_name: req.user.name, message, attachment, attachment_name: attachmentName });
+  if (replyUploads.files.length) await db.addTaskFiles(task.id, replyId, replyUploads.files, req.user.username);
   // Notify both primary assignees AND anyone tagged for follow-up — follow-up people asked to
   // "keep an eye on this" should hear about replies just like assignees do.
   const notifyTargets = new Set([
@@ -2794,100 +2995,6 @@ app.post('/api/admin/jobs/:id/retry', auth(['admin']), async (req, res) => {
 });
 // Runs due jobs now (Admin) — used to verify the worker without waiting for the timer.
 app.post('/api/admin/jobs/run-now', auth(['admin']), async (req, res) => { await jobs.tick(); res.json({ ok: true, counts: await jobs.counts() }); });
-/* ============ COMPANY CHAT ============
-   One company-wide room ("All Company") plus one room per department. Everyone can read and post in
-   every room. Tag a person with @username or a whole department with @[Department name], the same
-   way tasks can be tagged to people or departments; @everyone (whole company) is for Admin/Directors.
-   Tagged people get a notification (bell + phone push) that opens the room. */
-const CHAT_GENERAL = 'general';
-async function chatRooms() {
-  const teams = await db.listTeams();
-  return [{ key: CHAT_GENERAL, name: 'All Company' }, ...teams.map(t => ({ key: `dept:${t}`, name: t, team: t }))];
-}
-async function resolveRoom(key) { return (await chatRooms()).find(r => r.key === key) || null; }
-const chatPostTimes = new Map(); // per person: at most 30 messages a minute (stops accidental floods, never normal chatting)
-function chatRateOk(username) {
-  const now = Date.now();
-  const recent = (chatPostTimes.get(username) || []).filter(t => now - t < 60000);
-  if (recent.length >= 30) return false;
-  recent.push(now); chatPostTimes.set(username, recent); return true;
-}
-app.get('/api/chat/rooms', auth(ALL_ROLES), async (req, res) => {
-  const rooms = await chatRooms();
-  const keys = rooms.map(r => r.key);
-  const unread = new Map((await db.chatUnread(req.user.username, keys)).map(r => [r.room, r]));
-  const last = new Map((await db.chatLastMessages(keys)).map(r => [r.room, r]));
-  const me = await db.getUser(req.user.username);
-  res.setHeader('Cache-Control', 'no-store');
-  res.json(rooms.map(r => ({ ...r, mine: !!(me && me.team && r.team === me.team), unread: (unread.get(r.key) || {}).unread || 0,
-    mentions: (unread.get(r.key) || {}).mentions || 0, last: last.get(r.key) || null })));
-});
-app.get('/api/chat/unread', auth(ALL_ROLES), async (req, res) => {
-  const rows = await db.chatUnread(req.user.username, (await chatRooms()).map(r => r.key));
-  res.setHeader('Cache-Control', 'no-store');
-  res.json({ unread: rows.reduce((a, r) => a + r.unread, 0), mentions: rows.reduce((a, r) => a + r.mentions, 0) });
-});
-app.get('/api/chat/rooms/:room/messages', auth(ALL_ROLES), async (req, res) => {
-  const room = await resolveRoom(req.params.room);
-  if (!room) return res.status(404).json({ error: 'That chat room does not exist.' });
-  res.setHeader('Cache-Control', 'no-store');
-  res.json(await db.listChatMessages(room.key, { beforeId: parseInt(req.query.before, 10) || null, afterId: parseInt(req.query.after, 10) || null,
-    limit: Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50)) }));
-});
-app.post('/api/chat/rooms/:room/messages', auth(ALL_ROLES), async (req, res) => {
-  const room = await resolveRoom(req.params.room);
-  if (!room) return res.status(404).json({ error: 'That chat room does not exist.' });
-  const message = str((req.body || {}).message).replace(/\r\n/g, '\n').trim();
-  if (!message) return res.status(400).json({ error: 'Type a message first.' });
-  if (message.length > 2000) return res.status(400).json({ error: 'Message is too long (max 2,000 characters).' });
-  if (!chatRateOk(req.user.username)) return res.status(429).json({ error: 'You are sending messages very fast — please wait a moment.' });
-  const me = await db.getUser(req.user.username);
-  const users = await db.listUsers();
-  const teams = await db.listTeams();
-  const mentions = new Set(), mentionTeams = new Set();
-  for (const m of message.matchAll(/@([a-zA-Z0-9._-]{3,40})/g)) {
-    if (m[1] === 'everyone') continue;
-    if (users.some(u => u.username === m[1])) mentions.add(m[1]);
-  }
-  for (const m of message.matchAll(/@\[([^\]\n]{1,80})\]/g)) {
-    const t = teams.find(x => x.toLowerCase() === m[1].trim().toLowerCase());
-    if (t) mentionTeams.add(t);
-  }
-  const everyone = /(^|\s)@everyone\b/.test(message);
-  if (everyone && !(req.user.role === 'admin' || req.user.role === 'director')) return res.status(403).json({ error: 'Only Admin and Directors can use @everyone.' });
-  const taskRef = (message.match(/\bTASK-[A-Z0-9]{6}\b/) || [])[0] || null;
-  const saved = await db.addChatMessage({ room: room.key, by_username: me.username, by_name: me.name, by_team: me.team, message,
-    mentions: [...mentions], mention_teams: [...mentionTeams], task_id: taskRef });
-  // Who to notify: tagged people + members of tagged departments (+ everyone for @everyone), never the sender, once each.
-  const notify = new Set(mentions);
-  for (const u of users) if ((u.team && mentionTeams.has(u.team)) || everyone) notify.add(u.username);
-  notify.delete(me.username);
-  const snippet = message.length > 120 ? message.slice(0, 117) + '…' : message;
-  const where = room.key === CHAT_GENERAL ? 'All Company chat' : `${room.name} chat`;
-  for (const u of notify) {
-    try { await db.createNotification({ username: u, type: 'chat_mention', message: `${me.name} tagged you in ${where}: "${snippet}"`, chat_room: room.key }); }
-    catch (e) { log('ERROR', 'chat mention notification failed', { requestId: req.id, recipient: u, error: e.message }); }
-  }
-  res.json({ ok: true, message: saved, notified: notify.size });
-});
-app.post('/api/chat/rooms/:room/read', auth(ALL_ROLES), async (req, res) => {
-  const room = await resolveRoom(req.params.room);
-  if (!room) return res.status(404).json({ error: 'That chat room does not exist.' });
-  const lastId = parseInt((req.body || {}).lastId, 10) || 0;
-  if (lastId > 0) await db.markChatRead(req.user.username, room.key, lastId);
-  res.json({ ok: true });
-});
-// Delete: your own message, or Admin (moderation — recorded in the audit log). Shown as "message deleted".
-app.delete('/api/chat/messages/:id', auth(ALL_ROLES), async (req, res) => {
-  const m = await db.getChatMessage(parseInt(req.params.id, 10) || 0);
-  if (!m || m.deleted_at) return res.status(404).json({ error: 'Message not found.' });
-  const own = m.by_username === req.user.username;
-  if (!own && req.user.role !== 'admin') return res.status(403).json({ error: 'You can only delete your own messages.' });
-  await db.deleteChatMessage(m.id, req.user.username);
-  if (!own) await auditFromReq(req, 'chat_message_deleted', `Deleted a chat message by ${m.by_name || m.by_username}: "${String(m.message).slice(0, 120)}"`);
-  res.json({ ok: true });
-});
-
 // Admin visibility: recent notification deliveries (failed / cancelled / sent).
 app.get('/api/notifications/deliveries', auth(['admin']), async (req, res) => {
   const status = ['pending', 'processing', 'sent', 'failed', 'retrying', 'cancelled'].includes(str(req.query.status)) ? str(req.query.status) : null;

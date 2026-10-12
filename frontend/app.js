@@ -67,6 +67,7 @@ function defaultUiState() {
     cancelFormTaskId: null,
     addAssigneeFormTaskId: null, addAssigneeTags: [],
     taskSearchQuery: '', taskFilterProject: '', taskFilterPhase: '', taskFilterTagging: '',
+    myOwnerFilter: 'all', myOwnerPerson: '', todayCardOpen: null, todayCardShown: 30, todayScope: 'mine', dashScope: 'mine', dashCardOpen: null, dashCardShown: 30,
     myOpenShown: 30, allOpenShown: 30, deadlineEditTaskId: null,
     myHistoryShown: 20, allHistoryShown: 20,
     calendarYear: new Date().getFullYear(), calendarMonth: new Date().getMonth(),
@@ -101,8 +102,9 @@ if (token) {
   if (safeStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; chatUnread = { unread: 0, mentions: 0 }; chatRoomsList = []; chatMessagesResp = null; Object.keys(chatOlder).forEach(k => delete chatOlder[k]);
-  ui = defaultUiState();
+  myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0;
+  ui = defaultUiState(); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
+  announcements = []; canPostAnnouncements = false; chat.rooms = []; chat.messages = {}; chat.hasOlder = {}; chat.lastVersion = null;
 }
 
 /* ==================== DAILY QUOTE ====================
@@ -207,6 +209,8 @@ const ICONS = {
   checkCircle: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9"/>',
   upload: '<path d="M12 15V4M7.5 8.5L12 4l4.5 4.5"/><path d="M4 15v4a1 1 0 001 1h14a1 1 0 001-1v-4"/>',
   pencil: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/>',
+  chat: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/>',
+  megaphone: '<path d="M3 10v4h3l7 4V6L6 10z"/><path d="M16 9a4 4 0 010 6M18.5 6.5a7.5 7.5 0 010 11"/>',
 };
 function icon(name, size) {
   return `<svg viewBox="0 0 24 24" width="${size || 17}" height="${size || 17}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
@@ -366,18 +370,82 @@ function resizeImage(file, cb) {
 }
 // For CAD/drawing and other non-image files — kept as-is (base64), only images get downscaled.
 function readAnyFile(file, cb) {
-  if (file.type && file.type.startsWith('image/')) { resizeImage(file, cb); return; }
   const MAX = 150 * 1024 * 1024;
-  if (file.size > MAX) { cb(null); return; }
-  const reader = new FileReader();
-  reader.onload = e => cb(e.target.result);
-  reader.onerror = () => cb(null);
-  reader.readAsDataURL(file);
+  const readRaw = () => {
+    if (file.size > MAX) { cb(null); return; }
+    const reader = new FileReader();
+    reader.onload = e => cb(e.target.result);
+    reader.onerror = () => cb(null);
+    reader.readAsDataURL(file);
+  };
+  // Only real photos get downscaled. Browsers label some CAD files as images too (a .dwg is
+  // "image/vnd.dwg"), which used to send drawings through the photo resizer and fail — so check
+  // for actual photo formats, and fall back to the original file if resizing fails anyway.
+  if (/^image\/(jpeg|png|webp|bmp)$/i.test(file.type || '')) { resizeImage(file, data => data ? cb(data) : readRaw()); return; }
+  readRaw();
 }
 function filePreview(dataUrl, label) {
   if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) return '';
   if (dataUrl.startsWith('data:image')) return `<div class="photo-frame"><img src="${dataUrl}"></div>`;
   return `<div style="margin-top:8px;"><a href="${dataUrl}" download="${esc(label || 'document')}" target="_blank">📎 View ${esc(label || 'attachment')} →</a></div>`;
+}
+// ---- Multi-file picker (task form, task replies, chat) ----
+// Files picked but not yet sent live in pendingFiles[key] as [{ name, data }]. Picking again adds
+// more (up to MAX_PICK_FILES); each chip has a ✕ to drop it before sending.
+const pendingFiles = {};
+const MAX_PICK_FILES = 10;
+function fileIcon(name) {
+  const n = String(name || '').toLowerCase();
+  if (/\.(png|jpe?g|gif|webp|heic|bmp)$/.test(n)) return '🖼️';
+  if (/\.pdf$/.test(n)) return '📕';
+  if (/\.(xlsx?|xlsm|csv)$/.test(n)) return '📊';
+  if (/\.(docx?|txt|rtf)$/.test(n)) return '📝';
+  if (/\.(dwg|dxf|rvt|rfa|skp|dgn|ifc|step|stp|plt)$/.test(n)) return '📐';
+  if (/\.(zip|rar|7z)$/.test(n)) return '🗜️';
+  return '📎';
+}
+function pendingFilesHTML(key) {
+  const list = pendingFiles[key] || [];
+  if (!list.length) return '';
+  return `<div class="file-chips">${list.map((f, i) => `<span class="file-chip">${fileIcon(f.name)} ${esc(f.name)}<button type="button" class="file-chip-x" data-remove-pending="${esc(key)}" data-idx="${i}" aria-label="Remove ${esc(f.name)}">✕</button></span>`).join('')}</div>`;
+}
+function refreshPendingPreview(key) {
+  document.querySelectorAll(`[data-pending-preview="${CSS.escape(key)}"]`).forEach(el => { el.innerHTML = pendingFilesHTML(key); });
+}
+function bindFilePicker(inputEl, key) {
+  if (!inputEl) return;
+  inputEl.onchange = () => {
+    const picked = Array.from(inputEl.files || []);
+    inputEl.value = '';
+    if (!picked.length) return;
+    const list = pendingFiles[key] = pendingFiles[key] || [];
+    const room = MAX_PICK_FILES - list.length;
+    if (room <= 0) { alert(`You can attach up to ${MAX_PICK_FILES} files at a time.`); return; }
+    if (picked.length > room) alert(`Only the first ${room} file${room === 1 ? '' : 's'} were added — the limit is ${MAX_PICK_FILES} per message.`);
+    let left = Math.min(picked.length, room);
+    const failed = [];
+    picked.slice(0, room).forEach(f => readAnyFile(f, data => {
+      if (data) list.push({ name: f.name, data }); else failed.push(f.name);
+      if (--left === 0) {
+        refreshPendingPreview(key);
+        if (failed.length) alert(`Could not read: ${failed.join(', ')} (too large or unreadable).`);
+      }
+    }));
+  };
+}
+function takePendingFiles(key) { const l = pendingFiles[key] || []; delete pendingFiles[key]; return l; }
+document.addEventListener('click', e => {
+  const x = e.target.closest('[data-remove-pending]');
+  if (!x) return;
+  e.preventDefault();
+  const key = x.dataset.removePending, i = Number(x.dataset.idx);
+  if (pendingFiles[key]) { pendingFiles[key].splice(i, 1); refreshPendingPreview(key); }
+});
+// All files on a task (the original single attachment, if any, plus any added ones).
+function taskFilesHTML(t) {
+  const legacy = lazyAttachmentHTML(t.has_attachment, t.attachment_name, `/api/tasks/${t.id}/attachment`, `task-attach-${t.id}`);
+  const extra = (t.files || []).map(f => lazyAttachmentHTML(true, f.name, `/api/tasks/${t.id}/files/${f.id}`, `task-file-${t.id}-${f.id}`)).join('');
+  return legacy + extra;
 }
 // Attachments (task or reply) are no longer embedded in the task list data at all — only a
 // has_attachment flag and filename are. Actual bytes (which can be up to ~100MB for a drawing)
@@ -485,7 +553,7 @@ const CAD_DRAWING_EXTENSIONS = ['.dwg', '.dxf', '.rvt', '.rfa', '.skp', '.dgn', 
 
 /* ==================== ROLES / NAV ==================== */
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', chat: 'Chat', system: 'System Health' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -506,6 +574,10 @@ const NAV_CONFIG = {
       { key: 'tasks', label: 'My Tasks', icon: 'checkCircle', badge: () => myOpenTaskBadgeCount() },
       { key: 'alltasks', label: 'All Tasks', icon: 'clipboard', badge: () => adminOpenTaskBadgeCount() },
       { key: 'calendar', label: 'Calendar', icon: 'clock' },
+    ]},
+    { group: 'Communicate', items: [
+      { key: 'chat', label: 'Chat Room', icon: 'chat', badge: () => chatUnreadTotal() },
+      { key: 'announcements', label: 'Announcements', icon: 'megaphone', badge: () => unseenAnnouncementCount() },
     ]},
     { group: 'Admin', items: [
       { key: 'accounts', label: 'Accounts', icon: 'users' },
@@ -529,6 +601,10 @@ const NAV_CONFIG = {
       { key: 'tasks', label: 'My Tasks', icon: 'checkCircle', badge: () => myOpenTaskBadgeCount() },
       { key: 'calendar', label: 'Calendar', icon: 'clock' },
     ]},
+    { group: 'Communicate', items: [
+      { key: 'chat', label: 'Chat Room', icon: 'chat', badge: () => chatUnreadTotal() },
+      { key: 'announcements', label: 'Announcements', icon: 'megaphone', badge: () => unseenAnnouncementCount() },
+    ]},
     { group: 'You', items: [
       { key: 'mydashboard', label: 'My Dashboard', icon: 'checkCircle' },
       { key: 'profile', label: 'My Profile', icon: 'pencil' },
@@ -546,6 +622,10 @@ const NAV_CONFIG = {
     { group: 'Tasks', items: [
       { key: 'tasks', label: 'My Tasks', icon: 'checkCircle', badge: () => myOpenTaskBadgeCount() },
       { key: 'calendar', label: 'Calendar', icon: 'clock' },
+    ]},
+    { group: 'Communicate', items: [
+      { key: 'chat', label: 'Chat Room', icon: 'chat', badge: () => chatUnreadTotal() },
+      { key: 'announcements', label: 'Announcements', icon: 'megaphone', badge: () => unseenAnnouncementCount() },
     ]},
     { group: 'Reporting', items: [
       { key: 'performance', label: 'Performance', icon: 'checkCircle' },
@@ -573,12 +653,10 @@ function renderSidebar() {
     groups.push({ group: 'HR', items: [{ key: 'hrdashboard', label: 'HR Dashboard', icon: 'users' }] });
   }
   // Assistant pages appear when switched on (or when something is still waiting for review).
-  // Company chat — for everyone.
-  if (groups[0] && !groups[0].items.some(i => i.key === 'chat')) groups[0] = { ...groups[0], items: groups[0].items.concat({ key: 'chat', label: 'Chat', icon: 'users', badge: () => chatUnread.unread || 0 }) };
   const assistantItems = [];
   if (appFeatures.voiceTasks || appFeatures.aiTaskExtraction || appFeatures.meetingAi || pendingSuggestions.length) assistantItems.push({ key: 'suggestions', label: 'Suggestions', icon: 'checkCircle', badge: () => pendingSuggestions.length });
   if (appFeatures.meetingAi) assistantItems.push({ key: 'meetings', label: 'Meetings', icon: 'clock' });
-  if (assistantItems.length) groups.splice(2, 0, { group: 'Assistant', items: assistantItems });
+  if (assistantItems.length) { const ci = groups.findIndex(g => g.group === 'Communicate'); groups.splice(ci >= 0 ? ci + 1 : 2, 0, { group: 'Assistant', items: assistantItems }); }
   if (session.role === 'admin') { const g = groups.find(x => x.group === 'Admin'); if (g && !g.items.some(i => i.key === 'system')) g.items = g.items.concat({ key: 'system', label: 'System Health', icon: 'clipboard' }); }
   const active = currentTabKey();
   return `
@@ -613,8 +691,8 @@ function renderSidebar() {
     </div>
   </aside>`;
 }
-const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'bell', task_closed: 'checkCircle', task_reminder: 'clock', task_reminder_3day: 'clock', task_warning: 'alertTriangle', task_warning_creator: 'alertTriangle', weekly_warning_digest: 'alertTriangle', followup_tagged: 'eye', task_submitted: 'checkCircle', mentioned_in_comment: 'bell', approval_requested: 'checkCircle', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', deadline_soon: 'clock', deadline_passed: 'alertTriangle', admin_late_flag: 'alertTriangle', task_reopened: 'alertTriangle' };
-const NOTIF_TYPE_LABEL = { task_assigned: 'Task Assigned', task_reply: 'Task Update', task_closed: 'Task Closed', task_reminder: 'Task Reminder', task_reminder_3day: '3-Day Reminder', task_warning: '7-Day Warning', task_warning_creator: 'Task Overdue Warning', weekly_warning_digest: 'Weekly Warning Summary', followup_tagged: 'Follow-up Requested', task_submitted: 'Awaiting Your Approval', mentioned_in_comment: 'Mentioned You', approval_requested: 'Approval Requested', approval_rejected: 'Approval Rejected', approval_approved: 'Fully Approved', deadline_soon: 'Deadline Soon', deadline_passed: 'Deadline Passed', admin_late_flag: 'Late User Flagged', task_reopened: 'Task Reopened' };
+const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'bell', task_closed: 'checkCircle', task_reminder: 'clock', task_reminder_3day: 'clock', task_warning: 'alertTriangle', task_warning_creator: 'alertTriangle', weekly_warning_digest: 'alertTriangle', followup_tagged: 'eye', task_submitted: 'checkCircle', mentioned_in_comment: 'bell', approval_requested: 'checkCircle', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', deadline_soon: 'clock', deadline_passed: 'alertTriangle', admin_late_flag: 'alertTriangle', task_reopened: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone' };
+const NOTIF_TYPE_LABEL = { task_assigned: 'Task Assigned', task_reply: 'Task Update', task_closed: 'Task Closed', task_reminder: 'Task Reminder', task_reminder_3day: '3-Day Reminder', task_warning: '7-Day Warning', task_warning_creator: 'Task Overdue Warning', weekly_warning_digest: 'Weekly Warning Summary', followup_tagged: 'Follow-up Requested', task_submitted: 'Awaiting Your Approval', mentioned_in_comment: 'Mentioned You', approval_requested: 'Approval Requested', approval_rejected: 'Approval Rejected', approval_approved: 'Fully Approved', deadline_soon: 'Deadline Soon', deadline_passed: 'Deadline Passed', admin_late_flag: 'Late User Flagged', task_reopened: 'Task Reopened', chat_mention: '💬 Mentioned in Chat', announcement: '📢 Announcement' };
 function renderNotifDrawer() {
   const sorted = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   return `
@@ -626,7 +704,7 @@ function renderNotifDrawer() {
       </div>
       <div style="padding:8px 12px;max-height:calc(100vh - 60px);overflow-y:auto;">
         ${sorted.length === 0 ? `<div class="empty">Nothing to show — all quiet.</div>` : sorted.map(n => `
-          <div class="notif-item" ${n.task_id ? `data-notif-goto-task="${esc(n.task_id)}"` : ''} ${n.chat_room ? `data-notif-goto-chat="${esc(n.chat_room)}"` : ''} style="${n.task_id || n.chat_room ? 'cursor:pointer;' : ''}" data-mark-notif-read="${n.id}">
+          <div class="notif-item" ${n.task_id ? `data-notif-goto-task="${esc(n.task_id)}"` : n.type === 'chat_mention' ? `data-notif-goto-tab="chat"${n.chat_room ? ` data-notif-chat-room="${esc(n.chat_room)}"` : ''}` : n.type === 'announcement' ? 'data-notif-goto-tab="announcements"' : ''} style="${n.task_id || n.type === 'chat_mention' || n.type === 'announcement' ? 'cursor:pointer;' : ''}" data-mark-notif-read="${n.id}">
             <div class="notif-icon">${icon(NOTIF_TYPE_ICON[n.type] || 'alertTriangle', 16)}</div>
             <div style="flex:1;min-width:0;">
               <div class="flex-between"><span class="small" style="font-weight:700;">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')}</span>${n.read ? `<span class="badge received">Read</span>` : `<span class="badge flag">New</span>`}</div>
@@ -723,6 +801,7 @@ function once(fn) {
 let loginInFlight = false;
 function bindLogin() {
   bindPasswordToggles();
+  // One login request per attempt: ignore Enter/clicks while a login is already in flight.
   const submit = async () => {
     if (loginInFlight) return;
     loginInFlight = true;
@@ -1261,197 +1340,9 @@ function bindSystemView() {
   });
 }
 
-/* ==================== COMPANY CHAT ====================
-   All Company + one room per department; everyone can read and post everywhere. Tag a person
-   (@username) or a whole department (@[Department]) — picked from the list as you type "@".
-   New messages arrive through the normal live sync (a few seconds). */
-let chatUnread = { unread: 0, mentions: 0 };
-let chatRoomsList = [];
-let chatMessagesResp = null;           // { messages, hasMore } for ui.chatRoom (latest page)
-const chatOlder = {};                  // room -> older messages loaded with "Load earlier"
-const chatOlderMore = {};              // room -> hasMore for older pages
-let chatStickBottom = true;
-try { ui.chatRoom = ui.chatRoom || safeStorage.getItem('ls_chat_room') || 'general'; } catch (e) { /* ui not ready */ }
-const chatRoomKey = () => ui.chatRoom || 'general';
-const chatRoomName = key => { const r = chatRoomsList.find(x => x.key === key); return r ? r.name : (key === 'general' ? 'All Company' : String(key).replace(/^dept:/, '')); };
-function chatTagsMe(m) {
-  if (m.by_username === session.username) return false;
-  return (m.mentions || []).includes(session.username) || (session.team && (m.mention_teams || []).includes(session.team)) || /(^|\s)@everyone\b/.test(m.message || '');
-}
-function chatFormat(text) {
-  return esc(text)
-    .replace(/@\[([^\]\n]{1,80})\]/g, (all, t) => (teamsList || []).some(x => x.toLowerCase() === t.trim().toLowerCase()) ? `<span class="mention-tag mention-dept">@${t}</span>` : all)
-    .replace(/(^|\s)@everyone\b/g, '$1<span class="mention-tag mention-all">@everyone</span>')
-    .replace(/@([a-zA-Z0-9._-]{3,40})/g, (all, u) => { const p = (userDirectory || []).find(x => x.username === u); return p ? `<span class="mention-tag" title="${esc(p.name)}">@${esc(p.name)}</span>` : all; })
-    .replace(/\bTASK-[A-Z0-9]{6}\b/g, id => `<a href="#" class="chat-task-link" data-chat-task="${id}">${id}</a>`)
-    .replace(/\n/g, '<br>');
-}
-const istDay = iso => new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
-const istTime = iso => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
-function chatDayLabel(iso) {
-  const d = istDay(iso), today = istDay(new Date().toISOString()), yest = istDay(new Date(Date.now() - 864e5).toISOString());
-  return d === today ? 'Today' : d === yest ? 'Yesterday' : d;
-}
-function renderChatView() {
-  const room = chatRoomKey();
-  const latest = (chatMessagesResp && chatMessagesResp.room === room) ? chatMessagesResp.messages : [];
-  const msgs = (chatOlder[room] || []).concat(latest);
-  const hasMoreOlder = (chatOlder[room] ? chatOlderMore[room] : chatMessagesResp && chatMessagesResp.room === room && chatMessagesResp.hasMore);
-  const rooms = chatRoomsList.length ? chatRoomsList : [{ key: 'general', name: 'All Company' }];
-  const mineFirst = rooms.slice(0, 1).concat(rooms.slice(1).sort((a, b) => (b.mine - a.mine) || a.name.localeCompare(b.name)));
-  let lastDay = null, lastAuthor = null, lastAt = 0;
-  return `
-  <div class="chat-shell">
-    <aside class="chat-rooms" aria-label="Chat rooms">
-      ${mineFirst.map(r => `
-        <button class="chat-room ${r.key === room ? 'active' : ''}" data-chat-room="${esc(r.key)}">
-          <span class="chat-room-name">${r.key === 'general' ? '🏢 ' : '# '}${esc(r.name)}${r.mine ? ' <span class="small muted">(yours)</span>' : ''}</span>
-          ${r.mentions ? `<span class="chat-badge at">@${r.mentions}</span>` : r.unread ? `<span class="chat-badge">${r.unread}</span>` : ''}
-          ${r.last ? `<span class="chat-room-last small muted">${esc(r.last.by_name || '')}: ${esc(r.last.message || '')}</span>` : ''}
-        </button>`).join('')}
-    </aside>
-    <section class="chat-main">
-      <div class="chat-head">
-        <div><b>${room === 'general' ? '🏢 ' : '# '}${esc(chatRoomName(room))}</b>
-          <div class="small muted">${room === 'general' ? 'Everyone in the company' : `Open to everyone — talk to ${esc(chatRoomName(room))} here`}</div></div>
-      </div>
-      <div class="chat-messages" id="chat-messages">
-        ${hasMoreOlder ? '<div style="text-align:center;margin:6px 0;"><button class="btn btn-sm" data-act="chat-older">Load earlier messages</button></div>' : ''}
-        ${!chatMessagesResp ? '<div class="empty small">Loading…</div>' : msgs.length === 0 ? '<div class="empty">No messages yet — say hello 👋</div>' : msgs.map(m => {
-          const day = chatDayLabel(m.created_at);
-          const t = new Date(m.created_at).getTime();
-          const grouped = day === lastDay && m.by_username === lastAuthor && t - lastAt < 5 * 60000;
-          const sep = day !== lastDay ? `<div class="chat-day"><span>${esc(day)}</span></div>` : '';
-          lastDay = day; lastAuthor = m.by_username; lastAt = t;
-          const mine = m.by_username === session.username;
-          const canDelete = !m.deleted_at && (mine || session.role === 'admin');
-          return `${sep}
-          <div class="chat-msg ${mine ? 'mine' : ''} ${chatTagsMe(m) ? 'tags-me' : ''} ${grouped ? 'grouped' : ''}" data-msg-id="${m.id}">
-            ${grouped ? '' : `<div class="chat-meta"><b>${esc(m.by_name || m.by_username)}</b>${m.by_team ? ` <span class="small muted">· ${esc(m.by_team)}</span>` : ''} <span class="small muted">${istTime(m.created_at)}</span></div>`}
-            <div class="chat-text">${m.deleted_at ? '<i class="muted">message deleted</i>' : chatFormat(m.message)}
-              ${canDelete ? `<button class="chat-del" data-chat-del="${m.id}" title="Delete message" aria-label="Delete message">✕</button>` : ''}</div>
-          </div>`;
-        }).join('')}
-      </div>
-      <div class="chat-compose">
-        <div style="position:relative;flex:1;">
-          <textarea id="chat-input" rows="2" maxlength="2000" placeholder="Message ${esc(chatRoomName(room))} · @ to tag">${esc(ui.chatDraft || '')}</textarea>
-          <div class="tag-suggestions-dropdown" id="chat-suggest" style="display:none;bottom:calc(100% + 4px);top:auto;"></div>
-        </div>
-        <button class="btn btn-primary" data-act="chat-send" ${ui.chatSending ? 'disabled' : ''}>Send</button>
-      </div>
-      <div class="small muted chat-hint">Enter to send · Shift+Enter for a new line · @name tags a person · @[Department] tags the whole department${session.role === 'admin' || session.role === 'director' ? ' · @everyone tags the whole company' : ''}</div>
-    </section>
-  </div>`;
-}
-function chatSuggestions(q) {
-  q = q.toLowerCase();
-  const out = [];
-  if ((session.role === 'admin' || session.role === 'director') && 'everyone'.startsWith(q)) out.push({ label: '📣 everyone', sub: 'whole company', insert: '@everyone ' });
-  (teamsList || []).filter(t => t.toLowerCase().includes(q)).slice(0, 5).forEach(t => out.push({ label: `🏷 ${t}`, sub: 'whole department', insert: `@[${t}] ` }));
-  (userDirectory || []).filter(u => u.username !== session.username && (u.username.toLowerCase().includes(q) || String(u.name).toLowerCase().includes(q))).slice(0, 8)
-    .forEach(u => out.push({ label: u.name, sub: `${u.username}${u.team ? ' · ' + u.team : ''}`, insert: `@${u.username} ` }));
-  return out;
-}
-async function chatMarkRead() {
-  const room = chatRoomKey();
-  if (!chatMessagesResp || chatMessagesResp.room !== room || !chatMessagesResp.messages.length) return;
-  const lastId = Number(chatMessagesResp.messages[chatMessagesResp.messages.length - 1].id);
-  ui.chatReadMarks = ui.chatReadMarks || {};
-  if ((ui.chatReadMarks[room] || 0) >= lastId) return;
-  ui.chatReadMarks[room] = lastId;
-  try {
-    await api(`/api/chat/rooms/${encodeURIComponent(room)}/read`, { method: 'POST', body: JSON.stringify({ lastId }) });
-    const r = chatRoomsList.find(x => x.key === room); if (r) { r.unread = 0; r.mentions = 0; }
-    chatUnread = await api('/api/chat/unread');
-    render();
-  } catch (e) { /* retried next time */ }
-}
-async function chatSend() {
-  const input = document.getElementById('chat-input');
-  const text = (input ? input.value : ui.chatDraft || '').trim();
-  if (!text || ui.chatSending) return;
-  ui.chatSending = true;
-  try {
-    await api(`/api/chat/rooms/${encodeURIComponent(chatRoomKey())}/messages`, { method: 'POST', body: JSON.stringify({ message: text }) });
-    ui.chatDraft = ''; if (input) input.value = '';
-    chatStickBottom = true;
-    loadTabExtras();
-  } catch (e) { setBanner(e.message); }
-  ui.chatSending = false; render();
-  const again = document.getElementById('chat-input'); if (again) again.focus();
-}
-function bindChatView() {
-  document.querySelectorAll('[data-chat-room]').forEach(b => b.onclick = () => {
-    if (b.dataset.chatRoom === chatRoomKey()) return;
-    ui.chatRoom = b.dataset.chatRoom; ui.chatDraft = ''; chatMessagesResp = null; chatStickBottom = true;
-    safeStorage.setItem('ls_chat_room', ui.chatRoom);
-    render(); loadTabExtras();
-  });
-  const box = document.getElementById('chat-messages');
-  if (box) {
-    if (chatStickBottom) box.scrollTop = box.scrollHeight;
-    box.onscroll = () => { chatStickBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60; };
-  }
-  const input = document.getElementById('chat-input');
-  const sug = document.getElementById('chat-suggest');
-  if (input && sug) {
-    let items = [];
-    const frag = () => { const pos = input.selectionStart; const m = input.value.slice(0, pos).match(/@(\[[^\]\n]*|[a-zA-Z0-9._-]*)$/); return m ? { q: m[1].replace(/^\[/, ''), start: pos - m[0].length, end: pos } : null; };
-    const close = () => { sug.style.display = 'none'; sug.innerHTML = ''; items = []; };
-    const pick = (it) => {
-      const f = frag(); if (!f) return close();
-      const before = input.value.slice(0, f.start), after = input.value.slice(f.end);
-      input.value = before + it.insert + after; ui.chatDraft = input.value;
-      const p = before.length + it.insert.length; input.focus(); input.setSelectionRange(p, p); close();
-    };
-    const show = () => {
-      const f = frag(); if (!f) return close();
-      items = chatSuggestions(f.q); if (!items.length) return close();
-      sug.style.display = 'block';
-      sug.innerHTML = items.map((it, i) => `<div class="tag-suggestion-item" data-sugg-i="${i}">${esc(it.label)} <span class="muted small">${esc(it.sub)}</span></div>`).join('');
-      sug.querySelectorAll('[data-sugg-i]').forEach(el => el.onmousedown = (e) => { e.preventDefault(); pick(items[Number(el.dataset.suggI)]); });
-    };
-    input.oninput = () => { ui.chatDraft = input.value; show(); };
-    input.onkeydown = (e) => {
-      if (e.key === 'Escape') return close();
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        if (items.length && sug.style.display === 'block') pick(items[0]); else chatSend();
-      }
-    };
-    input.onblur = () => setTimeout(close, 150);
-  }
-  const send = document.querySelector('[data-act="chat-send"]'); if (send) send.onclick = chatSend;
-  const older = document.querySelector('[data-act="chat-older"]');
-  if (older) older.onclick = async () => {
-    const room = chatRoomKey();
-    const first = (chatOlder[room] && chatOlder[room][0]) || (chatMessagesResp && chatMessagesResp.messages[0]);
-    if (!first) return;
-    older.disabled = true;
-    try {
-      const r = await api(`/api/chat/rooms/${encodeURIComponent(room)}/messages?before=${first.id}&limit=50`);
-      const prevHeight = box ? box.scrollHeight : 0;
-      chatOlder[room] = r.messages.concat(chatOlder[room] || []); chatOlderMore[room] = r.hasMore; chatStickBottom = false;
-      render();
-      const nb = document.getElementById('chat-messages'); if (nb) nb.scrollTop = nb.scrollHeight - prevHeight;
-    } catch (e) { setBanner(e.message); render(); }
-  };
-  document.querySelectorAll('[data-chat-del]').forEach(b => b.onclick = async () => {
-    if (!confirm('Delete this message for everyone?')) return;
-    try { await api(`/api/chat/messages/${b.dataset.chatDel}`, { method: 'DELETE' }); loadTabExtras(); } catch (e) { setBanner(e.message); render(); }
-  });
-  document.querySelectorAll('[data-chat-task]').forEach(a => a.onclick = (e) => {
-    e.preventDefault();
-    ui.taskSearchQuery = a.dataset.chatTask;
-    ui.adminTab = session.role === 'admin' ? 'alltasks' : 'tasks';
-    render(); window.scrollTo(0, 0);
-  });
-  chatMarkRead();
-}
 
 /* ==================== DATA LOADING ==================== */
-async function afterLogin() { await refreshData(); registerAndroidDevice(); ensurePushSubscription(false); }
+async function afterLogin() { await refreshData(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); }
 
 // ---- Push notifications (PWA) ----
 // Registering the service worker is harmless and done unconditionally (needed for the app to be
@@ -1524,7 +1415,6 @@ const TAB_EXTRAS = {
   reports: ['reportsTaskList'],
   auditlog: ['auditLogEntries'],
   meetings: ['meetingsList'],
-  chat: ['chatRoomsList', 'chatMessagesResp'],
   system: ['systemInfo'],
   peakhours: ['peakHoursData'],
   hrdashboard: ['hrRosterResp'],
@@ -1537,14 +1427,12 @@ function dataRequests() {
   const core = {
     myTasks: '/api/tasks/mine', userDirectory: '/api/users/directory', teamsList: '/api/teams', projectsList: '/api/projects',
     sectionsList: '/api/drawing-sections', phasesList: '/api/task-phases', openTaskTitles: '/api/tasks/open-titles', me: '/api/auth/me',
-    notif: '/api/notifications', myApprovalRequests: '/api/approvals/mine',
-    features: '/api/features', suggestions: '/api/suggestions', chatUnread: '/api/chat/unread',
+    notif: '/api/notifications', myApprovalRequests: '/api/approvals/mine', announcementsResp: '/api/announcements',
+    features: '/api/features', suggestions: '/api/suggestions',
   };
   if (isAdmin) { core.allTasks = '/api/tasks'; core.allApprovalRequests = '/api/approvals'; }
   const extras = {
     meetingsList: '/api/meetings',
-    chatRoomsList: '/api/chat/rooms',
-    chatMessagesResp: `/api/chat/rooms/${encodeURIComponent(chatRoomKey())}/messages?limit=50`,
     ...(isAdmin ? { systemInfo: '/api/admin/system' } : {}),
     myDashboardData: `/api/reports/my-dashboard${isAdmin && ui.dashboardViewUser && ui.dashboardViewUser !== session.username ? `?username=${encodeURIComponent(ui.dashboardViewUser)}` : ''}`,
   };
@@ -1579,6 +1467,7 @@ function applyData(key, v) {
       break;
     case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; break;
     case 'myApprovalRequests': myApprovalRequests = v; break;
+    case 'announcementsResp': announcements = v.items || []; canPostAnnouncements = !!v.canPost; break;
     case 'allApprovalRequests': allApprovalRequests = v; break;
     case 'myDashboardData': myDashboardData = v; break;
     case 'monthlyLeaderboard': monthlyLeaderboard = v; break;
@@ -1595,9 +1484,6 @@ function applyData(key, v) {
     case 'features': appFeatures = v || {}; break;
     case 'suggestions': pendingSuggestions = v || []; break;
     case 'meetingsList': meetingsList = v || []; break;
-    case 'chatUnread': chatUnread = v || { unread: 0, mentions: 0 }; break;
-    case 'chatRoomsList': chatRoomsList = v || []; break;
-    case 'chatMessagesResp': chatMessagesResp = { ...v, room: chatRoomKey() }; break;
     case 'systemInfo': systemInfo = v; break;
     case 'hrRosterResp': hrRosterData = v.roster; hrTotalTasksCompleted = v.totalTasksCompleted; break;
   }
@@ -1641,7 +1527,7 @@ async function doRefresh(opts) {
 
 function renderIfChanged(background) {
   if (background) {
-    const fingerprint = JSON.stringify({ chatUnread, chatRoomsList, chatMessagesResp, myTasks, allTasks, userDirectory, teamsList, myNotifications, unreadNotifCount, completionStats, ratingsData, approvalStats, approvalDecisionsDetail, peakHoursData, hrRosterData, myDashboardData, auditLogEntries, monthlyLeaderboard, weeklyLeaderboard, reportsTaskList, myApprovalRequests, allApprovalRequests, quarterAwards, yearAwards });
+    const fingerprint = JSON.stringify({ myTasks, allTasks, userDirectory, teamsList, myNotifications, unreadNotifCount, completionStats, ratingsData, approvalStats, approvalDecisionsDetail, peakHoursData, hrRosterData, myDashboardData, auditLogEntries, monthlyLeaderboard, weeklyLeaderboard, reportsTaskList, myApprovalRequests, allApprovalRequests, quarterAwards, yearAwards, announcements, canPostAnnouncements });
     if (fingerprint === lastDataFingerprint) return; // nothing changed — skip the render, no flicker
     lastDataFingerprint = fingerprint;
   }
@@ -1715,11 +1601,13 @@ async function syncTick(force) {
   // (Accounts still on a temporary password sync too — they use the app normally until they change it.)
   if (!session || !token || syncBusy) return;
   if (document.hidden && !force) return;
-  // (On the chat page the message being typed is kept in ui.chatDraft, so new messages may arrive while typing.)
-  if (userIsActivelyTyping() && !force && ui.adminTab !== 'chat') return;
   syncBusy = true;
   try {
     const r = await api('/api/sync');
+    // Chat has its own version: new messages refresh only chat (rooms/unread + the open room),
+    // and they keep arriving even while you're typing a reply.
+    if (r && r.c && r.c !== chat.lastVersion) { chat.lastVersion = r.c; await refreshChat(); }
+    if (userIsActivelyTyping() && !force) { syncBusy = false; return; }
     if (r && (r.v !== lastSyncVersion || Date.now() - lastFullRefreshAt > 60000)) {
       lastSyncVersion = r.v; lastFullRefreshAt = Date.now();
       await refreshData({ background: true });
@@ -1795,8 +1683,8 @@ function taskHistoryHTML(t) {
       ${anyFilter ? `<button class="btn btn-sm" data-hist-clear="${id}">Clear</button>` : ''}
     </div>
     ${h.events.length === 0 ? `<div class="empty small">${anyFilter ? 'No history matches these filters.' : 'No history yet.'}</div>` : `
-    <div class="history-table-wrap">
-      <table class="history-table">
+    <div class="thist-wrap">
+      <table class="thist-table">
         <thead><tr><th>Date</th><th>Time</th><th>Person</th><th>Action</th><th>Details</th><th>Source</th><th>Attachment</th></tr></thead>
         <tbody>${h.events.map(e => {
           const d = histDateParts(e.created_at);
@@ -1866,28 +1754,49 @@ document.addEventListener('toggle', (e) => {
 }, true);
 
 // Superseded by the stored history table (taskHistoryHTML) — kept unused for reference this release.
+// Shared history table (tasks and document approvals): Date & Time · By · Action · Details.
+// rows: [{ at, who, sub, action, tone, detail }] — `detail` is already-escaped HTML.
+// tone picks the action label colour: ok | bad | info | me | neutral.
+function historyTableHTML(rows, emptyText) {
+  if (!rows.length) return `<div class="empty">${emptyText || 'No history yet.'}</div>`;
+  return `
+  <div class="history-table-wrap">
+    <table class="history-table">
+      <thead><tr><th style="width:150px;">Date &amp; Time</th><th style="width:170px;">By</th><th style="width:130px;">Action</th><th>Details</th></tr></thead>
+      <tbody>
+        ${rows.map(r => `
+        <tr>
+          <td class="ht-when" data-label="When">${fmtTime(r.at)}</td>
+          <td class="ht-who" data-label="By"><b>${esc(r.who || 'System')}</b>${r.sub ? `<div class="small muted">${esc(r.sub)}</div>` : ''}</td>
+          <td class="ht-action" data-label="Action"><span class="ht-pill ht-${r.tone || 'neutral'}">${esc(r.action)}</span></td>
+          <td class="ht-detail" data-label="Details">${r.detail || '<span class="muted">—</span>'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+function replyAttachmentsHTML(t, r) {
+  const files = Array.isArray(r.attachments) && r.attachments.length ? r.attachments : (r.has_attachment ? [{ id: null, name: r.attachment_name }] : []);
+  return files.map((f, i) => f.id
+    ? lazyAttachmentHTML(true, f.name, `/api/tasks/${t.id}/replies/${r.id}/files/${f.id}`, `reply-file-${t.id}-${r.id}-${f.id}`)
+    : lazyAttachmentHTML(true, f.name, `/api/tasks/${t.id}/replies/${r.id}/attachment`, `reply-attach-${t.id}-${r.id}`)).join('');
+}
 function renderTaskActivityFeed(t) {
-  const events = [];
-  events.push({ at: t.created_at, actor: t.created_by, text: `Task created — tagged by ${esc(t.created_by || 'someone')}` });
+  const rows = [];
+  const tagged = (t.assignees || []).map(a => personName(a.username));
+  rows.push({ at: t.created_at, who: t.created_by || 'Someone', action: 'Created', tone: 'info',
+    detail: `Task created${tagged.length ? ` and assigned to <b>${tagged.map(esc).join(', ')}</b>` : ' (nobody assigned yet)'}` });
   (t.assignees || []).forEach(a => {
-    if (a.submitted_at) events.push({ at: a.submitted_at, actor: a.username, team: a.team, text: `${esc(a.username)} submitted their part for approval` });
-    if (a.completed_at && a.decision === 'approve') events.push({ at: a.completed_at, actor: a.completed_by || 'Creator', team: a.team, text: `${esc(a.completed_by || 'The creator')} approved ${esc(a.username)}'s part`, decision: 'approve' });
+    if (a.submitted_at) rows.push({ at: a.submitted_at, who: personName(a.username), sub: a.team, action: 'Submitted', tone: 'me', detail: `Submitted their part for approval${a.submission_note ? `: ${highlightMentions(a.submission_note)}` : ''}` });
+    if (a.completed_at && a.decision === 'approve') rows.push({ at: a.completed_at, who: a.completed_by || 'Creator', action: 'Approved', tone: 'ok', detail: `Approved <b>${esc(personName(a.username))}</b>'s part` });
   });
   (t.replies || []).forEach(r => {
-    events.push({ at: r.created_at, actor: r.by_name || r.by_username, text: r.message, hasAttachment: r.has_attachment, attachmentName: r.attachment_name, replyId: r.id, taskId: t.id });
+    rows.push({ at: r.created_at, who: r.by_name || r.by_username, action: 'Reply', tone: 'neutral', detail: `${highlightMentions(r.message || '')}${replyAttachmentsHTML(t, r)}` });
   });
-  if (t.status === 'closed' && t.closed_at) events.push({ at: t.closed_at, actor: t.closed_by, text: `Task fully closed${t.closed_by ? ' — ' + esc(t.closed_by) : ''}`, isClose: true });
-  if (t.status === 'cancelled' && t.cancelled_at) events.push({ at: t.cancelled_at, actor: t.cancelled_by, text: `Task cancelled${t.cancelled_by ? ' — ' + esc(t.cancelled_by) : ''}${t.cancel_reason ? ': ' + esc(t.cancel_reason) : ''}`, isCancel: true });
-  events.sort((a, b) => new Date(a.at) - new Date(b.at));
-  return `
-  <div class="timeline" style="margin-top:12px;">
-    ${events.map((e, i) => `
-      <div class="tl-item">
-        <div class="tl-role">${e.actor ? esc(e.actor) : '—'}${e.team ? ' · ' + esc(e.team) : ''}${e.decision ? ` · <span style="color:var(--success);font-weight:700;">✓ Approved</span>` : ''}${e.isClose ? ' · <span style="color:var(--success);font-weight:700;">✓ Closed</span>' : ''}${e.isCancel ? ' · <span style="color:var(--danger);font-weight:700;">✗ Cancelled</span>' : ''}</div>
-        <div class="tl-time">${fmtTime(e.at)}</div>
-        <div class="tl-note">${highlightMentions(e.text || '')}</div>${e.hasAttachment ? lazyAttachmentHTML(true, e.attachmentName, `/api/tasks/${e.taskId}/replies/${e.replyId}/attachment`, `reply-attach-${e.taskId}-${e.replyId}`) : ''}
-      </div>`).join('')}
-  </div>`;
+  if (t.status === 'closed' && t.closed_at) rows.push({ at: t.closed_at, who: t.closed_by || 'System', action: 'Closed', tone: 'ok', detail: 'Task fully closed' });
+  if (t.status === 'cancelled' && t.cancelled_at) rows.push({ at: t.cancelled_at, who: t.cancelled_by || 'System', action: 'Cancelled', tone: 'bad', detail: t.cancel_reason ? esc(t.cancel_reason) : 'Task cancelled' });
+  rows.sort((a, b) => new Date(a.at) - new Date(b.at));
+  return `<div style="margin-top:8px;">${historyTableHTML(rows)}</div>`;
 }
 function renderTaskItem(t) {
   const assignees = t.assignees || [];
@@ -1990,7 +1899,7 @@ function renderTaskItem(t) {
         <div style="margin-bottom:8px;">${taskSourceBadge(t)}</div>
         ${isCancelled && t.cancel_reason ? `<div class="notice" style="border-color:var(--danger);">Cancelled: ${esc(t.cancel_reason)}</div>` : ''}
         ${t.description ? `<div class="doc-note">${esc(t.description)}</div>` : ''}
-        ${lazyAttachmentHTML(t.has_attachment, t.attachment_name, `/api/tasks/${t.id}/attachment`, `task-attach-${t.id}`)}
+        ${taskFilesHTML(t)}
         <div style="margin-top:8px;display:flex;flex-wrap:wrap;align-items:center;gap:6px;">${groupedAssigneeBadgesHTML()}</div>
         ${checklist.length > 0 ? `
         <div style="margin-top:10px;">
@@ -2061,7 +1970,7 @@ function renderTaskItem(t) {
         <button class="btn btn-sm" data-act="cancel-delete-task">Cancel</button>
       ` : `<button class="btn btn-sm btn-danger" style="margin-left:8px;" data-act="toggle-delete-task" data-task-id="${t.id}" title="Permanently removes the task — not a status change">Delete Task</button>`) : ''}
     </div>` : ''}
-    ${lazyAttachmentHTML(t.has_attachment, t.attachment_name, `/api/tasks/${t.id}/attachment`, `task-attach-${t.id}`)}
+    ${taskFilesHTML(t)}
     <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
       ${assignees.length === 0 ? `<span class="badge flag" title="Nobody is working on this yet — no reminders go out until someone is tagged">Not tagged yet</span>` : groupedAssigneeBadgesHTML()}
       ${assignees.length > 1 ? `<span class="small muted">${doneCount}/${assignees.length} approved</span>` : ''}
@@ -2107,9 +2016,9 @@ function renderTaskItem(t) {
         <textarea id="task-reply-${t.id}" data-mention-input placeholder="Update or question... use @name to tag someone"></textarea>
         <div id="task-reply-mentions-${t.id}" class="tag-suggestions-dropdown" style="display:none;"></div>
       </div>
-      <label style="margin-top:8px;">Attachment (optional)</label>
-      <input type="file" id="task-reply-file-${t.id}">
-      <div id="task-reply-file-preview-${t.id}"></div>
+      <label style="margin-top:8px;">Attachments (optional — you can pick several)</label>
+      <input type="file" id="task-reply-file-${t.id}" multiple>
+      <div data-pending-preview="reply-${esc(t.id)}">${pendingFilesHTML('reply-' + t.id)}</div>
       <button class="btn btn-sm" id="task-comment-btn-${t.id}" style="margin-top:8px;" data-reply-task="${t.id}">Reply</button>
     ` : ''}
     ${t.status === 'open' && !t.blocked && iAmTagged && myRow && !myRow.is_released ? `
@@ -2251,11 +2160,90 @@ function applyPersonFilter(tasks) {
   const who = ui.taskFilterPerson;
   if (!who) return tasks;
   const role = ui.taskFilterPersonRole || 'any';
+  if (role === 'self' || role === 'byothers' || role === 'forothers') {
+    return tasks.filter(t => taskOwnershipBuckets(t, who)[role]);
+  }
   return tasks.filter(t => {
     const tagged = (t.assignees || []).some(a => a.username === who);
     const created = t.created_by_username === who;
     return role === 'tagged' ? tagged : role === 'created' ? created : (tagged || created);
   });
+}
+// ---- Ownership: who created a task vs. who it's for, from one person's point of view ----
+//   self      — they created it and it's for them (they're tagged, or nobody is tagged yet)
+//   byothers  — someone else created it and assigned it to them
+//   forothers — they created it and assigned it to at least one other person
+// A task they created tagging themselves AND others counts in both "self" and "forothers".
+function taskOwnershipBuckets(t, who) {
+  const tags = (t.assignees || []).map(a => a.username);
+  const createdByWho = t.created_by_username === who;
+  const whoTagged = tags.includes(who);
+  const othersTagged = tags.some(u => u !== who);
+  return {
+    self: createdByWho && (whoTagged || tags.length === 0),
+    byothers: !createdByWho && whoTagged,
+    forothers: createdByWho && othersTagged,
+  };
+}
+const OWNER_FILTERS = [
+  { key: 'all', label: 'All my tasks' },
+  { key: 'self', label: 'Self-assigned' },
+  { key: 'byothers', label: 'Assigned to me' },
+  { key: 'forothers', label: 'Assigned by me' },
+];
+function applyMyOwnerFilter(tasks) {
+  const f = ui.myOwnerFilter || 'all';
+  if (f === 'all') return tasks;
+  const me = session.username;
+  const p = ui.myOwnerPerson;
+  return tasks.filter(t => {
+    if (!taskOwnershipBuckets(t, me)[f]) return false;
+    if (!p) return true;
+    if (f === 'byothers') return t.created_by_username === p;
+    if (f === 'forothers') return (t.assignees || []).some(a => a.username === p);
+    return true;
+  });
+}
+function myOwnerFilterHTML() {
+  const me = session.username;
+  const f = ui.myOwnerFilter || 'all';
+  const isOpen = t => t.status === 'open';
+  const counts = {};
+  for (const o of OWNER_FILTERS) counts[o.key] = { open: 0, closed: 0 };
+  for (const t of myTasks) {
+    const b = taskOwnershipBuckets(t, me);
+    const k = isOpen(t) ? 'open' : 'closed';
+    counts.all[k]++;
+    if (b.self) counts.self[k]++;
+    if (b.byothers) counts.byothers[k]++;
+    if (b.forothers) counts.forothers[k]++;
+  }
+  // "Who" picker: for tasks assigned to me → who assigned them; for tasks I assigned → to whom.
+  let people = [];
+  if (f === 'byothers') {
+    people = Array.from(new Set(myTasks.filter(t => taskOwnershipBuckets(t, me).byothers).map(t => t.created_by_username).filter(Boolean)));
+  } else if (f === 'forothers') {
+    people = Array.from(new Set(myTasks.filter(t => taskOwnershipBuckets(t, me).forothers)
+      .flatMap(t => (t.assignees || []).map(a => a.username)).filter(u => u && u !== me)));
+  }
+  people.sort((a, b) => personName(a).localeCompare(personName(b)));
+  return `
+    <div class="owner-filter" role="group" aria-label="Filter by who created the task">
+      ${OWNER_FILTERS.map(o => `
+        <button class="owner-chip${f === o.key ? ' active' : ''}" data-owner-filter="${o.key}" aria-pressed="${f === o.key}">
+          <span class="owner-chip-label">${esc(o.label)}</span>
+          <span class="owner-chip-counts"><span class="oc-open">${counts[o.key].open} open</span> · <span class="oc-closed">${counts[o.key].closed} closed</span></span>
+        </button>`).join('')}
+    </div>
+    ${people.length > 0 ? `
+    <div class="row task-filter-row" style="margin-bottom:10px;">
+      <div class="col">
+        <select id="my-owner-person-${f}" data-owner-person aria-label="${f === 'byothers' ? 'Assigned by' : 'Assigned to'}">
+          <option value="">${f === 'byothers' ? '👤 Assigned by: anyone' : '👤 Assigned to: anyone'}</option>
+          ${people.map(u => `<option value="${esc(u)}" ${ui.myOwnerPerson === u ? 'selected' : ''}>${esc(personName(u))} (${esc(u)})</option>`).join('')}
+        </select>
+      </div>
+    </div>` : ''}`;
 }
 function personFilterHTML() {
   const people = (userDirectory || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
@@ -2273,6 +2261,9 @@ function personFilterHTML() {
           <option value="any" ${(ui.taskFilterPersonRole || 'any') === 'any' ? 'selected' : ''}>Tagged on or created by</option>
           <option value="tagged" ${ui.taskFilterPersonRole === 'tagged' ? 'selected' : ''}>Tagged on (their work)</option>
           <option value="created" ${ui.taskFilterPersonRole === 'created' ? 'selected' : ''}>Created by (they raised)</option>
+          <option value="self" ${ui.taskFilterPersonRole === 'self' ? 'selected' : ''}>Self-assigned</option>
+          <option value="byothers" ${ui.taskFilterPersonRole === 'byothers' ? 'selected' : ''}>Assigned to them</option>
+          <option value="forothers" ${ui.taskFilterPersonRole === 'forothers' ? 'selected' : ''}>Assigned by them</option>
         </select>
       </div>` : ''}
     </div>`;
@@ -2373,7 +2364,8 @@ function taskTabsHTML(tabs, active, attr) {
       ${esc(t.label)} <span class="task-tab-count">${t.count}</span></button>`).join('')}</div>`;
 }
 function renderMyTasksCard() {
-  const openAll = sortTasksForDisplay(applyTaskSearch(myTasks.filter(t => t.status === 'open')));
+  const ownedTasks = applyMyOwnerFilter(myTasks);
+  const openAll = sortTasksForDisplay(applyTaskSearch(ownedTasks.filter(t => t.status === 'open')));
   // "My part is done, task is still waiting on someone else" reads very differently from "I still
   // have something to do" — it gets its own tab so your finished work actually feels finished.
   const myPartDone = t => {
@@ -2382,7 +2374,7 @@ function renderMyTasksCard() {
   };
   const needsMe = openAll.filter(t => !myPartDone(t));
   const waitingOnOthers = openAll.filter(t => myPartDone(t));
-  const closedAll = applyTaskSearch(myTasks.filter(t => t.status !== 'open'));
+  const closedAll = applyTaskSearch(ownedTasks.filter(t => t.status !== 'open'));
   let tab = ui.myTasksTab || 'open';
   if (tab === 'waiting' && waitingOnOthers.length === 0) tab = 'open';
   const list = tab === 'closed' ? closedAll : tab === 'waiting' ? waitingOnOthers : needsMe;
@@ -2390,7 +2382,7 @@ function renderMyTasksCard() {
   const pageSize = tab === 'closed' ? HISTORY_PAGE_SIZE : OPEN_PAGE_SIZE;
   const shown = list.slice(0, ui[pageKey] || pageSize);
   const emptyText = myTasks.length === 0 ? 'No tasks yet.'
-    : ui.taskSearchQuery || ui.taskFilterProject || ui.taskFilterPhase || ui.taskFilterTagging ? 'No tasks here match your search or filters.'
+    : ui.taskSearchQuery || ui.taskFilterProject || ui.taskFilterPhase || ui.taskFilterTagging || (ui.myOwnerFilter && ui.myOwnerFilter !== 'all') ? 'No tasks here match your search or filters.'
     : tab === 'closed' ? 'Nothing closed yet.' : tab === 'waiting' ? 'Nothing waiting on others.' : 'Nothing open right now. 🎉';
   return `
   <div class="card">
@@ -2398,6 +2390,7 @@ function renderMyTasksCard() {
       <div class="card-title" style="margin:0;">My Tasks</div>
       ${needsMe.length > 0 ? `<span class="badge flag">${needsMe.length} open</span>` : ''}
     </div>
+    ${myOwnerFilterHTML()}
     ${searchBoxHTML()}
     ${taskTabsHTML([
       { key: 'open', label: 'Open', count: needsMe.length },
@@ -2446,37 +2439,47 @@ function renderAllTasksCard() {
 // fragment with "@username " in place, keeping the rest of the message and cursor position
 // sane. Submitted messages are parsed server-side for valid @mentions and those people get
 // notified, even if they weren't already tagged on the task.
-function bindMentionTextarea(textareaEl, sugEl) {
+// With { groups: true } (chat) the list also offers whole departments (@[Department]) and, for
+// Admin/Directors, @everyone.
+function bindMentionTextarea(textareaEl, sugEl, opts = {}) {
   function currentFragment() {
     const pos = textareaEl.selectionStart;
     const upToCursor = textareaEl.value.slice(0, pos);
-    const match = upToCursor.match(/@([a-zA-Z0-9._-]*)$/);
-    return match ? { query: match[1], start: pos - match[0].length, end: pos } : null;
+    const match = upToCursor.match(opts.groups ? /@(\[[^\]\n@]*|[a-zA-Z0-9._-]*)$/ : /@([a-zA-Z0-9._-]*)$/);
+    return match ? { query: match[1].replace(/^\[/, ''), start: pos - match[0].length, end: pos } : null;
   }
   function renderSuggestions() {
     const frag = currentFragment();
     if (!frag) { sugEl.style.display = 'none'; sugEl.innerHTML = ''; return; }
     const q = frag.query.toLowerCase();
-    const matches = userDirectory.filter(u =>
+    const people = userDirectory.filter(u =>
       u.username.toLowerCase().includes(q) || u.name.toLowerCase().includes(q)
-    ).slice(0, 8);
+    ).slice(0, 8).map(u => ({ insert: '@' + u.username, html: `${esc(u.name)} <span class="muted small">(${esc(u.username)}${u.team ? ' · ' + esc(u.team) : ''})</span>` }));
+    let groups = [];
+    if (opts.groups) {
+      if (canTagEveryoneInChat() && 'everyone'.includes(q)) groups.push({ insert: '@everyone', html: `📣 <b>@everyone</b> <span class="muted small">(whole company)</span>` });
+      groups = groups.concat(chatDepartmentNames().filter(d => d.toLowerCase().includes(q)).slice(0, 6)
+        .map(d => ({ insert: `@[${d}]`, html: `👥 <b>${esc(d)}</b> <span class="muted small">(whole department · ${userDirectory.filter(u => u.team === d).length} people)</span>` })));
+    }
+    const matches = groups.concat(people);
     if (matches.length === 0) { sugEl.style.display = 'none'; sugEl.innerHTML = ''; return; }
     sugEl.style.display = 'block';
-    sugEl.innerHTML = matches.map(u => `<div class="tag-suggestion-item" data-mention-pick="${esc(u.username)}">${esc(u.name)} <span class="muted small">(${esc(u.username)}${u.team ? ' · ' + esc(u.team) : ''})</span></div>`).join('');
+    sugEl.innerHTML = matches.map(m => `<div class="tag-suggestion-item" data-mention-pick="${esc(m.insert)}">${m.html}</div>`).join('');
     sugEl.querySelectorAll('[data-mention-pick]').forEach(el => el.onclick = () => {
-      const uname = el.dataset.mentionPick;
+      const tag = el.dataset.mentionPick;
       const f = currentFragment();
       if (f) {
         const before = textareaEl.value.slice(0, f.start);
         const after = textareaEl.value.slice(f.end);
-        textareaEl.value = `${before}@${uname} ${after}`;
-        const newPos = before.length + uname.length + 2;
+        textareaEl.value = `${before}${tag} ${after}`;
+        const newPos = before.length + tag.length + 1;
         textareaEl.focus();
         textareaEl.setSelectionRange(newPos, newPos);
       }
       sugEl.style.display = 'none'; sugEl.innerHTML = '';
     });
   }
+  // Property handlers (not addEventListener) so re-binding on every redraw replaces, never stacks.
   textareaEl.oninput = renderSuggestions;
   textareaEl.onkeyup = e => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') renderSuggestions(); };
   textareaEl.onblur = () => { setTimeout(() => { sugEl.style.display = 'none'; }, 150); };
@@ -2484,11 +2487,25 @@ function bindMentionTextarea(textareaEl, sugEl) {
 // Turns valid @username mentions in already-escaped text into styled tags — invalid/unknown
 // mentions are left as plain text so a stray "@" in normal writing isn't mistaken for a tag.
 function highlightMentions(text) {
-  return esc(text).replace(/@([a-zA-Z0-9._-]{3,40})/g, (match, uname) => {
-    const u = userDirectory.find(x => x.username === uname);
-    return u ? `<span class="mention-tag">@${esc(uname)}</span>` : match;
-  });
+  const depts = chatDepartmentNames();
+  return esc(text)
+    .replace(/@\[([^\]\n]{1,60})\]/g, (match, name) => depts.some(d => esc(d).toLowerCase() === name.trim().toLowerCase()) ? `<span class="mention-tag mention-dept">👥 ${name}</span>` : match)
+    .replace(/@([a-zA-Z0-9._-]{2,40})/g, (match, uname) => {
+      if (uname.toLowerCase() === 'everyone') return `<span class="mention-tag mention-dept">📣 everyone</span>`;
+      const u = userDirectory.find(x => x.username.toLowerCase() === uname.toLowerCase());
+      if (u) return `<span class="mention-tag">@${esc(u.username)}</span>`;
+      const d = depts.find(x => x.toLowerCase() === uname.toLowerCase());
+      return d ? `<span class="mention-tag mention-dept">👥 ${esc(d)}</span>` : match;
+    });
 }
+// Every department, for chat tagging: rooms from the server plus anyone's department we know of.
+function chatDepartmentNames() {
+  const names = new Set((typeof chat !== 'undefined' ? chat.rooms : []).filter(r => r.key.startsWith('team:')).map(r => r.name));
+  userDirectory.forEach(u => { if (u.team) names.add(u.team); });
+  (teamsList || []).forEach(t => { const n = (t && t.name) || t; if (n) names.add(n); });
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+}
+function canTagEveryoneInChat() { return session && (session.role === 'admin' || session.role === 'director'); }
 // onChange(currentSelectionArray) is called after every add/remove so the caller can persist the
 // selection into `ui` — required now that forms are declarative and can be re-rendered (e.g. by
 // a background poll) at any moment without losing what was picked so far.
@@ -2618,9 +2635,9 @@ function taskFormHTML() {
         <option value="">— None, this task doesn't wait on anything —</option>
         ${openTaskTitles.map(t => `<option value="${esc(t.id)}">${esc(t.title)}${t.deadline ? ` — due ${fmtDate(t.deadline)}` : ''} (${esc(t.id)})</option>`).join('')}
       </select>
-      <label>${isDrawingRequest ? 'Drawing File (CAD/drawing formats, up to ~100MB)' : 'Attachment (optional)'}</label>
-      <input type="file" id="new-task-file">
-      <div id="new-task-file-preview">${ui.pendingTaskFileName ? `<div class="small muted">Attached: ${esc(ui.pendingTaskFileName)}</div>` : ''}</div>
+      <label>${isDrawingRequest ? 'Drawing Files (CAD/drawing formats, up to ~100MB each)' : 'Attachments (optional — you can pick several)'}</label>
+      <input type="file" id="new-task-file" multiple>
+      <div data-pending-preview="task-new">${pendingFilesHTML('task-new')}</div>
       <div style="margin-top:6px;">
         <button class="btn btn-primary btn-sm" data-act="submit-task">${isDrawingRequest ? 'Send Drawing Request' : 'Create Task'}</button>
         <button class="btn btn-sm" data-act="cancel-task-form" style="margin-left:6px;">Cancel</button>
@@ -2700,9 +2717,9 @@ function bindTaskForm() {
         project: project || null, phase: phase || null,
         stages: stagesPayload ? stagesPayload.map(usernames => ({ usernames })) : null,
         autoReleaseStages: !!ui.taskFormAutoRelease,
-        dependsOnTaskId, attachment: ui.pendingTaskFile, attachmentName: ui.pendingTaskFileName, isDrawingRequest,
+        dependsOnTaskId, attachments: pendingFiles['task-new'] || [], isDrawingRequest,
       }) });
-      ui.pendingTaskFile = null; ui.pendingTaskFileName = null; ui.taskFormOpen = false; ui.taskFormTags = [];
+      takePendingFiles('task-new'); ui.taskFormOpen = false; ui.taskFormTags = [];
       ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false;
       celebrate(isDrawingRequest ? 'Drawing request sent! 📐' : undefined, RAISE_MESSAGES);
       setBanner(isDrawingRequest ? 'Drawing request sent.' : 'Task created.', 'ok');
@@ -2712,16 +2729,9 @@ function bindTaskForm() {
   const cancelTaskFormBtn = document.querySelector('[data-act="cancel-task-form"]');
   if (cancelTaskFormBtn) cancelTaskFormBtn.onclick = () => {
     ui.taskFormOpen = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false;
-    ui.pendingTaskFile = null; ui.pendingTaskFileName = null; render();
+    takePendingFiles('task-new'); render();
   };
-  const newTaskFileInput = document.getElementById('new-task-file');
-  if (newTaskFileInput) newTaskFileInput.onchange = (ev) => {
-    const f = ev.target.files[0]; if (!f) return;
-    readAnyFile(f, dataUrl => {
-      ui.pendingTaskFile = dataUrl; ui.pendingTaskFileName = f.name;
-      document.getElementById('new-task-file-preview').innerHTML = dataUrl ? `<div class="small muted">Attached: ${esc(f.name)}</div>` : '<div class="err">Could not read file (too large?).</div>';
-    });
-  };
+  bindFilePicker(document.getElementById('new-task-file'), 'task-new');
 }
 /* ==================== BULK IMPORT (CSV / Excel) ====================
    Step 1: pick a file → the server reads it and returns a preview of every row (who got tagged,
@@ -2772,10 +2782,10 @@ function importPanelHTML() {
       <details class="import-help"><summary class="small">What can the file contain?</summary>
         <div class="small muted" style="margin-top:6px;line-height:1.6;">
           <b>Required:</b> Title and Deadline (DD/MM/YYYY — day first — or YYYY-MM-DD).<br>
-          <b>Assignees</b> are optional — leave blank to create tasks untagged and tag people later. They can be usernames, full names, emails, or a department name (tags everyone in it), separated by commas.<br>
+          <b>People:</b> the template has <b>Level 1 / Level 2 / Level 3 – Person</b> columns, each with a <b>dropdown of every employee</b> (and "Department: …" to tag a whole department). Pick one person per cell; each column is tagged at its level automatically. The list is rebuilt every time you download the template, so new employees are always in it — or just type a username. Leave them blank to create tasks untagged.<br>
           <b>Task Key</b> (optional) is a permanent ID per row. Upload the file again later and rows already imported just get their deadline updated — no duplicates.<br>
           Columns whose heading starts with <b>Info:</b> are kept for reference and ignored.<br>
-          <b>Optional:</b> Description, Priority (High/Medium/Low), Deadline Time, Level 2 / Level 3 (people who wait for the level before them), Auto Release (Yes/No), Follow Up, Project, Phase, Checklist (items separated by |), Depends On and Parent Task (another row's Sr No, its title, or an existing task ID), Individual Deadlines ("rohit.k: 12/10/2026").<br>
+          <b>Optional:</b> Description, Priority (High/Medium/Low), Deadline Time, Auto Release (Yes/No), Follow Up, Project, Phase, Checklist (items separated by |), Depends On and Parent Task (another row's Sr No, its title, or an existing task ID), Individual Deadlines ("rohit.k: 12/10/2026").<br>
           The Excel template has a <b>People</b> sheet listing everyone's exact username.
         </div>
       </details>
@@ -3151,26 +3161,38 @@ function bindApprovalForm() {
   if (cancelBtn) cancelBtn.onclick = () => { ui.approvalFormOpen = false; ui.approvalFormReviewers = []; ui.pendingApprovalFile = null; ui.pendingApprovalFileName = null; render(); };
 }
 const APPROVAL_STATUS_BADGE = { pending: '<span class="badge po_pending">PENDING</span>', approved: '<span class="badge received">APPROVED</span>', needs_revision: '<span class="badge flag">NEEDS REVISION</span>' };
+function approvalHistoryRows(r) {
+  return (r.history || []).map(h => {
+    const t = h.event_text || '';
+    let action = 'Update', tone = 'neutral';
+    if (/^Sent /.test(t)) { action = 'Sent'; tone = 'info'; }
+    else if (/^Fully approved/.test(t)) { action = 'Fully approved'; tone = 'ok'; }
+    else if (/^Approved/.test(t)) { action = 'Approved'; tone = 'ok'; }
+    else if (/^Rejected/.test(t)) { action = 'Rejected'; tone = 'bad'; }
+    else if (/revised/i.test(t)) { action = 'Revised'; tone = 'me'; }
+    return { at: h.created_at, who: h.actor_name || 'System', action, tone, detail: esc(t) };
+  });
+}
 function renderApprovalRequestCard(r) {
   const isCreator = r.created_by_username === session.username;
   const myReview = (r.reviewers || []).find(rv => rv.username === session.username);
   const canDecide = r.status === 'pending' && myReview && !myReview.decision;
   const reviewers = r.reviewers || [];
-  const approvedN = reviewers.filter(rv => rv.decision === 'approved').length;
-  const decidedAt = r.status === 'approved' ? (r.resolved_at || ((r.history || []).slice(-1)[0] || {}).created_at) : null;
+  const approvedCount = reviewers.filter(rv => rv.decision === 'approved').length;
+  const needsMyRevision = isCreator && r.status === 'needs_revision';
   return `
   <details class="card task-row" id="approval-card-${esc(r.id)}">
     <summary class="task-row-summary">
       <span class="task-row-chevron" aria-hidden="true"></span>
       <span class="task-row-text">
-        <span class="task-row-title"><b>${esc(r.title)}</b></span>
+        <span class="task-row-title">📄 <b>${esc(r.title)}</b></span>
         <span class="task-row-meta">
-          <span>📄 ${esc(r.file_name || 'Document')}</span>
-          <span>Sent by ${esc(r.created_by_name)} · ${fmtTime(r.created_at)}</span>
-          ${reviewers.length ? `<span>${approvedN}/${reviewers.length} approved</span>` : ''}
+          <span>From ${esc(r.created_by_name)}</span>
+          <span>${esc(fmtDate(r.created_at))}</span>
+          <span>${approvedCount}/${reviewers.length} approved</span>
           ${canDecide ? '<span class="row-flag row-flag-me">Your decision needed</span>' : ''}
-          ${isCreator && r.status === 'needs_revision' ? '<span class="row-flag row-flag-warn">Upload a revision</span>' : ''}
-          ${decidedAt ? `<span>Approved ${fmtTime(decidedAt)}</span>` : ''}
+          ${needsMyRevision ? '<span class="row-flag row-flag-bad">Revision needed</span>' : ''}
+          ${r.has_file ? `<span>📎 ${esc(r.file_name || 'Document')}</span>` : ''}
         </span>
       </span>
       <span class="task-row-status">${APPROVAL_STATUS_BADGE[r.status] || ''}</span>
@@ -3180,26 +3202,25 @@ function renderApprovalRequestCard(r) {
     <div class="muted small" style="margin-top:6px;">Sent by ${esc(r.created_by_name)} · ${fmtTime(r.created_at)}</div>
     ${lazyAttachmentHTML(r.has_file, r.file_name, `/api/approvals/${r.id}/attachment`, `approval-file-${r.id}`)}
     <div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;">
-      ${(r.reviewers || []).map(rv => {
-        let cls = 'created', label = esc(rv.username);
+      ${reviewers.map(rv => {
+        let cls = 'created', label = esc(personName(rv.username));
         if (rv.decision === 'approved') { cls = 'received'; label += ' ✓ Approved'; }
         else if (rv.decision === 'rejected') { cls = 'flag'; label += ' ✗ Rejected'; }
+        else label += ' · Pending';
         return `<span class="badge ${cls}">${label}</span>`;
       }).join('')}
     </div>
-    <div class="small muted" style="margin-top:10px;">History</div>
-    <div class="timeline">
-      ${(r.history || []).map(h => `<div class="tl-item"><div class="tl-role">${esc(h.actor_name || 'System')}</div><div class="tl-time">${fmtTime(h.created_at)}</div><div class="tl-note">${esc(h.event_text)}</div></div>`).join('')}
-    </div>
+    <div class="small muted" style="margin-top:12px;">History</div>
+    <div style="margin-top:8px;">${historyTableHTML(approvalHistoryRows(r))}</div>
     ${canDecide ? `
     <div class="row" style="margin-top:10px;align-items:flex-end;">
       <div class="col"><input type="text" id="approval-reason-${r.id}" placeholder="Reason (required only if rejecting)"></div>
-      <div class="col" style="flex:0;">
+      <div class="col" style="flex:0;white-space:nowrap;">
         <button class="btn btn-sm btn-primary" data-approve-request="${r.id}">Approve</button>
         <button class="btn btn-sm btn-danger" data-reject-request="${r.id}">Reject</button>
       </div>
     </div>` : ''}
-    ${isCreator && r.status === 'needs_revision' ? `
+    ${needsMyRevision ? `
     <div class="card" style="background:var(--panel);margin-top:10px;padding:10px 14px;">
       <label>Upload revised document</label>
       <input type="file" id="approval-revise-file-${r.id}">
@@ -3211,31 +3232,45 @@ function renderApprovalRequestCard(r) {
 }
 function renderApprovalsSection() {
   const scope = (session.role === 'admin' && ui.approvalsScope === 'all') ? allApprovalRequests : myApprovalRequests;
+  // Same layout as the task list: Pending (incl. needs revision) | Completed, newest first,
+  // anything waiting on *you* floated to the top.
+  const needsMe = r => {
+    const mine = (r.reviewers || []).find(rv => rv.username === session.username);
+    return (r.status === 'pending' && mine && !mine.decision) || (r.created_by_username === session.username && r.status === 'needs_revision');
+  };
+  const pending = scope.filter(r => r.status !== 'approved').sort((a, b) => (needsMe(b) - needsMe(a)) || (new Date(b.created_at) - new Date(a.created_at)));
+  const done = scope.filter(r => r.status === 'approved').sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const tab = ui.approvalsTab === 'done' ? 'done' : 'pending';
+  const list = tab === 'done' ? done : pending;
+  const shown = list.slice(0, ui.approvalsShown || HISTORY_PAGE_SIZE);
+  const waiting = pending.filter(needsMe).length;
   return `
   <div class="card">
     <div class="flex-between">
-      <div class="card-title" style="margin:0;">Approval Requests</div>
+      <div class="card-title" style="margin:0;">Approval Requests ${waiting ? `<span class="badge flag" style="margin-left:6px;">${waiting} need you</span>` : ''}</div>
       ${session.role === 'admin' ? `
       <select id="approvals-scope" style="width:auto;padding:4px 8px;">
         <option value="mine" ${ui.approvalsScope !== 'all' ? 'selected' : ''}>Mine</option>
         <option value="all" ${ui.approvalsScope === 'all' ? 'selected' : ''}>All</option>
       </select>` : ''}
     </div>
-    ${(() => {
-      // Open = someone still has to act (pending, or sent back for revision). Closed = approved.
-      const open = scope.filter(r => r.status !== 'approved');
-      const closed = scope.filter(r => r.status === 'approved');
-      const tab = ui.approvalsTab === 'closed' ? 'closed' : 'open';
-      const list = tab === 'closed' ? closed : open;
-      return `${taskTabsHTML([{ key: 'open', label: 'Open', count: open.length }, { key: 'closed', label: 'Closed (approved)', count: closed.length }], tab, 'data-approvals-tab')}
-      <div class="task-list">${list.length === 0 ? `<div class="empty">${tab === 'closed' ? 'No approved documents yet.' : 'Nothing waiting — every document is decided.'}</div>` : list.map(renderApprovalRequestCard).join('')}</div>`;
-    })()}
+    ${taskTabsHTML([
+      { key: 'pending', label: 'Pending', count: pending.length },
+      { key: 'done', label: 'Approved', count: done.length },
+    ], tab, 'data-approvals-tab')}
+    <div class="task-list">
+      ${shown.length === 0 ? `<div class="empty">${tab === 'done' ? 'Nothing approved yet.' : 'Nothing pending.'}</div>` : shown.map(renderApprovalRequestCard).join('')}
+    </div>
+    ${list.length > shown.length ? `<button class="btn btn-sm" style="margin-top:8px;" data-act="approvals-more">Show ${Math.min(HISTORY_PAGE_SIZE, list.length - shown.length)} more (${list.length - shown.length} remaining)</button>` : ''}
   </div>`;
 }
 function bindApprovalsSection() {
   document.querySelectorAll('[data-approvals-tab]').forEach(b => b.onclick = () => { ui.approvalsTab = b.dataset.approvalsTab; render(); });
   const scopeSelect = document.getElementById('approvals-scope');
-  if (scopeSelect) scopeSelect.onchange = () => { ui.approvalsScope = scopeSelect.value; render(); };
+  if (scopeSelect) scopeSelect.onchange = () => { ui.approvalsScope = scopeSelect.value; ui.approvalsShown = HISTORY_PAGE_SIZE; render(); };
+  document.querySelectorAll('[data-approvals-tab]').forEach(b => b.onclick = () => { ui.approvalsTab = b.dataset.approvalsTab; ui.approvalsShown = HISTORY_PAGE_SIZE; render(); });
+  const moreApprovals = document.querySelector('[data-act="approvals-more"]');
+  if (moreApprovals) moreApprovals.onclick = () => { ui.approvalsShown = (ui.approvalsShown || HISTORY_PAGE_SIZE) + HISTORY_PAGE_SIZE; render(); };
   document.querySelectorAll('[data-approve-request]').forEach(btn => btn.onclick = async () => {
     const id = btn.dataset.approveRequest;
     try {
@@ -3276,6 +3311,331 @@ function bindApprovalsSection() {
       setBanner('Revision sent.', 'ok'); await refreshData();
     } catch (e) { setBanner(e.message); render(); }
   });
+}
+
+/* ==================== CHAT ROOM ====================
+   General room for everyone + one room per department. @mention autocomplete (same as task
+   replies), several files per message, unread badges. New messages arrive through the chat
+   version in /api/sync, so chatting never makes task screens reload. */
+const chat = { rooms: [], messages: {}, hasOlder: {}, loading: false, sending: false, lastVersion: null };
+function chatRoomKey() {
+  const k = ui.chatRoom || 'general';
+  return chat.rooms.length && !chat.rooms.some(r => r.key === k) ? 'general' : k;
+}
+function chatUnreadTotal() { return chat.rooms.reduce((s, r) => s + (r.key === chatRoomKey() && ui.adminTab === 'chat' ? 0 : (r.unread || 0)), 0); }
+async function loadChatRooms() {
+  try { chat.rooms = await api('/api/chat/rooms'); } catch (e) { /* keep old */ }
+}
+async function loadChatMessages(room, { older = false } = {}) {
+  const list = chat.messages[room] || [];
+  let url = `/api/chat/messages?room=${encodeURIComponent(room)}&limit=60`;
+  if (older && list.length) url += `&before=${list[0].id}`;
+  else if (list.length) url += `&after=${list[list.length - 1].id}`;
+  const rows = await api(url);
+  if (older) { chat.messages[room] = rows.concat(list); chat.hasOlder[room] = rows.length === 60; }
+  else if (list.length) {
+    const seen = new Set(list.map(m => m.id));
+    chat.messages[room] = list.concat(rows.filter(m => !seen.has(m.id)));
+  } else { chat.messages[room] = rows; chat.hasOlder[room] = rows.length === 60; }
+  return rows.length;
+}
+// Re-fetch a room fully (picks up deletions too) — used after a delete.
+async function reloadChatRoom(room) { delete chat.messages[room]; await loadChatMessages(room); }
+async function markChatRoomRead(room) {
+  const list = chat.messages[room] || [];
+  if (!list.length) return;
+  const lastId = list[list.length - 1].id;
+  const r = chat.rooms.find(x => x.key === room);
+  if (r && r.unread === 0 && r.lastRead >= lastId) return;
+  if (r) { r.unread = 0; r.lastRead = lastId; }
+  api('/api/chat/read', { method: 'POST', body: JSON.stringify({ room, lastId }) }).catch(() => {});
+}
+// Called from syncTick when the chat version moves (and on opening the Chat tab).
+async function refreshChat() {
+  await loadChatRooms();
+  if (ui.adminTab === 'chat') {
+    const room = chatRoomKey();
+    const box = document.getElementById('chat-scroll');
+    const nearBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+    try { await loadChatMessages(room); } catch (e) { /* offline */ }
+    if (!document.hidden) markChatRoomRead(room);
+    render();
+    if (nearBottom) scrollChatToBottom();
+  } else render();
+}
+function scrollChatToBottom() { requestAnimationFrame(() => { const b = document.getElementById('chat-scroll'); if (b) b.scrollTop = b.scrollHeight; }); }
+function chatDayLabel(iso) {
+  const d = new Date(iso), today = new Date(), y = new Date(); y.setDate(y.getDate() - 1);
+  if (isSameDay(d, today)) return 'Today';
+  if (isSameDay(d, y)) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+}
+function chatMessageHTML(m, prev) {
+  const mine = m.by_username === session.username;
+  const grouped = prev && prev.by_username === m.by_username && !prev.deleted_at && (new Date(m.created_at) - new Date(prev.created_at)) < 5 * 60000 && isSameDay(new Date(prev.created_at), new Date(m.created_at));
+  const canDelete = !m.deleted_at && (mine || session.role === 'admin');
+  const time = new Date(m.created_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  const myTeam = (userDirectory.find(u => u.username === session.username) || {}).team || session.team || '';
+  const reEsc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const mentionsMe = !mine && m.message && (new RegExp(`@${reEsc(session.username)}\\b`, 'i').test(m.message)
+    || /(^|[^\w@])@everyone\b/i.test(m.message)
+    || (myTeam && (new RegExp(`@\\[\\s*${reEsc(myTeam)}\\s*\\]`, 'i').test(m.message) || new RegExp(`(^|[^\\w@])@${reEsc(myTeam)}\\b`, 'i').test(m.message))));
+  return `
+  <div class="chat-msg${mine ? ' chat-msg-mine' : ''}${grouped ? ' chat-msg-grouped' : ''}${mentionsMe ? ' chat-msg-mention' : ''}" id="chat-msg-${m.id}">
+    ${grouped ? '<div class="chat-avatar-spacer"></div>' : `<div class="chat-avatar ${avatarColorFor(m.by_username)}">${esc(initials(m.by_name || m.by_username))}</div>`}
+    <div class="chat-bubble-wrap">
+      ${grouped ? '' : `<div class="chat-meta"><b>${esc(mine ? 'You' : (m.by_name || m.by_username))}</b> <span class="muted">${time}</span></div>`}
+      <div class="chat-bubble">
+        ${m.deleted_at ? '<span class="muted" style="font-style:italic;">🚫 Message deleted</span>' : `
+        ${m.message ? `<div class="chat-text">${highlightMentions(m.message).replace(/\n/g, '<br>')}</div>` : ''}
+        ${(m.files || []).map(f => lazyAttachmentHTML(true, `${fileIcon(f.name)} ${f.name}`, `/api/chat/files/${f.id}`, `chat-file-${f.id}`)).join('')}`}
+      </div>
+      ${canDelete ? `<button class="chat-del" data-chat-delete="${m.id}" title="Delete message">Delete</button>` : ''}
+    </div>
+  </div>`;
+}
+function renderChatView() {
+  const room = chatRoomKey();
+  const info = chat.rooms.find(r => r.key === room) || { key: 'general', name: 'General', emoji: '💬', hint: 'Everyone in the company' };
+  const msgs = chat.messages[room];
+  let lastDay = '';
+  const body = !msgs ? '<div class="empty">Loading messages…</div>'
+    : msgs.length === 0 ? `<div class="chat-empty"><div style="font-size:42px;">${info.emoji}</div><b>No messages in #${esc(info.name)} yet</b><div class="small muted">Say hello 👋 — type @ to tag a person or a whole department, 📎 to attach files.</div></div>`
+    : msgs.map((m, i) => {
+        const day = chatDayLabel(m.created_at);
+        const sep = day !== lastDay ? `<div class="chat-day"><span>${esc(day)}</span></div>` : '';
+        const prev = day !== lastDay ? null : msgs[i - 1];
+        lastDay = day;
+        return sep + chatMessageHTML(m, prev);
+      }).join('');
+  return `
+  <div class="card chat-shell">
+    <div class="chat-rooms" role="tablist" aria-label="Chat rooms">
+      ${(chat.rooms.length ? chat.rooms : [info]).map(r => `
+        <button type="button" class="chat-room${r.key === room ? ' active' : ''}" data-chat-room="${esc(r.key)}" role="tab" aria-selected="${r.key === room}" title="${esc(r.hint || '')}">
+          <span class="chat-room-emoji">${r.emoji}</span><span class="chat-room-name">${esc(r.name)}${r.mine ? ' <span class="chat-room-mine">your dept</span>' : ''}</span>
+          ${r.unread && r.key !== room ? `<span class="chat-unread">${r.unread > 99 ? '99+' : r.unread}</span>` : ''}
+        </button>`).join('')}
+    </div>
+    <div class="chat-main">
+      <div class="chat-head"><span style="font-size:20px;">${info.emoji}</span><div><b>#${esc(info.name)}</b><div class="small muted">${esc(info.hint || '')}</div></div></div>
+      <div class="chat-scroll" id="chat-scroll">
+        ${msgs && chat.hasOlder[room] ? `<div style="text-align:center;margin:6px 0 10px;"><button class="btn btn-sm" data-act="chat-older">${chat.loading ? 'Loading…' : 'Load older messages'}</button></div>` : ''}
+        ${body}
+      </div>
+      <div class="chat-compose">
+        <div data-pending-preview="chat-${esc(room)}">${pendingFilesHTML('chat-' + room)}</div>
+        <div class="chat-compose-row">
+          <label class="chat-attach" title="Attach files">📎<input type="file" id="chat-file-input" multiple style="display:none;"></label>
+          <div style="position:relative;flex:1;min-width:0;">
+            <textarea id="chat-input-${esc(room)}" class="chat-input" rows="1" placeholder="Message #${esc(info.name)} — type @ to tag a person or department"></textarea>
+            <div id="chat-mentions" class="tag-suggestions-dropdown chat-mentions" style="display:none;"></div>
+          </div>
+          <button class="btn btn-primary chat-send" data-act="chat-send" ${chat.sending ? 'disabled' : ''}>${chat.sending ? '…' : 'Send'}</button>
+        </div>
+        <div class="small muted chat-hint">Enter to send · Shift+Enter for a new line · @name tags a person, @[Department] tags the whole department${canTagEveryoneInChat() ? ', @everyone tags the company' : ''} · up to ${MAX_PICK_FILES} files per message</div>
+      </div>
+    </div>
+  </div>`;
+}
+let chatShownInView = false; // reset whenever you leave the Chat tab
+function bindChatView() {
+  const room = chatRoomKey();
+  // On phones the header and banners push the chat down the page; the first time it's shown on
+  // this visit, scroll so the whole chat — including the message box — is on screen.
+  if (!chatShownInView && window.matchMedia && window.matchMedia('(max-width: 720px)').matches && document.querySelector('.chat-shell')) {
+    chatShownInView = true;
+    requestAnimationFrame(() => { const shell = document.querySelector('.chat-shell'); if (shell) shell.scrollIntoView({ block: 'end' }); });
+  }
+  document.querySelectorAll('[data-chat-room]').forEach(b => b.onclick = async () => {
+    ui.chatRoom = b.dataset.chatRoom; render();
+    if (!chat.messages[ui.chatRoom]) { try { await loadChatMessages(ui.chatRoom); } catch (e) { setBanner(e.message); } }
+    markChatRoomRead(ui.chatRoom); render(); scrollChatToBottom();
+  });
+  const older = document.querySelector('[data-act="chat-older"]');
+  if (older) older.onclick = async () => {
+    const box = document.getElementById('chat-scroll'); const before = box ? box.scrollHeight : 0;
+    chat.loading = true; render();
+    try { await loadChatMessages(room, { older: true }); } catch (e) { setBanner(e.message); }
+    chat.loading = false; render();
+    requestAnimationFrame(() => { const b = document.getElementById('chat-scroll'); if (b) b.scrollTop = b.scrollHeight - before; });
+  };
+  bindFilePicker(document.getElementById('chat-file-input'), 'chat-' + room);
+  const input = document.getElementById(`chat-input-${room}`);
+  const sug = document.getElementById('chat-mentions');
+  if (input && sug) bindMentionTextarea(input, sug, { groups: true });
+  const send = async () => {
+    if (chat.sending || !input) return;
+    const message = input.value.trim();
+    const files = pendingFiles['chat-' + room] || [];
+    if (!message && !files.length) return;
+    chat.sending = true; render();
+    try {
+      await api('/api/chat/messages', { method: 'POST', body: JSON.stringify({ room, message, attachments: files }) });
+      takePendingFiles('chat-' + room);
+      const el = document.getElementById(`chat-input-${room}`); if (el) { el.value = ''; el.style.height = ''; }
+      await loadChatMessages(room);
+      markChatRoomRead(room);
+    } catch (e) { setBanner(e.message); }
+    chat.sending = false; render(); scrollChatToBottom();
+    const el2 = document.getElementById(`chat-input-${room}`); if (el2) el2.focus();
+  };
+  const sendBtn = document.querySelector('[data-act="chat-send"]');
+  if (sendBtn) sendBtn.onclick = send;
+  if (input) {
+    input.onkeydown = e => {
+      const sugOpen = sug && sug.style.display === 'block';
+      if (e.key === 'Enter' && !e.shiftKey && !sugOpen) { e.preventDefault(); send(); }
+    };
+    // bindMentionTextarea just (re)set oninput to its suggestion handler; chain auto-grow onto it.
+    const mentionHandler = input.oninput;
+    input.oninput = e => { if (mentionHandler) mentionHandler(e); input.style.height = 'auto'; input.style.height = Math.min(140, input.scrollHeight) + 'px'; };
+  }
+  document.querySelectorAll('[data-chat-delete]').forEach(b => b.onclick = async () => {
+    if (!confirm('Delete this message for everyone?')) return;
+    try { await api(`/api/chat/messages/${b.dataset.chatDelete}`, { method: 'DELETE' }); await reloadChatRoom(room); render(); }
+    catch (e) { setBanner(e.message); render(); }
+  });
+}
+async function openChatTab() {
+  await loadChatRooms();
+  const room = chatRoomKey();
+  if (!chat.messages[room]) { try { await loadChatMessages(room); } catch (e) { setBanner(e.message); } }
+  else { try { await loadChatMessages(room); } catch (e) { /* ignore */ } }
+  markChatRoomRead(room);
+  render(); scrollChatToBottom();
+}
+
+/* ==================== ANNOUNCEMENTS ====================
+   Company-wide notices. Admin, Directors and HR post; everyone reads. A dated announcement also
+   shows on the calendar with its emoji. "New" = posted since you last opened this tab. */
+let announcements = [];
+let canPostAnnouncements = false;
+const ANNOUNCEMENT_CATEGORY_INFO = {
+  general: { label: 'General', emoji: '📢', cls: 'ann-general' },
+  holiday: { label: 'Holiday', emoji: '🏖️', cls: 'ann-holiday' },
+  event: { label: 'Event', emoji: '🎉', cls: 'ann-event' },
+  celebration: { label: 'Celebration', emoji: '🎊', cls: 'ann-celebration' },
+  meeting: { label: 'Meeting', emoji: '📅', cls: 'ann-meeting' },
+  safety: { label: 'Safety', emoji: '🦺', cls: 'ann-safety' },
+  policy: { label: 'Policy', emoji: '📜', cls: 'ann-policy' },
+  urgent: { label: 'Urgent', emoji: '🚨', cls: 'ann-urgent' },
+};
+const ANNOUNCEMENT_EMOJIS = ['📢', '🎉', '🎊', '🥳', '🪔', '🎆', '🏖️', '🌴', '🙏', '🏆', '🍰', '🎂', '📅', '🤝', '🦺', '⚠️', '🚨', '🚧', '🏗️', '👷', '📜', '💡', '📌', '✅', '💰', '🌧️', '❤️', '⭐'];
+function announcementEmoji(a) { return a.emoji || (ANNOUNCEMENT_CATEGORY_INFO[a.category] || ANNOUNCEMENT_CATEGORY_INFO.general).emoji; }
+function lastSeenAnnouncementId() { return Number(safeStorage.getItem(`ls_ann_seen_${session && session.username}`) || 0); }
+function unseenAnnouncementCount() { const seen = lastSeenAnnouncementId(); return announcements.filter(a => a.id > seen && a.created_by_username !== session.username).length; }
+function markAnnouncementsSeen() {
+  const maxId = announcements.reduce((m, a) => Math.max(m, a.id), 0);
+  if (maxId > lastSeenAnnouncementId()) safeStorage.setItem(`ls_ann_seen_${session.username}`, String(maxId));
+}
+function announcementsOnDate(iso) { return announcements.filter(a => a.event_date === iso); }
+function announcementCardHTML(a, { compact = false, seenBefore = Infinity } = {}) {
+  const cat = ANNOUNCEMENT_CATEGORY_INFO[a.category] || ANNOUNCEMENT_CATEGORY_INFO.general;
+  const canEdit = a.created_by_username === session.username || session.role === 'admin';
+  const isNew = a.id > seenBefore && a.created_by_username !== session.username;
+  const editing = ui.annEditId === a.id;
+  if (editing) return `<div class="card ann-card ${cat.cls}">${announcementFormHTML(a)}</div>`;
+  return `
+  <div class="card ann-card ${cat.cls}${a.pinned ? ' ann-pinned' : ''}" id="ann-${a.id}">
+    <div class="ann-emoji" aria-hidden="true">${esc(announcementEmoji(a))}</div>
+    <div class="ann-content">
+      <div class="ann-top">
+        <span class="ann-cat">${cat.emoji} ${esc(cat.label)}</span>
+        ${a.pinned ? '<span class="ann-flag">📌 Pinned</span>' : ''}
+        ${isNew ? '<span class="ann-flag ann-new">✨ New</span>' : ''}
+        ${a.event_date ? `<span class="ann-flag">🗓️ ${esc(fmtDate(a.event_date))}</span>` : ''}
+      </div>
+      <div class="ann-title">${esc(a.title)}</div>
+      ${a.body && !compact ? `<div class="ann-body">${esc(a.body).replace(/\n/g, '<br>')}</div>` : ''}
+      ${a.body && compact ? `<div class="ann-body small">${esc(a.body.length > 160 ? a.body.slice(0, 159) + '…' : a.body)}</div>` : ''}
+      <div class="ann-foot small muted">Posted by ${esc(a.created_by_name || a.created_by_username)} · ${fmtTime(a.created_at)}
+        ${canEdit && !compact ? `<span class="ann-actions"><button class="link-btn" data-ann-edit="${a.id}">✏️ Edit</button><button class="link-btn" data-ann-delete="${a.id}" style="color:var(--danger);">🗑️ Remove</button></span>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+function announcementFormHTML(a) {
+  const v = a || { title: '', body: '', emoji: '📢', category: 'general', event_date: '', pinned: 0 };
+  const id = a ? a.id : 'new';
+  const chosen = ui.annEmoji && ui.annEmojiFor === id ? ui.annEmoji : (v.emoji || '📢');
+  return `
+    <div class="card-title" style="margin-bottom:8px;">${a ? '✏️ Edit announcement' : '📣 Post an announcement'}</div>
+    <label>Title</label>
+    <input type="text" id="ann-title-${id}" maxlength="160" placeholder="e.g. Diwali holidays — office closed 31 Oct to 2 Nov" value="${esc(v.title)}">
+    <label>Message</label>
+    <textarea id="ann-body-${id}" rows="3" placeholder="Details everyone should know…">${esc(v.body || '')}</textarea>
+    <div class="row" style="align-items:flex-end;">
+      <div class="col"><label>Category</label>
+        <select id="ann-cat-${id}">${Object.entries(ANNOUNCEMENT_CATEGORY_INFO).map(([k, c]) => `<option value="${k}" ${v.category === k ? 'selected' : ''}>${c.emoji} ${c.label}</option>`).join('')}</select></div>
+      <div class="col"><label>Show on calendar (optional)</label><input type="date" id="ann-date-${id}" value="${esc(v.event_date || '')}"></div>
+    </div>
+    <label>Emoji</label>
+    <div class="ann-emoji-pick" role="radiogroup" aria-label="Pick an emoji">
+      ${ANNOUNCEMENT_EMOJIS.map(e => `<button type="button" class="ann-emoji-opt${e === chosen ? ' active' : ''}" data-ann-emoji="${e}" data-ann-for="${id}" aria-checked="${e === chosen}" role="radio">${e}</button>`).join('')}
+    </div>
+    <label class="small" style="display:flex;gap:6px;align-items:center;font-weight:400;margin-top:8px;"><input type="checkbox" id="ann-pin-${id}" style="width:auto;" ${v.pinned ? 'checked' : ''}> 📌 Pin to the top</label>
+    <div style="margin-top:10px;display:flex;gap:6px;">
+      <button class="btn btn-primary btn-sm" data-ann-save="${id}">${a ? 'Save changes' : '📢 Post to everyone'}</button>
+      <button class="btn btn-sm" data-ann-cancel="${id}">Cancel</button>
+    </div>`;
+}
+function renderAnnouncementsView() {
+  const seenBefore = ui.annSeenBefore != null ? ui.annSeenBefore : lastSeenAnnouncementId();
+  const filter = ui.annFilter || 'all';
+  const todayIso = toISODateLocal(new Date());
+  const upcoming = announcements.filter(a => a.event_date && a.event_date >= todayIso).sort((x, y) => x.event_date.localeCompare(y.event_date));
+  const usedCats = Array.from(new Set(announcements.map(a => a.category || 'general')));
+  const list = filter === 'upcoming' ? upcoming : filter === 'all' ? announcements : announcements.filter(a => (a.category || 'general') === filter);
+  return `
+  <div class="card ann-hero">
+    <div class="ann-hero-emoji">📢</div>
+    <div>
+      <div class="card-title" style="margin:0;">Announcements</div>
+      <div class="small muted">Company news, holidays 🏖️, events 🎉, safety notices 🦺 and more — dated ones also appear on your calendar 🗓️.</div>
+    </div>
+    ${canPostAnnouncements && !ui.annFormOpen ? `<button class="btn btn-primary btn-sm" data-act="ann-new" style="margin-left:auto;">＋ New announcement</button>` : ''}
+  </div>
+  ${ui.annFormOpen ? `<div class="card">${announcementFormHTML(null)}</div>` : ''}
+  ${announcements.length ? `
+  <div class="ann-filters">
+    <button class="ann-filter${filter === 'all' ? ' active' : ''}" data-ann-filter="all">✨ All <span class="task-tab-count">${announcements.length}</span></button>
+    <button class="ann-filter${filter === 'upcoming' ? ' active' : ''}" data-ann-filter="upcoming">🗓️ Upcoming <span class="task-tab-count">${upcoming.length}</span></button>
+    ${usedCats.map(k => { const c = ANNOUNCEMENT_CATEGORY_INFO[k] || ANNOUNCEMENT_CATEGORY_INFO.general; return `<button class="ann-filter${filter === k ? ' active' : ''}" data-ann-filter="${k}">${c.emoji} ${c.label}</button>`; }).join('')}
+  </div>` : ''}
+  ${list.length === 0 ? `<div class="card"><div class="empty">${announcements.length ? 'Nothing in this view.' : `No announcements yet. ${canPostAnnouncements ? 'Post the first one ☝️' : 'Check back soon 🙂'}`}</div></div>`
+    : list.map(a => announcementCardHTML(a, { seenBefore })).join('')}`;
+}
+function bindAnnouncementsView() {
+  const newBtn = document.querySelector('[data-act="ann-new"]');
+  if (newBtn) newBtn.onclick = () => { ui.annFormOpen = true; ui.annEmoji = null; ui.annEmojiFor = null; render(); };
+  document.querySelectorAll('[data-ann-filter]').forEach(b => b.onclick = () => { ui.annFilter = b.dataset.annFilter; render(); });
+  document.querySelectorAll('[data-ann-emoji]').forEach(b => b.onclick = () => { ui.annEmoji = b.dataset.annEmoji; ui.annEmojiFor = b.dataset.annFor === 'new' ? 'new' : Number(b.dataset.annFor); render(); });
+  document.querySelectorAll('[data-ann-cancel]').forEach(b => b.onclick = () => { ui.annFormOpen = false; ui.annEditId = null; ui.annEmoji = null; render(); });
+  document.querySelectorAll('[data-ann-edit]').forEach(b => b.onclick = () => { ui.annEditId = Number(b.dataset.annEdit); ui.annEmoji = null; render(); });
+  document.querySelectorAll('[data-ann-save]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.annSave;
+    const val = k => { const el = document.getElementById(`ann-${k}-${id}`); return el ? el.value.trim() : ''; };
+    const current = id === 'new' ? null : announcements.find(a => String(a.id) === id);
+    const emoji = ui.annEmoji && String(ui.annEmojiFor) === id ? ui.annEmoji : ((current && current.emoji) || '📢');
+    const payload = { title: val('title'), body: val('body'), category: val('cat'), eventDate: val('date'), emoji, pinned: !!(document.getElementById(`ann-pin-${id}`) || {}).checked };
+    if (!payload.title) { alert('Give the announcement a title.'); return; }
+    b.disabled = true;
+    try {
+      if (id === 'new') await api('/api/announcements', { method: 'POST', body: JSON.stringify(payload) });
+      else await api(`/api/announcements/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      ui.annFormOpen = false; ui.annEditId = null; ui.annEmoji = null;
+      if (id === 'new') celebrate('Announcement posted! 📢', ['Everyone has been notified 🎉']);
+      setBanner(id === 'new' ? 'Announcement posted — everyone has been notified.' : 'Announcement updated.', 'ok');
+      await refreshData();
+    } catch (e) { b.disabled = false; setBanner(e.message); render(); }
+  });
+  document.querySelectorAll('[data-ann-delete]').forEach(b => b.onclick = async () => {
+    if (!confirm('Remove this announcement for everyone?')) return;
+    try { await api(`/api/announcements/${b.dataset.annDelete}`, { method: 'DELETE' }); setBanner('Announcement removed.', 'ok'); await refreshData(); }
+    catch (e) { setBanner(e.message); render(); }
+  });
+  markAnnouncementsSeen();
 }
 
 /* ==================== CALENDAR ====================
@@ -3348,10 +3708,12 @@ function renderCalendarMonthView() {
   tasksByDate.forEach(list => list.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]));
   const selectedIso = ui.calendarSelectedDate;
   const selectedTasks = selectedIso ? (tasksByDate.get(selectedIso) || []) : [];
+  const selectedAnns = selectedIso ? announcementsOnDate(selectedIso) : [];
   const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const monthAnnCount = announcements.filter(a => a.event_date && a.event_date.slice(0, 7) === `${year}-${String(month + 1).padStart(2, '0')}`).length;
   return `
   <div class="card">
-    ${withDeadlines.length === 0 ? `<div class="notice">No open tasks with a deadline yet — the calendar only shows tasks that have one.${noDeadlineCount > 0 ? ` (${noDeadlineCount} open task${noDeadlineCount === 1 ? '' : 's'} without a deadline ${noDeadlineCount === 1 ? "isn't" : "aren't"} shown here.)` : ''}</div>` : ''}
+    ${withDeadlines.length === 0 && !monthAnnCount ? `<div class="notice">No open tasks with a deadline yet — the calendar only shows tasks that have one.${noDeadlineCount > 0 ? ` (${noDeadlineCount} open task${noDeadlineCount === 1 ? '' : 's'} without a deadline ${noDeadlineCount === 1 ? "isn't" : "aren't"} shown here.)` : ''}</div>` : ''}
     <div class="flex-between" style="margin-bottom:10px;">
       <div style="display:flex;align-items:center;gap:10px;">
         <button class="btn btn-sm" data-act="cal-prev">‹</button>
@@ -3359,6 +3721,12 @@ function renderCalendarMonthView() {
         <button class="btn btn-sm" data-act="cal-next">›</button>
       </div>
       <button class="btn btn-sm" data-act="cal-today">Today</button>
+    </div>
+    <div class="cal-legend small">
+      <span><i class="cal-dot" style="background:${PRIORITY_DOT_COLOR.high};"></i> High</span>
+      <span><i class="cal-dot" style="background:${PRIORITY_DOT_COLOR.medium};"></i> Medium</span>
+      <span><i class="cal-dot" style="background:${PRIORITY_DOT_COLOR.low};"></i> Low</span>
+      <span class="cal-legend-ann">📢 Announcement${monthAnnCount ? ` <b>(${monthAnnCount} this month)</b>` : ''}</span>
     </div>
     <div class="cal-grid cal-weekdays">${weekdayLabels.map(w => `<div class="cal-weekday">${w}</div>`).join('')}</div>
     <div class="cal-grid">
@@ -3368,9 +3736,11 @@ function renderCalendarMonthView() {
         const isSelected = c.iso === selectedIso;
         const shown = dayTasks.slice(0, 3);
         const extra = dayTasks.length - shown.length;
+        const dayAnns = announcementsOnDate(c.iso);
         return `
-        <div class="cal-cell ${c.inMonth ? '' : 'cal-cell-outmonth'} ${isToday ? 'cal-cell-today' : ''} ${isSelected ? 'cal-cell-selected' : ''}" data-cal-date="${c.iso}">
+        <div class="cal-cell ${c.inMonth ? '' : 'cal-cell-outmonth'} ${isToday ? 'cal-cell-today' : ''} ${isSelected ? 'cal-cell-selected' : ''} ${dayAnns.length ? 'cal-cell-ann' : ''}" data-cal-date="${c.iso}">
           <div class="cal-daynum">${c.date.getDate()}</div>
+          ${dayAnns.length ? `<div class="cal-ann" title="${esc(dayAnns.map(a => announcementEmoji(a) + ' ' + a.title).join('\n'))}">${dayAnns.slice(0, 2).map(a => `<span class="cal-ann-emoji">${esc(announcementEmoji(a))}</span>`).join('')}${dayAnns.length > 2 ? `<span class="cal-dot-more">+${dayAnns.length - 2}</span>` : ''}<span class="cal-ann-title">${esc(dayAnns[0].title)}</span></div>` : ''}
           <div class="cal-dots">
             ${shown.map(t => `<span class="cal-dot" style="background:${PRIORITY_DOT_COLOR[t.priority] || PRIORITY_DOT_COLOR.medium};" title="${esc(t.title)} (${t.priority})"></span>`).join('')}
             ${extra > 0 ? `<span class="cal-dot-more">+${extra}</span>` : ''}
@@ -3381,8 +3751,9 @@ function renderCalendarMonthView() {
   </div>
   ${selectedIso ? `
   <div class="card">
-    <div class="card-title">${fmtDate(selectedIso)} <span class="mono small muted">(${selectedTasks.length} task${selectedTasks.length === 1 ? '' : 's'}, priority-sorted)</span></div>
-    ${selectedTasks.length === 0 ? `<div class="empty">Nothing due this day.</div>` : selectedTasks.map(t => renderTaskItem(t)).join('')}
+    <div class="card-title">${fmtDate(selectedIso)} <span class="mono small muted">(${selectedTasks.length} task${selectedTasks.length === 1 ? '' : 's'}, priority-sorted${selectedAnns.length ? ` · ${selectedAnns.length} announcement${selectedAnns.length === 1 ? '' : 's'}` : ''})</span></div>
+    ${selectedAnns.map(a => announcementCardHTML(a, { compact: true })).join('')}
+    ${selectedTasks.length === 0 ? `<div class="empty">${selectedAnns.length ? 'No tasks due this day.' : 'Nothing due this day.'}</div>` : selectedTasks.map(t => renderTaskItem(t)).join('')}
   </div>` : ''}`;
 }
 // Week view: tasks with a deadline TIME are positioned like calendar events at that hour;
@@ -3430,6 +3801,7 @@ function renderCalendarWeekView() {
             <div class="week-day-num ${dd.iso === todayIso ? 'week-day-num-today' : ''}">${dd.date.getDate()}</div>
           </div>
           <div class="week-allday">
+            ${announcementsOnDate(dd.iso).map(a => `<div class="week-allday-chip week-ann-chip" title="${esc(a.title)}">${esc(announcementEmoji(a))} ${esc(a.title)}</div>`).join('')}
             ${dd.allDay.map(t => `<div class="week-allday-chip" style="background:${PRIORITY_DOT_COLOR[t.priority] || PRIORITY_DOT_COLOR.medium};" data-cal-week-task="${t.id}" title="${esc(t.title)}">${esc(t.title)}</div>`).join('')}
           </div>
           <div class="week-hours" style="height:${hourRows.length * WEEK_ROW_HEIGHT}px;">
@@ -3493,8 +3865,9 @@ function renderTodayFeed() {
   const todayStr = new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
   const now = new Date();
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-  const closedToday = myTasks.filter(t => t.status === 'closed' && t.closed_at && new Date(t.closed_at) >= todayStart);
-  const openTasks = myTasks.filter(t => t.status === 'open');
+  const scoped = applyTodayScope(myTasks);
+  const closedToday = scoped.filter(t => t.status === 'closed' && t.closed_at && new Date(t.closed_at) >= todayStart);
+  const openTasks = scoped.filter(t => t.status === 'open');
   // Blocked tasks never count as overdue here either — same fairness reasoning as the per-task
   // OVERDUE badge: someone waiting on a prerequisite hasn't been given a fair chance yet.
   const overdue = openTasks.filter(t => !t.blocked && isOverdue(t.deadline, now));
@@ -3518,6 +3891,7 @@ function renderTodayFeed() {
   <div class="card">
     <div class="card-title">Today — ${esc(todayStr)}</div>
     <p class="small muted">A running summary of what's happened today and what's expected — not a substitute for My Tasks, just a quick daily glance.</p>
+    ${todayScopeHTML()}
   </div>
   <div class="card">
     <div class="flex-between">
@@ -3528,24 +3902,14 @@ function renderTodayFeed() {
       <div class="progress-fill" style="width:${totalCount === 0 ? 0 : pct}%;"></div>
     </div>
     <div class="hero-stat-grid" style="margin-top:16px;">
-      <div class="hero-stat-card ${overdue.length > 0 ? 'hero-rose needs-attention' : 'hero-violet'}">
-        <div class="hero-stat-label">Overdue<span class="hero-stat-icon">${icon('alertTriangle', 15)}</span></div>
-        <div class="hero-stat-number">${overdue.length}</div>
-      </div>
-      <div class="hero-stat-card hero-coral">
-        <div class="hero-stat-label">Due Today<span class="hero-stat-icon">${icon('clock', 15)}</span></div>
-        <div class="hero-stat-number">${dueToday.length}</div>
-      </div>
-      <div class="hero-stat-card hero-teal">
-        <div class="hero-stat-label">Completed Today<span class="hero-stat-icon">${icon('checkCircle', 15)}</span></div>
-        <div class="hero-stat-number">${closedToday.length}</div>
-      </div>
-      <div class="hero-stat-card hero-violet">
-        <div class="hero-stat-label">Open Total<span class="hero-stat-icon">${icon('grid', 15)}</span></div>
-        <div class="hero-stat-number">${openTasks.length}</div>
-      </div>
+      ${todayCardHTML('overdue', 'Overdue', 'alertTriangle', overdue.length, overdue.length > 0 ? 'hero-rose needs-attention' : 'hero-violet')}
+      ${todayCardHTML('due', 'Due Today', 'clock', dueToday.length, 'hero-coral')}
+      ${todayCardHTML('done', 'Completed Today', 'checkCircle', closedToday.length, 'hero-teal')}
+      ${todayCardHTML('open', 'Open Total', 'grid', openTasks.length, 'hero-violet')}
     </div>
+    <p class="small muted" style="margin:10px 0 0;">Tap a card to see those tasks.</p>
   </div>
+  ${todayCardListHTML({ overdue, due: dueToday, done: closedToday, open: openTasks })}
   ${session.role === 'admin' ? renderLeaderboardCard(monthlyLeaderboard, '🏆 Monthly Leaderboard', "Nobody has completed approved work yet this month.", 'today-monthly') : ''}
   ${renderLeaderboardCard(weeklyLeaderboard, '📅 This Week', "Nobody has completed approved work yet this week.", 'today-weekly')}
   <div class="card">
@@ -3574,24 +3938,107 @@ function renderTodayFeed() {
     }).join('')}
     ${ongoingTagged.length > ongoingShown.length ? `<div class="small muted">Showing the ${ongoingShown.length} with the nearest deadlines, of ${ongoingTagged.length} — see My Tasks for all of them.</div>` : ''}
   </div>
-  <div class="card">
-    <div class="card-title">Completed Today</div>
-    ${closedToday.length === 0 ? `<div class="empty">Nothing closed yet today.</div>` : closedToday.map(t => `
-      <div class="doc-row" style="display:block;padding:8px 0;border-bottom:1px solid var(--line);">
-        <b>${esc(t.title)}</b>
-        <div class="small muted">Closed ${fmtTime(t.closed_at)}</div>
-      </div>`).join('')}
-  </div>
-  <div class="card">
-    <div class="card-title">Due Today</div>
-    ${dueToday.length === 0 ? `<div class="empty">Nothing due today.</div>` : dueToday.map(t => `
-      <div class="doc-row" style="display:block;padding:8px 0;border-bottom:1px solid var(--line);">
-        <b>${esc(t.title)}</b>
-        <div class="small muted">Due ${fmtDate(t.deadline)}</div>
-      </div>`).join('')}
+`;
+}
+// Shared "whose work" filter for the Today page and My Dashboard. Every task is looked at from
+// one person's point of view (`who`) and has up to two "sides":
+//   personal — it's their own work: self-assigned, or assigned to them by someone else
+//   assigned — they created it and assigned it to other people (work they're overseeing)
+// Each filter option picks which sides count:
+const WORK_SCOPES = [
+  { key: 'mine', label: 'My Tasks', them: 'Their Tasks', hint: 'All your own work — self-assigned plus assigned to you' },
+  { key: 'self', label: 'Self-assigned', them: 'Self-assigned', hint: 'Tasks you created for yourself' },
+  { key: 'tome', label: 'Assigned to Me', them: 'Assigned to Them', hint: 'Tasks other people assigned to you' },
+  { key: 'byme', label: 'Assigned by Me', them: 'Assigned by Them', hint: 'Tasks you assigned to others' },
+  { key: 'all', label: 'All', them: 'All', hint: 'Everything you are part of' },
+];
+function scopeSides(t, who, scope) {
+  const b = taskOwnershipBuckets(t, who);
+  switch (scope) {
+    case 'self': return { personal: b.self, assigned: false };
+    case 'tome': return { personal: b.byothers, assigned: false };
+    case 'byme': return { personal: false, assigned: b.forothers };
+    case 'all': return { personal: b.self || b.byothers, assigned: b.forothers };
+    default: return { personal: b.self || b.byothers, assigned: false }; // 'mine'
+  }
+}
+function inWorkScope(t, who, scope) { const s = scopeSides(t, who, scope); return s.personal || s.assigned; }
+function validScope(v) { return WORK_SCOPES.some(o => o.key === v) ? v : 'mine'; }
+// The filter buttons. attr = data attribute the click handler listens on; extraHint is appended
+// to the description line under the buttons.
+function workScopeHTML({ attr, current, tasks, who, extraHint }) {
+  const viewingSelf = who === session.username;
+  const scope = validScope(current);
+  const openCount = key => tasks.filter(t => t.status === 'open' && inWorkScope(t, who, key)).length;
+  const info = WORK_SCOPES.find(o => o.key === scope);
+  let hint = info.hint;
+  if (!viewingSelf) hint = hint.replace(/\byour\b/g, 'their').replace(/\byou\b/g, 'them');
+  return `
+    <div class="today-scope" role="tablist" aria-label="Show tasks">
+      ${WORK_SCOPES.map(o => `
+        <button type="button" role="tab" class="today-scope-btn${scope === o.key ? ' active' : ''}" aria-selected="${scope === o.key}" ${attr}="${o.key}">
+          ${esc(viewingSelf ? o.label : o.them)} <span class="task-tab-count">${openCount(o.key)}</span>
+        </button>`).join('')}
+    </div>
+    <p class="small muted" style="margin:6px 0 0;">${esc(hint)}${extraHint ? ' · ' + esc(extraHint) : ''}</p>`;
+}
+function applyTodayScope(tasks) {
+  const scope = validScope(ui.todayScope);
+  return tasks.filter(t => inWorkScope(t, session.username, scope));
+}
+function todayScopeHTML() {
+  return workScopeHTML({ attr: 'data-today-scope', current: ui.todayScope, tasks: myTasks, who: session.username, extraHint: 'counts show open tasks' });
+}
+// The four Today stat cards are buttons: tapping one shows that card's tasks underneath (same
+// expandable task rows as My Tasks); tapping it again, or the ✕, hides the list.
+const TODAY_CARD_INFO = {
+  overdue: { title: 'Overdue', empty: 'Nothing overdue. 👍' },
+  due: { title: 'Due Today', empty: 'Nothing due today.' },
+  done: { title: 'Completed Today', empty: 'Nothing closed yet today.' },
+  open: { title: 'Open Total', empty: 'Nothing open right now.' },
+};
+function todayCardHTML(key, label, iconName, count, cls) {
+  const active = ui.todayCardOpen === key;
+  return `
+      <button type="button" class="hero-stat-card today-card ${cls}${active ? ' today-card-active' : ''}" data-today-card="${key}" aria-expanded="${active}" aria-controls="today-card-list">
+        <div class="hero-stat-label">${label}<span class="hero-stat-icon">${icon(iconName, 15)}</span></div>
+        <div class="hero-stat-number">${count}</div>
+        <div class="today-card-hint">${active ? 'Hide ▴' : 'View ▾'}</div>
+      </button>`;
+}
+function todayCardListHTML(lists) {
+  const key = ui.todayCardOpen;
+  if (!key || !lists[key]) return '';
+  const info = TODAY_CARD_INFO[key];
+  const all = key === 'done' ? lists[key] : sortTasksForDisplay(lists[key]);
+  const shown = all.slice(0, ui.todayCardShown || OPEN_PAGE_SIZE);
+  return `
+  <div class="card today-card-list" id="today-card-list">
+    <div class="flex-between">
+      <div class="card-title" style="margin:0;">${esc(info.title)} <span class="task-tab-count">${all.length}</span></div>
+      <button class="link-btn" data-act="close-today-card">✕ Close</button>
+    </div>
+    <div class="task-list" style="margin-top:10px;">
+      ${shown.length === 0 ? `<div class="empty">${info.empty}</div>` : shown.map(t => renderTaskItem(t)).join('')}
+    </div>
+    ${all.length > shown.length ? `<div class="flex-between" style="margin-top:8px;flex-wrap:wrap;gap:6px;"><span class="small muted">Showing ${shown.length} of ${all.length}.</span><button class="btn btn-sm" data-act="today-card-more">Show ${Math.min(OPEN_PAGE_SIZE, all.length - shown.length)} more</button></div>` : ''}
   </div>`;
 }
 function bindTodayFeed() {
+  document.querySelectorAll('[data-today-scope]').forEach(b => b.onclick = () => {
+    ui.todayScope = b.dataset.todayScope; ui.todayCardShown = OPEN_PAGE_SIZE; render();
+  });
+  document.querySelectorAll('[data-today-card]').forEach(b => b.onclick = () => {
+    const k = b.dataset.todayCard;
+    ui.todayCardOpen = ui.todayCardOpen === k ? null : k;
+    ui.todayCardShown = OPEN_PAGE_SIZE;
+    render();
+    if (ui.todayCardOpen) { const el = document.getElementById('today-card-list'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  });
+  const closeBtn = document.querySelector('[data-act="close-today-card"]');
+  if (closeBtn) closeBtn.onclick = () => { ui.todayCardOpen = null; render(); };
+  const moreBtn = document.querySelector('[data-act="today-card-more"]');
+  if (moreBtn) moreBtn.onclick = () => { ui.todayCardShown = (ui.todayCardShown || OPEN_PAGE_SIZE) + OPEN_PAGE_SIZE; render(); };
   document.querySelectorAll('[data-toggle-task-progress]').forEach(track => track.onclick = () => {
     const detail = document.getElementById(`task-progress-detail-${track.dataset.toggleTaskProgress}`);
     if (detail) detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
@@ -4044,6 +4491,122 @@ function bindReportsView() {
 }
 
 /* ==================== MY DASHBOARD (everyone, self-scoped only) ==================== */
+/* ---- My Dashboard: scope switch + clickable cards (same behaviour as Today) ----
+   Card numbers here are computed from the same task list the card opens, so the number on a
+   card always equals the number of tasks you see when you tap it. Only available where the
+   browser actually has that person's tasks: your own dashboard (everyone), and an Admin viewing
+   one person. The Whole Company and HR-viewing-someone views keep the server totals as before. */
+const DASH_DAY_MS = 86400000;
+function dashTaskSource() {
+  const d = myDashboardData;
+  if (!d) return null;
+  if (d.username === session.username) return { who: session.username, tasks: myTasks };
+  if (d.username !== 'all' && session.role === 'admin') {
+    const who = d.username;
+    return { who, tasks: (allTasks || []).filter(t => t.created_by_username === who || (t.assignees || []).some(a => a.username === who)) };
+  }
+  return null;
+}
+function dashInScope(t, who, scope) { return inWorkScope(t, who, scope); }
+// Where an open task stands for `who`: 'action' (they must do something — their own part, or
+// reviewing a submission on work they assigned), 'hold' (their part isn't released yet), or
+// 'waiting' (nothing for them right now — their part is approved, or the people they assigned
+// are still working). A task that is both theirs and assigned-by-them takes the more urgent one.
+function dashRightNowState(t, who, scope) {
+  const tags = t.assignees || [];
+  const approved = a => a.decision === 'approve' && !!a.completed_at;
+  const sides = scopeSides(t, who, scope);
+  const states = [];
+  if (sides.personal) {
+    const row = tags.find(a => a.username === who);
+    states.push(!row ? 'action' : !row.is_released ? 'hold' : approved(row) ? 'waiting' : 'action');
+  }
+  if (sides.assigned) {
+    const others = tags.filter(a => a.username !== who);
+    states.push(others.some(a => a.submitted_at && !approved(a)) ? 'action' : 'waiting');
+  }
+  if (states.includes('action')) return 'action';
+  if (states.includes('hold')) return 'hold';
+  return states[0] || null;
+}
+// When a task counts as "completed" for `who`: their own part approved (by submission time, the
+// same rule the server uses for completion credit), or — for work they assigned — the task closing.
+function dashCompletedAt(t, who, scope) {
+  const sides = scopeSides(t, who, scope);
+  const times = [];
+  if (sides.personal) {
+    const row = (t.assignees || []).find(a => a.username === who);
+    if (row && row.decision === 'approve' && row.submitted_at) times.push(new Date(row.submitted_at).getTime());
+    else if (!row && t.status === 'closed' && t.closed_at) times.push(new Date(t.closed_at).getTime());
+  }
+  if (sides.assigned && t.status === 'closed' && t.closed_at) times.push(new Date(t.closed_at).getTime());
+  return times.length ? Math.max(...times) : null;
+}
+function dashLists(src, scope) {
+  const { who, tasks } = src;
+  const L = { action: [], hold: [], waiting: [], week: [], month: [], year: [], allTime: [] };
+  const now = Date.now();
+  for (const t of tasks) {
+    if (!dashInScope(t, who, scope)) continue;
+    if (t.status === 'open') { const st = dashRightNowState(t, who, scope); if (st) L[st].push(t); }
+    const at = dashCompletedAt(t, who, scope);
+    if (at !== null) {
+      const age = (now - at) / DASH_DAY_MS;
+      L.allTime.push(t);
+      if (age <= 365) L.year.push(t);
+      if (age <= 30) L.month.push(t);
+      if (age <= 7) L.week.push(t);
+    }
+  }
+  const byDone = (a, b) => (dashCompletedAt(b, who, scope) || 0) - (dashCompletedAt(a, who, scope) || 0);
+  ['week', 'month', 'year', 'allTime'].forEach(k => L[k].sort(byDone));
+  ['action', 'hold', 'waiting'].forEach(k => { L[k] = sortTasksForDisplay(L[k]); });
+  return L;
+}
+const DASH_CARD_INFO = {
+  action: { title: 'Needs Action', empty: 'Nothing needs action right now. 👍' },
+  hold: { title: 'On Hold', empty: 'Nothing on hold.' },
+  waiting: { title: 'Waiting On Others', empty: 'Nothing waiting on others.' },
+  week: { title: 'Completed This Week', empty: 'Nothing completed in the last 7 days.' },
+  month: { title: 'Completed This Month', empty: 'Nothing completed in the last 30 days.' },
+  year: { title: 'Completed This Year', empty: 'Nothing completed in the last 365 days.' },
+  allTime: { title: 'Completed — All Time', empty: 'Nothing completed yet.' },
+};
+function dashScopeHTML(src) {
+  const scope = validScope(ui.dashScope);
+  const extra = (scope === 'byme' || scope === 'all') ? '"Needs Action" includes submissions waiting for approval · tap any card to see its tasks' : 'tap any card to see its tasks';
+  return `
+  <div class="card">
+    <div style="margin-top:-10px;">${workScopeHTML({ attr: 'data-dash-scope', current: ui.dashScope, tasks: src.tasks, who: src.who, extraHint: extra })}</div>
+  </div>`;
+}
+function dashCardHTML(key, label, iconName, count, cls) {
+  const active = ui.dashCardOpen === key;
+  return `
+      <button type="button" class="hero-stat-card today-card ${cls}${active ? ' today-card-active' : ''}" data-dash-card="${key}" aria-expanded="${active}" aria-controls="dash-card-list">
+        <div class="hero-stat-label">${label}<span class="hero-stat-icon">${icon(iconName, 15)}</span></div>
+        <div class="hero-stat-number">${count}</div>
+        <div class="today-card-hint">${active ? 'Hide ▴' : 'View ▾'}</div>
+      </button>`;
+}
+function dashListHTML(lists, keys) {
+  const key = ui.dashCardOpen;
+  if (!key || !keys.includes(key)) return '';
+  const info = DASH_CARD_INFO[key];
+  const all = lists[key] || [];
+  const shown = all.slice(0, ui.dashCardShown || OPEN_PAGE_SIZE);
+  return `
+  <div class="card today-card-list" id="dash-card-list">
+    <div class="flex-between">
+      <div class="card-title" style="margin:0;">${esc(info.title)} <span class="task-tab-count">${all.length}</span></div>
+      <button class="link-btn" data-act="close-dash-card">✕ Close</button>
+    </div>
+    <div class="task-list" style="margin-top:10px;">
+      ${shown.length === 0 ? `<div class="empty">${info.empty}</div>` : shown.map(t => renderTaskItem(t)).join('')}
+    </div>
+    ${all.length > shown.length ? `<div class="flex-between" style="margin-top:8px;flex-wrap:wrap;gap:6px;"><span class="small muted">Showing ${shown.length} of ${all.length}.</span><button class="btn btn-sm" data-act="dash-card-more">Show ${Math.min(OPEN_PAGE_SIZE, all.length - shown.length)} more</button></div>` : ''}
+  </div>`;
+}
 function renderMyDashboardView() {
   const viewingSelf = !myDashboardData || myDashboardData.username === session.username;
   const viewingWholeCompany = myDashboardData && myDashboardData.username === 'all';
@@ -4070,12 +4633,25 @@ function renderMyDashboardView() {
   const d = myDashboardData;
   const fmtHourLabel = h => { const period = h < 12 ? 'AM' : 'PM'; const h12 = h % 12 === 0 ? 12 : h % 12; return `${h12}${period}`; };
   const myPeakHour = d.peakHours.reduce((best, h) => (h.total > (best ? best.total : -1) ? h : best), null);
+  const src = dashTaskSource();
+  const scope = validScope(ui.dashScope);
+  const L = src ? dashLists(src, scope) : null;
+  const rightNowCards = L ? `
+      ${dashCardHTML('action', 'Needs Action', 'alertTriangle', L.action.length, L.action.length > 0 ? 'hero-rose needs-attention' : 'hero-teal')}
+      ${dashCardHTML('hold', 'On Hold', 'clock', L.hold.length, 'hero-coral')}
+      ${dashCardHTML('waiting', 'Waiting On Others', 'users', L.waiting.length, 'hero-violet')}` : null;
+  const completedCards = L ? `
+      ${dashCardHTML('week', 'This Week', 'checkCircle', L.week.length, 'hero-teal')}
+      ${dashCardHTML('month', 'This Month', 'checkCircle', L.month.length, 'hero-violet')}
+      ${dashCardHTML('year', 'This Year', 'checkCircle', L.year.length, 'hero-coral')}
+      ${dashCardHTML('allTime', 'All Time', 'checkCircle', L.allTime.length, 'hero-rose')}` : null;
   return `
   ${adminSelector}
   <div class="notice">${viewingWholeCompany ? 'Aggregated across every employee — totals and averages, not any one person\'s individual numbers.' : (viewingSelf ? "Your own stats only — nobody else can see this page, and it doesn't show anyone else's numbers either." : `Viewing ${esc(viewedName)}'s individual dashboard as Admin — they can see this same view themselves too; it's not hidden from them.`)} Real computed statistics${viewingWholeCompany ? '' : ` from ${viewingSelf ? 'your own' : 'their'} history`}, not a trained model — just the honest numbers.</div>
+  ${src ? dashScopeHTML(src) : ''}
   <div class="card">
     <div class="card-title">${pronounCaps} Right Now</div>
-    <div class="hero-stat-grid">
+    <div class="hero-stat-grid">${rightNowCards !== null ? rightNowCards : `
       <div class="hero-stat-card ${d.needsActionCount > 0 ? 'hero-rose needs-attention' : 'hero-teal'}">
         <div class="hero-stat-label">Need${viewingSelf ? '' : 's'} Action<span class="hero-stat-icon">${icon('alertTriangle', 15)}</span></div>
         <div class="hero-stat-number">${d.needsActionCount}</div>
@@ -4087,12 +4663,13 @@ function renderMyDashboardView() {
       <div class="hero-stat-card hero-violet">
         <div class="hero-stat-label">Waiting On Others<span class="hero-stat-icon">${icon('users', 15)}</span></div>
         <div class="hero-stat-number">${d.waitingOnOthersCount}</div>
-      </div>
+      </div>`}
     </div>
   </div>
+  ${L ? dashListHTML(L, ['action', 'hold', 'waiting']) : ''}
   <div class="card">
     <div class="card-title">${pronounCaps} Tasks Completed</div>
-    <div class="hero-stat-grid">
+    <div class="hero-stat-grid">${completedCards !== null ? completedCards : `
       <div class="hero-stat-card hero-teal">
         <div class="hero-stat-label">This Week<span class="hero-stat-icon">${icon('checkCircle', 15)}</span></div>
         <div class="hero-stat-number">${d.completion.week}</div>
@@ -4108,9 +4685,11 @@ function renderMyDashboardView() {
       <div class="hero-stat-card hero-rose">
         <div class="hero-stat-label">All Time<span class="hero-stat-icon">${icon('checkCircle', 15)}</span></div>
         <div class="hero-stat-number">${d.completion.allTime}</div>
-      </div>
+      </div>`}
     </div>
+    ${L ? '<p class="small muted" style="margin:10px 0 0;">Week, month and year are the last 7, 30 and 365 days. Archived tasks are not included.</p>' : ''}
   </div>
+  ${L ? dashListHTML(L, ['week', 'month', 'year', 'allTime']) : ''}
   ${d.approval.allTime > 0 ? `
   <div class="card">
     <div class="card-title">${pronounCaps} Documents Approved (Send for Approval)</div>
@@ -4135,7 +4714,19 @@ function renderMyDashboardView() {
 }
 function bindMyDashboardView() {
   const sel = document.getElementById('dashboard-view-user');
-  if (sel) sel.onchange = async () => { ui.dashboardViewUser = sel.value; await refreshData(); };
+  if (sel) sel.onchange = async () => { ui.dashboardViewUser = sel.value; ui.dashCardOpen = null; await refreshData(); };
+  document.querySelectorAll('[data-dash-scope]').forEach(b => b.onclick = () => { ui.dashScope = b.dataset.dashScope; ui.dashCardShown = OPEN_PAGE_SIZE; render(); });
+  document.querySelectorAll('[data-dash-card]').forEach(b => b.onclick = () => {
+    const k = b.dataset.dashCard;
+    ui.dashCardOpen = ui.dashCardOpen === k ? null : k;
+    ui.dashCardShown = OPEN_PAGE_SIZE;
+    render();
+    if (ui.dashCardOpen) { const el = document.getElementById('dash-card-list'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  });
+  const closeBtn = document.querySelector('[data-act="close-dash-card"]');
+  if (closeBtn) closeBtn.onclick = () => { ui.dashCardOpen = null; render(); };
+  const moreBtn = document.querySelector('[data-act="dash-card-more"]');
+  if (moreBtn) moreBtn.onclick = () => { ui.dashCardShown = (ui.dashCardShown || OPEN_PAGE_SIZE) + OPEN_PAGE_SIZE; render(); };
 }
 
 /* ==================== HR DASHBOARD (HR Department + Admin) ====================
@@ -4735,6 +5326,7 @@ function renderInner() {
     return;
   }
   let body = '';
+  let showingToday = false; // Today is also the fallback page, so bind it by what was rendered, not by tab name
   if (!dataLoadedOnce) body = renderLoadingSkeleton();
   else if (ui.adminTab === 'tasks') body = renderTasksView();
   else if (ui.adminTab === 'alltasks' && session.role === 'admin') body = renderAllTasksCard();
@@ -4751,9 +5343,10 @@ function renderInner() {
   else if (ui.adminTab === 'meetings') body = renderMeetingsView();
   else if (ui.adminTab === 'system' && session.role === 'admin') body = renderSystemView();
   else if (ui.adminTab === 'calendar') body = renderCalendarView();
+  else if (ui.adminTab === 'announcements') body = renderAnnouncementsView();
   else if (ui.adminTab === 'profile') body = renderProfileView();
   else if (ui.adminTab === 'myteam' && session.role !== 'admin' && session.isTeamLead) body = renderMyTeamView();
-  else body = renderTodayFeed();
+  else { body = renderTodayFeed(); showingToday = true; }
   morphHTML(app, `
     <div class="app-shell${ui.sidebarCollapsed ? ' sidebar-collapsed' : ''}">
       ${renderSidebar()}
@@ -4767,9 +5360,11 @@ function renderInner() {
       </div>
     </div>`);
   bindGlobal();
-  if (ui.adminTab === 'tasks' || ui.adminTab === 'alltasks' || ui.adminTab === 'calendar') { bindMyTasks(); bindFollowupForm(); bindSubtaskForm(); bindAddAssigneeForm(); }
+  if (ui.adminTab === 'tasks' || ui.adminTab === 'alltasks' || ui.adminTab === 'calendar' || ui.adminTab === 'mydashboard' || showingToday) { bindMyTasks(); bindFollowupForm(); bindSubtaskForm(); bindAddAssigneeForm(); }
   if (ui.adminTab === 'tasks') { bindApprovalForm(); bindApprovalsSection(); }
   if (ui.adminTab === 'calendar') bindCalendarView();
+  if (ui.adminTab === 'chat') bindChatView();
+  if (ui.adminTab === 'announcements') bindAnnouncementsView();
   if (ui.adminTab === 'tasks') { bindTaskForm(); bindImportPanel(); }
   if (ui.adminTab === 'accounts') bindAccounts();
   if (ui.adminTab === 'profile') bindProfile();
@@ -4781,7 +5376,6 @@ function renderInner() {
   if (ui.adminTab === 'auditlog') bindAuditLogView();
   if (ui.adminTab === 'reports') bindReportsView();
   if (ui.adminTab === 'exports') bindExportsView();
-  if (ui.adminTab === 'chat') bindChatView();
   if (ui.adminTab === 'suggestions') bindSuggestionCards();
   if (ui.adminTab === 'meetings') bindMeetingsView();
   if (ui.adminTab === 'system') bindSystemView();
@@ -4789,14 +5383,17 @@ function renderInner() {
   bindMonthEndReminder();
   bindNotifPrompt();
   bindTaskHistory();
-  if (ui.adminTab === 'today') bindTodayFeed();
+  if (showingToday) bindTodayFeed();
 }
 function bindGlobal() {
   bindThemeToggle();
   document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => {
     ui.adminTab = b.dataset.tab; ui.sidebarOpen = false; safeStorage.setItem('ls_last_tab', ui.adminTab);
+    if (ui.adminTab === 'announcements') ui.annSeenBefore = lastSeenAnnouncementId(); // keep "New" tags visible this visit
+    if (ui.adminTab !== 'chat') chatShownInView = false;
     loadTabExtras();
     render();
+    if (ui.adminTab === 'chat') openChatTab();
     // Switching tabs previously only re-rendered whatever was already in memory from login time
     // or the last background poll — meaning a page like Accounts could show stale (or, on a
     // slow/failed earlier fetch, still-empty) data even though the real data was one request
@@ -4835,7 +5432,7 @@ function bindGlobal() {
     const id = el.dataset.markNotifRead;
     try { await api(`/api/notifications/${id}/read`, { method: 'POST' }); } catch (e) { /* ignore */ }
     if (el.dataset.notifGotoTask) { ui.notifDrawerOpen = false; ui.adminTab = 'tasks'; }
-    if (el.dataset.notifGotoChat) { ui.notifDrawerOpen = false; ui.adminTab = 'chat'; ui.chatRoom = el.dataset.notifGotoChat; chatMessagesResp = null; chatStickBottom = true; }
+    if (el.dataset.notifGotoTab) { ui.notifDrawerOpen = false; ui.adminTab = el.dataset.notifGotoTab; safeStorage.setItem('ls_last_tab', ui.adminTab); if (ui.adminTab === 'chat') { if (el.dataset.notifChatRoom) ui.chatRoom = el.dataset.notifChatRoom; openChatTab(); } }
     await refreshData();
   });
   const toggleForm = document.querySelector('[data-act="toggle-task-form"]'); if (toggleForm) toggleForm.onclick = () => { ui.taskFormOpen = true; ui.taskFormIsDrawing = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; render(); };
@@ -4973,6 +5570,9 @@ function bindMyTasks() {
       await refreshData();
     } catch (e) { setBanner(e.message); render(); }
   });
+  document.querySelectorAll('[data-owner-filter]').forEach(b => b.onclick = () => { document.querySelectorAll('[data-owner-person]').forEach(s => { s.value = ''; }); ui.myOwnerFilter = b.dataset.ownerFilter; ui.myOwnerPerson = ''; ui.myOpenShown = OPEN_PAGE_SIZE; ui.myHistoryShown = HISTORY_PAGE_SIZE; render(); });
+  const ownerPersonSel = document.querySelector('[data-owner-person]');
+  if (ownerPersonSel) ownerPersonSel.onchange = () => { ui.myOwnerPerson = ownerPersonSel.value; ui.myOpenShown = OPEN_PAGE_SIZE; ui.myHistoryShown = HISTORY_PAGE_SIZE; render(); };
   document.querySelectorAll('[data-my-tab]').forEach(b => b.onclick = () => { ui.myTasksTab = b.dataset.myTab; ui.myOpenShown = OPEN_PAGE_SIZE; ui.myHistoryShown = HISTORY_PAGE_SIZE; render(); });
   const personSel = document.getElementById('task-filter-person');
   if (personSel) personSel.onchange = () => { ui.taskFilterPerson = personSel.value; ui.allOpenShown = OPEN_PAGE_SIZE; ui.allHistoryShown = HISTORY_PAGE_SIZE; render(); window.scrollTo({ top: 0, behavior: 'smooth' }); };
@@ -5122,28 +5722,19 @@ function bindMyTasks() {
     ui.subtaskFormTags = [];
     render();
   });
-  document.querySelectorAll('[id^="task-reply-file-"]').forEach(inp => inp.onchange = () => {
-    const id = inp.id.replace('task-reply-file-', '');
-    const f = inp.files[0]; if (!f) return;
-    readAnyFile(f, dataUrl => {
-      ui.pendingReplyFiles = ui.pendingReplyFiles || {};
-      ui.pendingReplyFiles[id] = dataUrl ? { data: dataUrl, name: f.name } : null;
-      const preview = document.getElementById(`task-reply-file-preview-${id}`);
-      if (preview) preview.innerHTML = dataUrl ? `<div class="small muted">Attached: ${esc(f.name)}</div>` : '<div class="err">Could not read file.</div>';
-    });
-  });
+  document.querySelectorAll('[id^="task-reply-file-"]').forEach(inp => bindFilePicker(inp, 'reply-' + inp.id.replace('task-reply-file-', '')));
   document.querySelectorAll('[data-reply-task]').forEach(btn => btn.onclick = async () => {
     if (btn.disabled) return;
     const id = btn.dataset.replyTask;
     const field = document.getElementById(`task-reply-${id}`);
     if (!field) { setBanner('Something went wrong finding the reply box — try again.'); render(); return; }
     const message = field.value.trim();
-    const pending = (ui.pendingReplyFiles || {})[id];
-    if (!message && !pending) { alert('Write a message or attach a file.'); return; }
+    const files = pendingFiles['reply-' + id] || [];
+    if (!message && !files.length) { alert('Write a message or attach a file.'); return; }
     btn.disabled = true;
     try {
-      await api(`/api/tasks/${id}/reply`, { method: 'POST', body: JSON.stringify({ message, attachment: pending ? pending.data : null, attachmentName: pending ? pending.name : '' }) });
-      if (ui.pendingReplyFiles) delete ui.pendingReplyFiles[id];
+      await api(`/api/tasks/${id}/reply`, { method: 'POST', body: JSON.stringify({ message, attachments: files }) });
+      takePendingFiles('reply-' + id);
       if (field) field.value = '';
       setBanner('Reply sent.', 'ok'); await refreshData();
     } catch (e) { btn.disabled = false; setBanner(e.message); render(); }
@@ -5346,7 +5937,7 @@ render();
 if (session && token) {
   // Paint the last known data from this device instantly, then fetch fresh data.
   loadDataSnapshot().then(had => { if (had) render(); });
-  refreshData().then(() => { lastFullRefreshAt = Date.now(); registerAndroidDevice(); ensurePushSubscription(false); });
+  refreshData().then(() => { lastFullRefreshAt = Date.now(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); });
 }
 // Guard against interrupting active typing: a full-DOM rebuild every 30s (see refreshData)
 // causes a visible flash and can even make a cursor mid-sentence jump or feel like it "vanished"
@@ -5367,6 +5958,8 @@ function userIsActivelyTyping() {
 // immediately via their own explicit refreshData() call right after that action succeeds —
 // this interval only covers picking up everyone else's changes.
 setInterval(() => syncTick(false), 5000);
+// Quicker checks while the Chat Room is open, so conversations feel live.
+setInterval(() => { if (ui && ui.adminTab === 'chat') syncTick(false); }, 2000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) syncTick(true); });
 window.addEventListener('focus', () => syncTick(true));
 window.addEventListener('online', () => syncTick(true));

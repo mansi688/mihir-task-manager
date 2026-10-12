@@ -38,30 +38,56 @@ test('multiple attachments, chat room and announcements', async (t) => {
     assert.equal(bad.status, 400); assert.match(bad.data.error, /bad\.exe/);
   });
 
-  await t.test('chat rooms: General for everyone, department rooms only for that department (Admin sees all)', async () => {
-    assert.deepEqual((await G('/api/chat/rooms', alice)).data.map(r => r.key), ['general', 'team:Site']);
-    assert.deepEqual((await G('/api/chat/rooms', carol)).data.map(r => r.key), ['general', 'team:Design']);
-    const adminRooms = (await G('/api/chat/rooms', admin)).data.map(r => r.key);
-    assert.ok(adminRooms.includes('team:Site') && adminRooms.includes('team:Design'));
-    assert.equal((await G('/api/chat/messages?room=team%3ASite', carol)).status, 403);
-    assert.equal((await P('/api/chat/messages', carol, { room: 'team:Site', message: 'hi' })).status, 403);
+  await t.test('chat rooms: General plus every department room, open to everyone', async () => {
+    const aliceRooms = (await G('/api/chat/rooms', alice)).data;
+    const keys = aliceRooms.map(r => r.key);
+    assert.equal(keys[0], 'general');
+    assert.ok(keys.includes('team:Site') && keys.includes('team:Design'), 'everyone sees every department room');
+    assert.equal(aliceRooms.find(r => r.key === 'team:Site').mine, true);
+    assert.equal(aliceRooms.find(r => r.key === 'team:Design').mine, false);
+    assert.deepEqual((await G('/api/chat/rooms', carol)).data.map(r => r.key), keys);
+    assert.equal((await G('/api/chat/messages?room=team%3ASite', carol)).status, 200);
+    const cross = await P('/api/chat/messages', carol, { room: 'team:Site', message: 'hello Site team, from Design' });
+    assert.equal(cross.status, 200, 'anyone can post in any department room');
+    assert.equal((await P('/api/chat/messages', carol, { room: 'team:NoSuchDept', message: 'hi' })).status, 403, 'unknown rooms are refused');
+    await api(baseUrl, `/api/chat/messages/${cross.data.id}`, { method: 'DELETE', token: admin });
   });
 
-  await t.test('chat messages carry files, @mentions notify only people who can see the room, unread counts work', async () => {
+  await t.test('chat messages carry files, @mentions notify anyone tagged and open the room, unread counts work', async () => {
+    const before = (await G('/api/chat/rooms', bob)).data.find(r => r.key === 'team:Site').unread;
     const sent = await P('/api/chat/messages', alice, { room: 'team:Site', message: 'hi @bob and @carol', attachments: [{ name: 'plan.pdf', data: du('p') }] });
     assert.equal(sent.status, 200);
-    assert.deepEqual(sent.data.mentioned, ['bob'], 'carol is not in the Site room, so she is not notified');
-    const bobNotes = (await G('/api/notifications', bob)).data.items.filter(n => n.type === 'chat_mention');
-    assert.equal(bobNotes.length, 1);
+    assert.deepEqual(sent.data.mentioned.sort(), ['bob', 'carol'], 'carol is in Design but can still be tagged');
+    const carolNote = (await G('/api/notifications', carol)).data.items.find(n => n.type === 'chat_mention');
+    assert.ok(carolNote); assert.equal(carolNote.chat_room, 'team:Site', 'tapping the notification opens the Site room');
     const rooms = (await G('/api/chat/rooms', bob)).data;
-    assert.equal(rooms.find(r => r.key === 'team:Site').unread, 1);
+    assert.equal(rooms.find(r => r.key === 'team:Site').unread, before + 1);
     const msgs = (await G('/api/chat/messages?room=team%3ASite', bob)).data;
-    assert.equal(msgs.length, 1); assert.equal(msgs[0].files[0].name, 'plan.pdf');
-    assert.equal((await G(`/api/chat/files/${msgs[0].files[0].id}`, bob)).status, 200);
-    assert.equal((await G(`/api/chat/files/${msgs[0].files[0].id}`, carol)).status, 403);
-    await P('/api/chat/read', bob, { room: 'team:Site', lastId: msgs[0].id });
+    const last = msgs[msgs.length - 1];
+    assert.equal(last.files[0].name, 'plan.pdf');
+    assert.equal((await G(`/api/chat/files/${last.files[0].id}`, bob)).status, 200);
+    assert.equal((await G(`/api/chat/files/${last.files[0].id}`, carol)).status, 200, 'files in open rooms are open too');
+    await P('/api/chat/read', bob, { room: 'team:Site', lastId: last.id });
     assert.equal((await G('/api/chat/rooms', bob)).data.find(r => r.key === 'team:Site').unread, 0);
     assert.equal((await P('/api/chat/messages', alice, { room: 'general', message: '' })).status, 400, 'empty message rejected');
+  });
+
+  await t.test('@[Department] tags every member of that department; @everyone is for Admin/Directors only', async () => {
+    const count = async (who) => (await G('/api/notifications', who)).data.items.filter(n => n.type === 'chat_mention').length;
+    const [b0, c0, a0] = [await count(bob), await count(carol), await count(alice)];
+    const d = await P('/api/chat/messages', carol, { room: 'team:Site', message: 'Site team @[site] please check the drawing' });
+    assert.equal(d.status, 200); assert.deepEqual(d.data.departments, ['Site']);
+    assert.equal(await count(bob), b0 + 1); assert.equal(await count(alice), a0 + 1);
+    assert.equal(await count(carol), c0, 'the sender is not notified');
+    const oneWord = await P('/api/chat/messages', alice, { room: 'general', message: 'ping @Design' });
+    assert.deepEqual(oneWord.data.departments, ['Design']);
+    assert.equal(await count(carol), c0 + 1);
+    const memberEveryone = await P('/api/chat/messages', alice, { room: 'general', message: 'hey @everyone' });
+    assert.equal(memberEveryone.data.everyone, false, 'members cannot ping the whole company');
+    assert.equal(await count(carol), c0 + 1);
+    const adminEveryone = await P('/api/chat/messages', admin, { room: 'general', message: 'Town hall at 5, @everyone' });
+    assert.equal(adminEveryone.data.everyone, true);
+    assert.equal(await count(carol), c0 + 2); assert.equal(await count(bob), b0 + 2);
   });
 
   await t.test('only the author (or Admin) can delete a chat message', async () => {

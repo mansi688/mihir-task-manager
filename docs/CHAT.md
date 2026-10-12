@@ -1,25 +1,35 @@
-# Company chat
+# Chat Room
 
-**Menu → Chat** (everyone). Rooms: **All Company** plus one room per department (created automatically from the
-department list). Everyone can read and post in every room — so Site can talk directly to Estimation, Purchase, etc.
+Menu: **Communicate → Chat Room** (next to **Announcements**). Available to every role.
 
-## Tagging (same idea as tagging people/departments on tasks)
-- Type `@` → pick a person (`@rohit.k`) or a whole department (`@[Estimation Department]`).
-- `@everyone` (whole company) — Admin and Directors only.
-- Tagged people get a bell notification + phone push; tapping it opens that room. Messages that tag you are highlighted.
-- Mention a task ID (e.g. `TASK-AB12CD`) and it becomes a link to that task.
-- WhatsApp is **not** used for chat tags (cost) — in-app + push only.
+## Rooms
+- **General** — the whole company.
+- **One room per department** (`team:<Department>`). Every employee can read and post in every
+  department room; your own department is marked *your dept*. Rooms appear automatically for each
+  department in Settings and for any department a user belongs to.
+- Messages can carry up to 10 files. Authors can delete their own messages; Admin can delete any
+  (audited).
 
-## Behaviour
-Unread counts per room (red `@n` when you were tagged) and in the menu; Enter sends, Shift+Enter = new line;
-"Load earlier messages" pages back; new messages arrive through the normal live sync (a few seconds), also while typing.
-Delete: your own messages; Admin can delete any message (recorded in the Audit Log). Deleted messages show as
-"message deleted". Limit: 2,000 characters per message, 30 messages a minute per person.
+## Tagging
+| Type | Who is notified |
+|---|---|
+| `@username` | That person (autocomplete offers names as you type `@`) |
+| `@[Department Name]` (or `@Site` for one-word names) | Everyone in that department |
+| `@everyone` | Whole company — Admin and Directors only |
 
-## Technical
-Migration 005: `chat_messages` (room = `general` or `dept:<name>`, mentions, mention_teams, soft delete),
-`chat_reads` (per-person read marker; not counted as a data change, so reading never makes other screens refresh),
-`notifications.chat_room`. API: `GET /api/chat/rooms`, `GET /api/chat/unread`,
-`GET|POST /api/chat/rooms/:room/messages` (`before`, `after`, `limit`), `POST /api/chat/rooms/:room/read`,
-`DELETE /api/chat/messages/:id`. Tests: `test/chat.test.js`.
-If a department is renamed or removed, its old room's messages stay in the database but the room is no longer listed.
+The sender is never notified. Tapping a tag notification opens the room the message was posted in.
+Messages that tag you or your department are highlighted.
+
+## API
+- `GET /api/chat/rooms` → `[{ key, name, emoji, hint, mine, unread, lastId }]`
+- `GET /api/chat/messages?room=&after=&before=&limit=`
+- `POST /api/chat/messages { room, message, attachments[] }` → `{ id, mentioned[], departments[], everyone, notified }`
+- `POST /api/chat/read { room, lastId }`
+- `DELETE /api/chat/messages/:id` (author or Admin)
+- `GET /api/chat/files/:id`
+
+Live updates come through the separate chat version in `/api/sync` (`c`), so chatting never reloads task screens.
+
+## Not yet: private conversations
+Rooms are open to all. A private room (only chosen departments/people can see it) is a planned
+follow-up.

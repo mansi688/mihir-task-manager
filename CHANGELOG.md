@@ -4,12 +4,22 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
-## [Unreleased] — Company chat
-### Added
-- Chat for everyone: All Company room + one room per department, open to all; @person, @[Department] and
-  @everyone (Admin/Directors) tags with notifications that open the room; task IDs become links; unread badges;
-  delete own messages (Admin: any, audited). docs/CHAT.md.
-### Database: migration 005 (chat_messages, chat_reads, notifications.chat_room — additive). Environment: none.
+## [Unreleased] — Chat Room open to all departments + department tagging
+### Restored
+- The Communicate menu group (Chat Room + Announcements), chat files, task multi-attachments, announcements
+  calendar entries and the approvals history view from the Oct 10 build (a7de138). They were dropped when a
+  later push replaced that history; this release merges both lines back together.
+### Changed
+- Chat Room: every employee now sees and can post in General and every department room (their own is marked
+  "your dept"). Tags: @person, @[Department] (whole department) and @everyone (Admin/Directors only).
+  Tag notifications open the room they came from. docs/CHAT.md.
+### Fixed
+- Slow login and slow screens: database connections were closed after 30s idle, and re-opening them
+  (server in Oregon, database in Tokyo) cost ~1.5–2s on the next load. They now stay open 10 minutes
+  with TCP keep-alive, and 4 are kept warm. Optional env: DB_IDLE_TIMEOUT_MS, DB_POOL_WARM.
+- "column m.mentions does not exist" errors on every load (chat code didn't match the database).
+### Database: none new. Uses the existing chat tables; migration 005 only adds notifications.chat_room
+(already applied in production). Environment: none.
 
 ## [Documents] / photos / video → tasks
 ### Added

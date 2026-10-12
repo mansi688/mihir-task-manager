@@ -16,6 +16,7 @@ async function startTestServer() {
   url.searchParams.set('options', `-c search_path=${schema},public`);
   process.env.DATABASE_URL = url.toString();
   process.env.PGSSLMODE = 'disable';
+  process.env.DB_POOL_WARM = '0';
   process.env.JWT_SECRET = 'test-secret-not-for-real-use-' + Math.random().toString(36);
   delete require.cache[require.resolve('../backend/db')];
   delete require.cache[require.resolve('../backend/server')];
