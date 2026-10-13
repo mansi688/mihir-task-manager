@@ -135,7 +135,7 @@ function mountLocation(app, deps) {
         viewers: { admin: true, directors: s.directorsCanView, teamLeads: s.teamLeadsCanView } },
       config: await service.clientConfig(),
       canViewOthers: isManager(scope), isAdmin: me.role === 'admin', canManagePlaces: me.role === 'admin' || me.role === 'director',
-      map: { tileUrl: process.env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors', search: geocoder.providerName() },
+      map: { tileUrl: process.env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors', search: geocoder.providerName(), searchLabels: geocoder.chain().map(p => geocoder.LABEL[p]) },
       indoorEnabled: !!s.indoorEnabled,
     });
   }));
@@ -307,17 +307,38 @@ function mountLocation(app, deps) {
     return out;
   }
   // ---------- place search (maps) ----------
-  // Anyone who can see a map may search it. 40 searches per person per 5 minutes is far more than
-  // a person types, and stops a stuck script from hammering the (free, fair-use) search service.
+  // Anyone who can see a map may search it. Answer order: the company's own places (matched on name,
+  // project and address), then typed coordinates / map links, then the street-search chain. A busy
+  // street search never hides saved places. 80 lookups per person per 5 minutes stops a stuck script
+  // without getting in the way of typing (saved-place-only answers don't count).
   const searchHits = new Map();
   router.get('/geocode', enabled, userAuth, ah(async (req, res) => {
+    const text = str(req.query.q, 200);
+    const lat = Number(req.query.lat), lng = Number(req.query.lng);
+    const savedOnly = req.query.saved === '1';
+    const saved = geocoder.matchPlaces(await service.activePlaces(), text, 5);
+    if (savedOnly || text.trim().length < 3) return res.json({ results: saved, provider: 'saved' });
     const now = Date.now();
     const recent = (searchHits.get(req.user.username) || []).filter(t => now - t < 5 * 60000);
-    if (recent.length >= 40) return res.status(429).json({ error: 'Too many searches — wait a minute and try again.' });
+    if (recent.length >= 80) return res.json({ results: saved, provider: 'saved', note: 'Too many searches in a short time — wait a minute for street results.' });
     recent.push(now); searchHits.set(req.user.username, recent);
-    const lat = Number(req.query.lat), lng = Number(req.query.lng);
-    const out = await geocoder.geocode(str(req.query.q, 200), { lat, lng });
-    res.json(out);
+    let street = { results: [] };
+    let note = null;
+    try { street = await geocoder.geocode(text, { lat, lng }); note = street.note || null; } catch (e) { note = e.message; }
+    // A project the company has, but with no place drawn yet: say so instead of "nothing found".
+    if (!saved.length) {
+      const pr = (await q(`SELECT name FROM projects WHERE name ILIKE $1 ORDER BY name LIMIT 3`, [`%${text.trim().replace(/[%_\\]/g, '')}%`])).rows;
+      if (pr.length && !street.results.length) note = `"${pr[0].name}" is a project in the app but has no place on the map yet. Search its address or area, or paste its Google Maps link or coordinates, then use "Add as a place" (Places tab) and link it to the project.`;
+      else if (pr.length) note = `Tip: "${pr[0].name}" is a project with no place on the map yet — pick the right result below and use "Add as a place".`;
+    }
+    const typedFirst = street.provider === 'typed';
+    res.json({ results: typedFirst ? street.results.concat(saved) : saved.concat(street.results), provider: street.provider || 'saved',
+      ...(street.query ? { query: street.query } : {}), ...(note ? { note } : {}), ...(street.cached ? { cached: true } : {}) });
+  }));
+  // Admin: try each configured street-search service once (Privacy & policy → Map search → Test).
+  router.get('/geocode/test', enabled, userAuth, ah(async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    res.json(await geocoder.selfTest(process.env, str(req.query.q, 120) || 'Shivajinagar, Pune'));
   }));
   router.get('/places', enabled, userAuth, ah(async (req, res) => {
     res.json(await service.listPlaces({ includeInactive: req.query.all === '1' && (req.user.role === 'admin' || req.user.role === 'director') }));

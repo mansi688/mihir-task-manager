@@ -740,6 +740,15 @@
       <button class="btn btn-primary" data-loc="settings-save">Save policy</button>
     </div>
     <div class="card">
+      <h3 style="margin-top:0;">Map search</h3>
+      <div class="small muted" style="margin-bottom:8px;">Services used, in order: <b>${esc(((S.me.map && S.me.map.searchLabels) || []).join(' → ') || 'none (only coordinates and links)')}</b>. Saved places, coordinates and Google Maps links always work. Settings are on the server (GEOCODER, GOOGLE_MAPS_API_KEY, MAPTILER_KEY) — see the Maps Guide.</div>
+      <div class="row" style="align-items:flex-end;"><div class="col"><label>Test search</label><input id="loc-gt-q" value="${esc(S.geoTestQ || 'Shivajinagar, Pune')}"></div><div class="col" style="flex:0;"><button class="btn" data-loc="geo-test">${S.geoTest === 'loading' ? 'Testing…' : 'Test map search'}</button></div></div>
+      ${S.geoTest && S.geoTest !== 'loading' ? `<table class="loc-table" style="margin-top:8px;"><thead><tr><th>Service</th><th>Result</th><th>Time</th></tr></thead><tbody>
+        ${(S.geoTest.providers || []).map(r => `<tr><td>${esc(r.label || r.provider)}</td><td>${r.ok ? (r.results ? `✅ ${r.results} found — ${esc(r.first || '')}` : '⚠️ answered, nothing found') : `❌ ${esc(r.error || 'failed')}`}</td><td>${r.ms} ms</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No street-search service is set up.</td></tr>'}
+      </tbody></table>` : ''}
+      ${S.geoTestErr ? `<div class="small" style="color:var(--danger);margin-top:6px;">${esc(S.geoTestErr)}</div>` : ''}
+    </div>
+    <div class="card">
       <h3 style="margin-top:0;">A person's data</h3>
       <div class="row" style="align-items:flex-end;">
         <div class="col"><label>Person</label><select id="loc-d-user">${peopleOptions('')}</select></div>
@@ -878,47 +887,55 @@
   function mapSearchHTML() {
     const M = S.msearch;
     const list = M.results;
+    const src = list ? [...new Set(list.filter(r => !r.saved && r.source && r.source !== 'typed').map(r => r.source))] : [];
+    const open = M.loading || list || M.error || M.note;
     return `<div class="loc-msearch">
-      <input type="search" id="loc-msearch-q" autocomplete="off" placeholder="Search a place or address, or paste coordinates / a Google Maps link" value="${esc(M.q)}" aria-label="Search the map">
-      ${M.loading ? '<div class="loc-msearch-list"><div class="small muted" style="padding:8px 10px;">Searching…</div></div>' : ''}
-      ${!M.loading && (list || M.error) ? `<div class="loc-msearch-list" role="listbox">
-        ${M.error ? `<div class="small" style="padding:8px 10px;color:var(--danger);">${esc(M.error)}</div>` : ''}
-        ${list && !list.length && !M.error ? '<div class="small muted" style="padding:8px 10px;">Nothing found. Try a different spelling, add the area or city, or paste coordinates.</div>' : ''}
-        ${(list || []).map((r, i) => `<button type="button" class="loc-msearch-item" data-msearch-i="${i}" role="option">
-          <b>${r.saved ? '📍 ' : ''}${esc(r.name)}</b><span class="small muted">${esc(r.saved ? `Saved place · ${KIND_LABEL[r.kind] || ''}` : (r.address || ''))}</span></button>`).join('')}
-        ${list && list.some(r => !r.saved && r.source && r.source !== 'typed') ? `<div class="small muted" style="padding:4px 10px 6px;">Search results © ${esc(list.find(r => !r.saved && r.source && r.source !== 'typed').source)}</div>` : ''}
+      <input type="search" id="loc-msearch-q" autocomplete="off" spellcheck="false" placeholder="Search a place, project, landmark or address — or paste coordinates / a Google Maps link" value="${esc(M.q)}" aria-label="Search the map">
+      ${open ? `<div class="loc-msearch-list" role="listbox">
+        ${M.query ? `<div class="small muted" style="padding:6px 12px 0;">No exact match — showing results for “${esc(M.query)}”.</div>` : ''}
+        ${(list || []).map((r, i) => `<button type="button" class="loc-msearch-item${r.saved ? ' saved' : ''}" data-msearch-i="${i}" role="option">
+          <b>${r.saved ? '📍 ' : r.type === 'coordinates' ? '🎯 ' : ''}${esc(r.name)}</b><span class="small muted">${esc(r.saved ? `Saved place · ${KIND_LABEL[r.kind] || ''}${r.address ? ` · ${r.address}` : ''}` : (r.address || ''))}</span></button>`).join('')}
+        ${M.loading ? `<div class="small muted" style="padding:8px 12px;">${list && list.length ? 'Searching streets and landmarks…' : 'Searching…'}</div>` : ''}
+        ${!M.loading && list && !list.length && !M.error && !M.note ? '<div class="small muted" style="padding:8px 12px;">Nothing found. Add the area or city (e.g. “Baner Pune”), check the spelling, or paste coordinates / a Google Maps link.</div>' : ''}
+        ${M.note ? `<div class="small" style="padding:8px 12px;color:var(--muted);">ℹ️ ${esc(M.note)}</div>` : ''}
+        ${M.error ? `<div class="small" style="padding:8px 12px;color:var(--danger);">${esc(M.error)}</div>` : ''}
+        ${src.length ? `<div class="small muted" style="padding:4px 12px 6px;">Search results © ${esc(src.join(', '))}</div>` : ''}
       </div>` : ''}
     </div>`;
   }
   let msearchTimer = null;
+  function localSaved(q) {
+    const words = q.toLowerCase().split(/[^a-z0-9\u0900-\u097f]+/).filter(Boolean);
+    return (S.places || (S.live && S.live.places) || []).filter(g => { const hay = `${g.name || ''} ${g.project || ''} ${g.address || ''}`.toLowerCase(); return words.every(w => hay.includes(w)); }).slice(0, 5)
+      .map(g => ({ name: g.name, address: [g.project ? `Project: ${g.project}` : '', g.address || ''].filter(Boolean).join(' · '), lat: g.center_lat, lng: g.center_lng, saved: true, kind: g.kind, placeId: g.id, type: 'saved' }));
+  }
   async function runMapSearch() {
     const M = S.msearch;
     const q = M.q.trim();
-    if (q.length < 2) { M.results = null; M.error = null; M.loading = false; render(); return; }
+    if (q.length < 2) { M.results = null; M.error = null; M.note = null; M.query = null; M.loading = false; render(); return; }
     const seq = ++M.seq;
-    const t = q.toLowerCase();
-    const saved = (S.places || (S.live && S.live.places) || []).filter(g => (g.name || '').toLowerCase().includes(t) || (g.address || '').toLowerCase().includes(t)).slice(0, 4)
-      .map(g => ({ name: g.name, address: g.address || '', lat: g.center_lat, lng: g.center_lng, saved: true, kind: g.kind, placeId: g.id }));
-    M.loading = true; M.error = null; render();
-    let remote = [];
+    // Saved places show at once; the server's answer (saved + streets) replaces them when it arrives.
+    M.results = localSaved(q); M.loading = true; M.error = null; M.note = null; M.query = null; render();
     try {
       const c = S.map ? S.map.getCenter() : null;
       const r = await api(`/api/location/geocode?q=${encodeURIComponent(q)}${c ? `&lat=${c.lat.toFixed(4)}&lng=${c.lng.toFixed(4)}` : ''}`);
-      remote = r.results || [];
-      if (!remote.length && r.note) M.error = r.note;
-    } catch (e) { M.error = e.message; }
-    if (seq !== M.seq) return; // a newer search has started
-    M.loading = false; M.results = saved.concat(remote); render();
+      if (seq !== M.seq) return; // a newer search has started
+      M.results = r.results || []; M.note = r.note || null; M.query = r.query || null;
+    } catch (e) {
+      if (seq !== M.seq) return;
+      M.error = e.message;
+    }
+    M.loading = false; render();
   }
   function pickSearchResult(r) {
     const M = S.msearch;
-    M.results = null; M.error = null; M.q = r.name;
+    M.results = null; M.error = null; M.note = null; M.query = null; M.q = r.name;
     M.pin = { lat: r.lat, lng: r.lng, name: r.name, address: r.address || '', saved: !!r.saved, placeId: r.placeId };
     if (r.saved && S.mapEl && S.mapEl.id === 'loc-map-places' && S.me.canManagePlaces && !S.placeDraft) { M.pin = null; editPlace(r.placeId); return; }
     if (S.placeDraft && S.mapEl && S.mapEl.id === 'loc-map-places') {
       readPlaceForm();
       S.placeDraft.lat = r.lat; S.placeDraft.lng = r.lng;
-      if (!S.placeDraft.name && r.type !== 'coordinates') S.placeDraft.name = r.name;
+      if (!S.placeDraft.name && !/^-?\d+(\.\d+)?, -?\d/.test(r.name)) S.placeDraft.name = r.name;
       if (!S.placeDraft.address && r.address && r.type !== 'coordinates') S.placeDraft.address = r.address.slice(0, 300);
     }
     S.fitNext = false;
@@ -949,12 +966,20 @@
     const inp = document.getElementById('loc-msearch-q');
     if (!inp) return;
     const M = S.msearch;
-    inp.oninput = () => { M.q = inp.value; clearTimeout(msearchTimer); if (M.q.trim().length < 2) { M.results = null; M.error = null; render(); return; } msearchTimer = setTimeout(runMapSearch, 450); };
+    const close = () => { M.results = null; M.error = null; M.note = null; M.query = null; M.loading = false; M.seq++; render(); };
+    inp.oninput = () => { M.q = inp.value; clearTimeout(msearchTimer); if (M.q.trim().length < 2) { close(); return; } msearchTimer = setTimeout(runMapSearch, 500); };
     inp.onkeydown = (e) => {
       if (e.key === 'Enter') { e.preventDefault(); clearTimeout(msearchTimer); const first = M.results && M.results[0]; if (first && !M.loading && M.q === inp.value) pickSearchResult(first); else { M.q = inp.value; runMapSearch(); } }
-      if (e.key === 'Escape') { M.results = null; M.error = null; render(); }
+      if (e.key === 'Escape') close();
+      if (e.key === 'ArrowDown') { const b = document.querySelector('[data-msearch-i]'); if (b) { e.preventDefault(); b.focus(); } }
     };
-    document.querySelectorAll('[data-msearch-i]').forEach(b => { b.onclick = () => { const r = (M.results || [])[Number(b.dataset.msearchI)]; if (r) pickSearchResult(r); }; });
+    document.querySelectorAll('[data-msearch-i]').forEach(b => {
+      b.onclick = () => { const r = (M.results || [])[Number(b.dataset.msearchI)]; if (r) pickSearchResult(r); };
+      b.onkeydown = (e) => {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); const to = e.key === 'ArrowDown' ? b.nextElementSibling : b.previousElementSibling; if (to && to.matches('[data-msearch-i]')) to.focus(); else if (e.key === 'ArrowUp') inp.focus(); }
+        if (e.key === 'Escape') { inp.focus(); close(); }
+      };
+    });
   }
   function editPlace(id) {
     const g = (S.places || []).find(x => String(x.id) === String(id));
@@ -991,6 +1016,10 @@
     on('[data-loc="place-new"]', () => { S.placeEditId = null; S.placeDraft = { kind: 'site', radiusM: 150, minDwellSeconds: 120, lat: null, lng: null }; render(); });
     on('[data-loc="place-cancel"]', () => { S.placeDraft = null; S.placeEditId = null; render(); });
     on('[data-loc-place]', (e) => editPlace(e.currentTarget.dataset.locPlace));
+    on('[data-loc="geo-test"]', () => {
+      const qi = document.getElementById('loc-gt-q'); S.geoTestQ = qi ? qi.value : ''; S.geoTest = 'loading'; S.geoTestErr = null; render();
+      api(`/api/location/geocode/test?q=${encodeURIComponent(S.geoTestQ)}`).then(r => { S.geoTest = r; render(); }).catch(e => { S.geoTest = null; S.geoTestErr = e.message; render(); });
+    });
     const rad = document.getElementById('loc-p-radius');
     if (rad) rad.oninput = () => { if (!S.placeDraft) return; S.placeDraft.radiusM = Number(rad.value); const lb = document.getElementById('loc-p-r-label'); if (lb) lb.textContent = `${rad.value} m`; S.sig = ''; drawMap(); };
     on('[data-loc="place-save"]', async () => {

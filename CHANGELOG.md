@@ -4,6 +4,19 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Map search: robust (fallback services, projects, short links)
+### Changed
+- Street search is now a chain of services: Google Places (if `GOOGLE_MAPS_API_KEY`) → MapTiler (if `MAPTILER_KEY`)
+  → Photon (free, search-as-you-type) → Nominatim (backup). A busy or failing service is rested and the next
+  one answers, so "The map search service is busy" no longer stops the search. Old `GEOCODER=nominatim` still works.
+- Saved places are matched on the server by name, project and address (any word order) on every map.
+- Nothing found → retried with simpler words. A company project with no place yet gets a hint.
+- Short Google links (`maps.app.goo.gl`, as shared on WhatsApp) are opened and read.
+- Typing: saved places appear at once; street results follow; arrow keys move through results.
+- Admin: Privacy & policy → Map search card with "Test map search" (`GET /api/location/geocode/test`).
+### Database / rollback
+- No database changes. New optional env: `GOOGLE_MAPS_API_KEY`, `MAPTILER_KEY`. Rollback = previous deploy.
+
 ## [Unreleased] — Search a place on the maps
 ### Added
 - Search box above every location map (Live, History, Places, My Location): saved places first, then
