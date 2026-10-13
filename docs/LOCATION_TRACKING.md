@@ -59,6 +59,7 @@ viewer/person. Admin sees the full log under Locations → Privacy & policy.
 | Reports | Date range → per person (sessions, tracked time, distance, visits, time at places, which places) and per place (visits, people, total time). CSV download. |
 | Alerts | Rules: arrives at a place, leaves a place, enters a restricted place/zone, signal lost for N min, speeding over N km/h (two consecutive fast fixes), session longer than N h. Scope by department/person; recipients (default: all Admins); optional "also tell the employee". Alerts arrive as in-app + push notifications; recent alerts can be acknowledged. |
 | Indoor | Floors with floor-plan images, zones (rooms/desks/restricted) drawn on the plan, beacons placed on the plan, live indoor positions, UWB badge assignment and integration keys. See LOCATION_INDOOR.md. |
+| Map search (every map) | Search box above each map: saved places first (instant), then addresses/landmarks from the search provider; also reads typed coordinates (`18.5590, 73.7868`, `18°33'32"N 73°47'12"E`) and pasted Google Maps links. Picking a result centres the map and drops an orange pin; on Places it can become a new place ("Add as a place") or move the place being edited. |
 | Privacy & policy (Admin) | Notice text (versioned), allowed hours, max session length, departments that use tracking, Director/team-lead visibility, indoor on/off, GPS/battery/upload intervals, accuracy threshold, signal-lost minutes, retention periods; export or delete a person's data; access log. |
 
 ## 4. Task, project, procurement & delivery integration
@@ -154,6 +155,8 @@ Managers (scope-limited): `GET /live?v=` · `GET /history?username=&day=` (or `f
 `GET /reports/summary?from&to[&format=csv]` · `GET /alerts` · `POST /alerts/:id/ack` ·
 `GET /indoor/live?floorId=`.
 
+Search: `GET /geocode?q=&lat=&lng=` → `{results:[{name,address,lat,lng,type,source}], provider, cached?, note?}`
+(any logged-in user while tracking is on; 40 searches per person per 5 minutes; answers cached 24 h).
 Places: `GET /places` · `POST/PUT/DELETE /places[/:id]` (Admin/Director).
 Tasks: `GET /tasks/:taskId` · `POST /tasks/:taskId/places {placeId, purpose}` ·
 `DELETE /tasks/:taskId/places/:placeId` · `POST /visits/:id/tasks {taskId}`.
@@ -190,6 +193,10 @@ or an array) is also accepted, so a commercial SDK can post directly.
 | `ENABLE_LOCATION_TRACKING` | `false` | Master switch |
 | `MAP_TILE_URL` | OpenStreetMap standard tiles | Map tiles. **Set a commercial provider for production** (e.g. MapTiler, Stadia, Mapbox, Google): OSM's public tile servers have a fair-use policy that a company dashboard polling all day may exceed. Example: `https://api.maptiler.com/maps/streets-v2/256/{z}/{x}/{y}.png?key=YOUR_KEY` |
 | `MAP_TILE_ATTRIBUTION` | `© OpenStreetMap contributors` | Attribution shown on the map (required by tile providers) |
+| `GEOCODER` | `nominatim` | Map search provider: `nominatim` (OpenStreetMap's free service — max 1 request/second, fair use only; fine for Admins adding places), `maptiler` (commercial, needs `GEOCODER_KEY`; recommended for daily use), `mock` (fixed demo answers, tests) or `off` (only coordinates / Google Maps links work). |
+| `GEOCODER_KEY` | — | API key for `maptiler` (the same MapTiler key as the tiles works) |
+| `GEOCODER_EMAIL` | — | Contact email sent to Nominatim as their usage policy asks — set it to an IT/admin address |
+| `GEOCODER_COUNTRY` | `in` | Limit search to these country codes (comma-separated); empty = worldwide |
 | `DB_IDLE_TIMEOUT_MS`, `DB_POOL_WARM` | 10 min, 4 | Connection pool (from the speed fix) |
 
 Everything else is in the Admin policy screen (stored in `location_settings`).

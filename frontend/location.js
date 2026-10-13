@@ -20,6 +20,7 @@
     tasks: new Map(),
     myHist: null, myHistAt: 0, myAccess: null, myBusy: false, myDay: '',
     map: null, mapEl: null, layer: null, sig: '', fitNext: true, replayMarker: null,
+    msearch: { q: '', results: null, loading: false, error: null, pin: null, seq: 0 }, pinLayer: null,
   };
   const DAY = 86400000;
 
@@ -298,7 +299,7 @@
         <div><b>${mins(h.stats.movingMinutes)}</b><span>moving</span></div>
         <div><b>${h.stats.placesVisited}</b><span>places</span></div>
       </div>
-      ${h.points.length ? '<div id="loc-map-mine" class="loc-map loc-map-small" data-morph-skip></div>' : '<div class="small muted" style="margin:8px 0;">No route recorded on this day.</div>'}
+      ${h.points.length ? mapSearchHTML() + '<div id="loc-map-mine" class="loc-map loc-map-small" data-morph-skip></div>' : '<div class="small muted" style="margin:8px 0;">No route recorded on this day.</div>'}
       ${visitsListHTML(h.visits, false)}`}
     </div>`;
   }
@@ -393,7 +394,7 @@
           </button>`).join('')}
         </div>
       </div>
-      <div class="card loc-map-card"><div id="loc-map-live" class="loc-map" data-morph-skip></div></div>
+      <div class="card loc-map-card">${mapSearchHTML()}<div id="loc-map-live" class="loc-map" data-morph-skip></div></div>
     </div>`;
   }
   async function loadLive(force) {
@@ -441,6 +442,7 @@
         ${d.indoor && d.indoor.length ? `<div class="small" style="font-weight:700;margin:10px 0 4px;">Indoor</div>${indoorRunsHTML(d.indoor)}` : ''}
       </div>
       <div class="card loc-map-card">
+        ${mapSearchHTML()}
         <div id="loc-map-history" class="loc-map" data-morph-skip></div>
         ${d.points.length > 1 ? `
         <div class="loc-replay">
@@ -489,7 +491,7 @@
       <div class="card loc-side">
         ${canEdit ? (D ? `
         <div class="small" style="font-weight:700;">${editing ? 'Edit place' : 'New place'}</div>
-        <div class="small muted" style="margin-bottom:6px;">${D.lat != null ? 'Click the map to move it; drag the slider for the size.' : '👉 Click on the map where the place is.'}</div>
+        <div class="small muted" style="margin-bottom:6px;">${D.lat != null ? 'Click the map to move it; drag the slider for the size.' : '👉 Search for it above the map, or click on the map where the place is.'}</div>
         <label>Name</label><input type="text" id="loc-p-name" value="${esc(D.name || '')}" placeholder="e.g. Mihir Amara — Tower B">
         <div class="row"><div class="col"><label>Type</label><select id="loc-p-kind">${Object.entries(KIND_LABEL).map(([k, l]) => `<option value="${k}" ${D.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
         <div class="col"><label>Project</label><select id="loc-p-project"><option value="">—</option>${projects.map(p => `<option ${D.project === p ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select></div></div>
@@ -506,7 +508,7 @@
             <span class="small muted" style="display:block;">${g.shape === 'polygon' ? 'outline' : `${Math.round(g.radius_m)} m`}${g.project ? ` · ${esc(g.project)}` : ''}</span></span></button>`).join('') || '<div class="small muted">No places yet.</div>'}
         </div>
       </div>
-      <div class="card loc-map-card"><div id="loc-map-places" class="loc-map" data-morph-skip></div></div>
+      <div class="card loc-map-card">${mapSearchHTML()}<div id="loc-map-places" class="loc-map" data-morph-skip></div></div>
     </div>`;
   }
   async function loadPlaces(force) {
@@ -786,8 +788,11 @@
   function mapEl() { return document.querySelector('[id^="loc-map-"]'); }
   function syncMap() {
     const el = mapEl();
-    if (!el) { if (S.map) { S.map.remove(); S.map = null; S.mapEl = null; S.sig = ''; S.replayMarker = null; } return; }
-    if (S.map && S.mapEl !== el) { S.map.remove(); S.map = null; S.sig = ''; S.replayMarker = null; }
+    const drop = () => { try { S.map.remove(); } catch (e) { /* container already emptied */ } if (S.mapEl) delete S.mapEl._leaflet_id; S.map = null; S.sig = ''; S.replayMarker = null; S.pinLayer = null; };
+    if (!el) { if (S.map) { drop(); S.mapEl = null; S.mapId = null; } return; }
+    // The page redraw can reuse the same <div> for a different map (Live → Places): it changes the id
+    // and empties Leaflet's contents. Treat that as a new map, not the old one.
+    if (S.map && (S.mapEl !== el || S.mapId !== el.id || !el.classList.contains('leaflet-container'))) drop();
     if (!S.map) {
       ensureLeaflet().then(() => {
         if (mapEl() !== el || S.map) return;
@@ -795,7 +800,9 @@
         S.map = L.map(el, { zoomControl: true, attributionControl: true }).setView([18.52, 73.86], 11);
         L.tileLayer(m.tileUrl || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: m.attribution || '&copy; OpenStreetMap contributors' }).addTo(S.map);
         S.layer = L.layerGroup().addTo(S.map);
-        S.mapEl = el; S.fitNext = true; S.sig = '';
+        S.pinLayer = L.layerGroup().addTo(S.map);
+        S.mapEl = el; S.mapId = el.id; S.fitNext = !S.msearch.pin; S.sig = '';
+        drawSearchPin(true);
         S.map.on('click', (e) => {
           if (el.id === 'loc-map-places' && S.placeDraft) { readPlaceForm(); S.placeDraft.lat = e.latlng.lat; S.placeDraft.lng = e.latlng.lng; render(); }
         });
@@ -862,6 +869,92 @@
       S.fitNext = false;
       if (bounds.length === 1) S.map.setView(bounds[0], 15); else S.map.fitBounds(bounds, { padding: [30, 30], maxZoom: 17 });
     }
+  }
+  // ---------- place search on the maps ----------
+  // Searches saved places instantly in the browser, then asks the server (/api/location/geocode),
+  // which reads typed coordinates and Google Maps links itself and looks up addresses with the
+  // configured search provider. Picking a result centres the map and drops an orange pin; on the
+  // Places tab it also positions the place being added or edited.
+  function mapSearchHTML() {
+    const M = S.msearch;
+    const list = M.results;
+    return `<div class="loc-msearch">
+      <input type="search" id="loc-msearch-q" autocomplete="off" placeholder="Search a place or address, or paste coordinates / a Google Maps link" value="${esc(M.q)}" aria-label="Search the map">
+      ${M.loading ? '<div class="loc-msearch-list"><div class="small muted" style="padding:8px 10px;">Searching…</div></div>' : ''}
+      ${!M.loading && (list || M.error) ? `<div class="loc-msearch-list" role="listbox">
+        ${M.error ? `<div class="small" style="padding:8px 10px;color:var(--danger);">${esc(M.error)}</div>` : ''}
+        ${list && !list.length && !M.error ? '<div class="small muted" style="padding:8px 10px;">Nothing found. Try a different spelling, add the area or city, or paste coordinates.</div>' : ''}
+        ${(list || []).map((r, i) => `<button type="button" class="loc-msearch-item" data-msearch-i="${i}" role="option">
+          <b>${r.saved ? '📍 ' : ''}${esc(r.name)}</b><span class="small muted">${esc(r.saved ? `Saved place · ${KIND_LABEL[r.kind] || ''}` : (r.address || ''))}</span></button>`).join('')}
+        ${list && list.some(r => !r.saved && r.source && r.source !== 'typed') ? `<div class="small muted" style="padding:4px 10px 6px;">Search results © ${esc(list.find(r => !r.saved && r.source && r.source !== 'typed').source)}</div>` : ''}
+      </div>` : ''}
+    </div>`;
+  }
+  let msearchTimer = null;
+  async function runMapSearch() {
+    const M = S.msearch;
+    const q = M.q.trim();
+    if (q.length < 2) { M.results = null; M.error = null; M.loading = false; render(); return; }
+    const seq = ++M.seq;
+    const t = q.toLowerCase();
+    const saved = (S.places || (S.live && S.live.places) || []).filter(g => (g.name || '').toLowerCase().includes(t) || (g.address || '').toLowerCase().includes(t)).slice(0, 4)
+      .map(g => ({ name: g.name, address: g.address || '', lat: g.center_lat, lng: g.center_lng, saved: true, kind: g.kind, placeId: g.id }));
+    M.loading = true; M.error = null; render();
+    let remote = [];
+    try {
+      const c = S.map ? S.map.getCenter() : null;
+      const r = await api(`/api/location/geocode?q=${encodeURIComponent(q)}${c ? `&lat=${c.lat.toFixed(4)}&lng=${c.lng.toFixed(4)}` : ''}`);
+      remote = r.results || [];
+      if (!remote.length && r.note) M.error = r.note;
+    } catch (e) { M.error = e.message; }
+    if (seq !== M.seq) return; // a newer search has started
+    M.loading = false; M.results = saved.concat(remote); render();
+  }
+  function pickSearchResult(r) {
+    const M = S.msearch;
+    M.results = null; M.error = null; M.q = r.name;
+    M.pin = { lat: r.lat, lng: r.lng, name: r.name, address: r.address || '', saved: !!r.saved, placeId: r.placeId };
+    if (r.saved && S.mapEl && S.mapEl.id === 'loc-map-places' && S.me.canManagePlaces && !S.placeDraft) { M.pin = null; editPlace(r.placeId); return; }
+    if (S.placeDraft && S.mapEl && S.mapEl.id === 'loc-map-places') {
+      readPlaceForm();
+      S.placeDraft.lat = r.lat; S.placeDraft.lng = r.lng;
+      if (!S.placeDraft.name && r.type !== 'coordinates') S.placeDraft.name = r.name;
+      if (!S.placeDraft.address && r.address && r.type !== 'coordinates') S.placeDraft.address = r.address.slice(0, 300);
+    }
+    S.fitNext = false;
+    render();
+    if (S.map) S.map.setView([r.lat, r.lng], r.type === 'coordinates' ? 18 : 16);
+    drawSearchPin(false);
+  }
+  function drawSearchPin(quiet) {
+    if (!S.map || !S.pinLayer || !window.L) return;
+    S.pinLayer.clearLayers();
+    const pin = S.msearch.pin; if (!pin) return;
+    const onPlaces = S.mapEl && S.mapEl.id === 'loc-map-places';
+    const canAdd = onPlaces && S.me.canManagePlaces && !S.placeDraft && !pin.saved;
+    const html = `<b>${esc(pin.name)}</b>${pin.address ? `<br><span style="font-size:11px;">${esc(pin.address)}</span>` : ''}<br><span style="font-size:11px;">${pin.lat.toFixed(5)}, ${pin.lng.toFixed(5)}</span>
+      <div style="margin-top:6px;display:flex;gap:6px;">${canAdd ? '<button type="button" class="btn btn-sm btn-primary" data-msearch-add>Add as a place</button>' : ''}<button type="button" class="btn btn-sm" data-msearch-clear>Clear pin</button></div>`;
+    const mk = L.circleMarker([pin.lat, pin.lng], { radius: 9, color: '#fff', weight: 3, fillColor: '#ff8a00', fillOpacity: 1 }).bindPopup(html).addTo(S.pinLayer);
+    mk.on('popupopen', (e) => {
+      const root = e.popup.getElement(); if (!root) return;
+      const add = root.querySelector('[data-msearch-add]');
+      if (add) add.onclick = () => { const p = S.msearch.pin; S.placeEditId = null; S.placeDraft = { name: p.name, kind: 'site', project: '', address: (p.address || '').slice(0, 300), radiusM: 150, minDwellSeconds: 120, restricted: false, lat: p.lat, lng: p.lng }; S.msearch.pin = null; S.map.closePopup(); drawSearchPin(true); render(); };
+      const clr = root.querySelector('[data-msearch-clear]');
+      if (clr) clr.onclick = () => { S.msearch.pin = null; S.msearch.q = ''; S.map.closePopup(); drawSearchPin(true); render(); };
+    });
+    if (!quiet) mk.openPopup();
+    else if (S.fitNext === false && !S.sig) S.map.setView([pin.lat, pin.lng], 16);
+  }
+  function bindMapSearch() {
+    const inp = document.getElementById('loc-msearch-q');
+    if (!inp) return;
+    const M = S.msearch;
+    inp.oninput = () => { M.q = inp.value; clearTimeout(msearchTimer); if (M.q.trim().length < 2) { M.results = null; M.error = null; render(); return; } msearchTimer = setTimeout(runMapSearch, 450); };
+    inp.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); clearTimeout(msearchTimer); const first = M.results && M.results[0]; if (first && !M.loading && M.q === inp.value) pickSearchResult(first); else { M.q = inp.value; runMapSearch(); } }
+      if (e.key === 'Escape') { M.results = null; M.error = null; render(); }
+    };
+    document.querySelectorAll('[data-msearch-i]').forEach(b => { b.onclick = () => { const r = (M.results || [])[Number(b.dataset.msearchI)]; if (r) pickSearchResult(r); }; });
   }
   function editPlace(id) {
     const g = (S.places || []).find(x => String(x.id) === String(id));
@@ -1042,6 +1135,7 @@
     if (ui.adminTab === 'mytracking') bindMine();
     if (ui.adminTab === 'locations') bindManager();
     bindTaskBlocks();
+    bindMapSearch();
     if (ui.adminTab !== lastTab) { lastTab = ui.adminTab; S.fitNext = true; if (S.me) loadForTab(true); }
     syncMap();
   }

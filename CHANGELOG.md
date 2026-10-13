@@ -4,6 +4,19 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Search a place on the maps
+### Added
+- Search box above every location map (Live, History, Places, My Location): saved places first, then
+  addresses via `GET /api/location/geocode`; typed coordinates (decimal or degrees-minutes-seconds) and
+  pasted Google Maps links are read directly. Pick a result → map centres + orange pin; on Places,
+  "Add as a place" or move the place being edited.
+- New env (optional): `GEOCODER` (default `nominatim`), `GEOCODER_KEY`, `GEOCODER_EMAIL`, `GEOCODER_COUNTRY` (default `in`).
+### Fixed
+- Switching between Locations tabs (e.g. Live map → Places) could leave the second map blank, because
+  the page redraw reused the map's container. The map is now recreated when that happens.
+### Database / rollback
+- No database changes. Rollback = previous deploy.
+
 ## [Unreleased] — Employee location & movement tracking (off by default)
 ### Added
 - Work-session location tracking behind `ENABLE_LOCATION_TRACKING` (default **off** — deploying changes

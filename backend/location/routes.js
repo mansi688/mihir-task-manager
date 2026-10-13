@@ -9,6 +9,7 @@
 const express = require('express');
 const { createLocationService } = require('./service');
 const { createIndoorService } = require('./indoor');
+const geocoder = require('./geocode');
 
 const DAY_MS = 86400000;
 const PLACE_KINDS = ['office', 'site', 'warehouse', 'supplier', 'client', 'other'];
@@ -134,7 +135,7 @@ function mountLocation(app, deps) {
         viewers: { admin: true, directors: s.directorsCanView, teamLeads: s.teamLeadsCanView } },
       config: await service.clientConfig(),
       canViewOthers: isManager(scope), isAdmin: me.role === 'admin', canManagePlaces: me.role === 'admin' || me.role === 'director',
-      map: { tileUrl: process.env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors' },
+      map: { tileUrl: process.env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors', search: geocoder.providerName() },
       indoorEnabled: !!s.indoorEnabled,
     });
   }));
@@ -305,6 +306,19 @@ function mountLocation(app, deps) {
     if (b.active !== undefined) out.active = !!b.active;
     return out;
   }
+  // ---------- place search (maps) ----------
+  // Anyone who can see a map may search it. 40 searches per person per 5 minutes is far more than
+  // a person types, and stops a stuck script from hammering the (free, fair-use) search service.
+  const searchHits = new Map();
+  router.get('/geocode', enabled, userAuth, ah(async (req, res) => {
+    const now = Date.now();
+    const recent = (searchHits.get(req.user.username) || []).filter(t => now - t < 5 * 60000);
+    if (recent.length >= 40) return res.status(429).json({ error: 'Too many searches — wait a minute and try again.' });
+    recent.push(now); searchHits.set(req.user.username, recent);
+    const lat = Number(req.query.lat), lng = Number(req.query.lng);
+    const out = await geocoder.geocode(str(req.query.q, 200), { lat, lng });
+    res.json(out);
+  }));
   router.get('/places', enabled, userAuth, ah(async (req, res) => {
     res.json(await service.listPlaces({ includeInactive: req.query.all === '1' && (req.user.role === 'admin' || req.user.role === 'director') }));
   }));
