@@ -1395,7 +1395,7 @@ window.__androidBack = function () {
     if (ui.importOpen) { ui.importOpen = false; resetImportState(); render(); return true; }
     if (ui.taskFormOpen) { ui.taskFormOpen = false; render(); return true; }
     if (ui.deadlineEditTaskId) { ui.deadlineEditTaskId = null; render(); return true; }
-    if (session && ui.adminTab && ui.adminTab !== 'today') { ui.adminTab = 'today'; render(); window.scrollTo(0, 0); return true; }
+    if (session && ui.adminTab && ui.adminTab !== 'today') { collapseTaskCards(); ui.adminTab = 'today'; render(); window.scrollTo(0, 0); return true; }
   } catch (e) { /* fall through to the app's own handling */ }
   return false;
 };
@@ -5320,6 +5320,49 @@ document.addEventListener('toggle', (e) => {
   const d = e.target;
   if (d && d.tagName === 'DETAILS' && d.id) { if (d.open) openDetails.add(d.id); else openDetails.delete(d.id); }
 }, true);
+
+// An expanded task card closes itself when the person is done with it:
+//  - leaving the page (another menu item) closes every expanded task card, so coming back shows
+//    the list collapsed;
+//  - scrolling a card completely out of view for a moment closes it — unless the person is typing
+//    in it (focus inside, or unsent text in a box), so nothing they wrote is hidden or lost.
+// When a card ABOVE the screen closes, the page is shifted by the same amount so what the person
+// is looking at doesn't jump.
+function collapseTaskCards() {
+  for (const id of [...openDetails]) if (id.startsWith('task-card-')) openDetails.delete(id);
+}
+function taskCardBusy(d) {
+  if (d.contains(document.activeElement) && document.activeElement !== d.querySelector('summary')) return true;
+  return [...d.querySelectorAll('textarea, input[type="text"], input:not([type])')].some(el => el.value && el.value !== el.defaultValue && el.value.trim() !== '');
+}
+const cardAwayTimers = new Map();
+const taskCardObserver = typeof IntersectionObserver === 'function' ? new IntersectionObserver((entries) => {
+  for (const en of entries) {
+    const d = en.target;
+    clearTimeout(cardAwayTimers.get(d)); cardAwayTimers.delete(d);
+    if (en.isIntersecting || !d.open) continue;
+    cardAwayTimers.set(d, setTimeout(() => {
+      cardAwayTimers.delete(d);
+      if (!d.isConnected || !d.open || taskCardBusy(d)) return;
+      const r = d.getBoundingClientRect();
+      if (r.bottom > 0 && r.top < window.innerHeight) return; // back in view
+      // Keep whatever is in the middle of the screen exactly where it is. Some browsers do this by
+      // themselves (scroll anchoring), others (iPhone Safari) don't — so measure and correct only
+      // what is left over.
+      const anchor = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+      const top0 = anchor ? anchor.getBoundingClientRect().top : null;
+      d.open = false; // the toggle listener forgets it
+      if (anchor && anchor.isConnected && !d.contains(anchor)) {
+        const drift = anchor.getBoundingClientRect().top - top0;
+        if (Math.abs(drift) > 1) window.scrollBy(0, drift);
+      }
+    }, 600));
+  }
+}, { threshold: 0 }) : null;
+function watchTaskCards() {
+  if (!taskCardObserver) return;
+  document.querySelectorAll('details.task-row[id^="task-card-"]').forEach(d => taskCardObserver.observe(d));
+}
 function morphAttributes(fromEl, toEl) {
   if (toEl.tagName === 'DETAILS') {
     const wantOpen = (toEl.id && openDetails.has(toEl.id)) || toEl.hasAttribute('open');
@@ -5486,12 +5529,14 @@ function renderInner() {
   bindMonthEndReminder();
   bindNotifPrompt();
   bindTaskHistory();
+  watchTaskCards();
   if (showingToday) bindTodayFeed();
   if (window.LocationUI) window.LocationUI.afterRender();
 }
 function bindGlobal() {
   bindThemeToggle();
   document.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => {
+    if (b.dataset.tab !== ui.adminTab) { collapseTaskCards(); window.scrollTo(0, 0); }
     ui.adminTab = b.dataset.tab; ui.sidebarOpen = false; safeStorage.setItem('ls_last_tab', ui.adminTab);
     if (ui.adminTab === 'announcements') ui.annSeenBefore = lastSeenAnnouncementId(); // keep "New" tags visible this visit
     if (ui.adminTab !== 'chat') chatShownInView = false;
@@ -5535,8 +5580,8 @@ function bindGlobal() {
   document.querySelectorAll('[data-mark-notif-read]').forEach(el => el.onclick = async () => {
     const id = el.dataset.markNotifRead;
     try { await api(`/api/notifications/${id}/read`, { method: 'POST' }); } catch (e) { /* ignore */ }
-    if (el.dataset.notifGotoTask) { ui.notifDrawerOpen = false; ui.adminTab = 'tasks'; }
-    if (el.dataset.notifGotoTab) { ui.notifDrawerOpen = false; ui.adminTab = el.dataset.notifGotoTab; safeStorage.setItem('ls_last_tab', ui.adminTab); if (ui.adminTab === 'chat') { if (el.dataset.notifChatRoom) { ui.chatRoom = el.dataset.notifChatRoom; ui.chatPrivForm = null; } openChatTab(); } }
+    if (el.dataset.notifGotoTask) { ui.notifDrawerOpen = false; if (ui.adminTab !== 'tasks') collapseTaskCards(); ui.adminTab = 'tasks'; }
+    if (el.dataset.notifGotoTab) { ui.notifDrawerOpen = false; if (ui.adminTab !== el.dataset.notifGotoTab) collapseTaskCards(); ui.adminTab = el.dataset.notifGotoTab; safeStorage.setItem('ls_last_tab', ui.adminTab); if (ui.adminTab === 'chat') { if (el.dataset.notifChatRoom) { ui.chatRoom = el.dataset.notifChatRoom; ui.chatPrivForm = null; } openChatTab(); } }
     await refreshData();
   });
   const toggleForm = document.querySelector('[data-act="toggle-task-form"]'); if (toggleForm) toggleForm.onclick = () => { ui.taskFormOpen = true; ui.taskFormIsDrawing = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; render(); };

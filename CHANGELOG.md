@@ -4,6 +4,16 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Expanded tasks close when you're done with them
+### Changed
+- An expanded (opened) task card now closes when you go to another page (menu, back button or a
+  notification), so coming back shows the list collapsed; the new page starts at the top.
+- An expanded task card that is scrolled completely out of view for over half a second closes by itself —
+  except while you are typing in it or it has unsent text. The screen does not jump when a card above closes.
+- Cards that stay on screen still stay open through the automatic refreshes.
+### Database / rollback
+- Front-end only. Rollback = previous deploy.
+
 ## [Unreleased] — Map search: robust (fallback services, projects, short links)
 ### Changed
 - Street search is now a chain of services: Google Places (if `GOOGLE_MAPS_API_KEY`) → MapTiler (if `MAPTILER_KEY`)
