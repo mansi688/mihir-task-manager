@@ -4,6 +4,23 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Notifications page, Approvals page, ✓ seen marks
+### Changed
+- **Notifications** is now its own page in the menu (Overview → Notifications, with the unread count) instead of
+  the bell panel. Items are grouped by day; filters All / New / Seen; "Mark all as seen". On a phone the menu
+  button shows the unread count.
+- A notification gets a green **✓ Seen <time>** once it has been on screen for about a second (or is tapped).
+  Opening the page no longer marks everything read at once — only what you actually saw.
+- **Approvals** is its own page (Tasks → Approvals, with a count): task parts waiting for your approval
+  (Approve / Reject / Open task), levels ready to release, your own parts waiting, and document approvals
+  (Send for Approval + requests, moved from My Tasks). Admin can switch between tasks they created and all tasks.
+- My Tasks keeps all tasks; it shows a short "N items waiting for your approval → Open Approvals" note instead
+  of the document approval cards. Approving inside a task still works as before.
+### Added
+- `POST /api/notifications/read {ids}` marks several notifications seen; `notifications.read_at` stores when.
+### Database / rollback
+- Adds column `notifications.read_at` (TEXT, nullable) automatically at start-up. Additive; rollback = previous deploy.
+
 ## [Unreleased] — Expanded tasks close when you're done with them
 ### Changed
 - An expanded (opened) task card now closes when you go to another page (menu, back button or a

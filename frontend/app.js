@@ -554,7 +554,7 @@ const CAD_DRAWING_EXTENSIONS = ['.dwg', '.dxf', '.rvt', '.rfa', '.skp', '.dgn', 
 
 /* ==================== ROLES / NAV ==================== */
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -659,6 +659,15 @@ function renderSidebar() {
   if (appFeatures.meetingAi) assistantItems.push({ key: 'meetings', label: 'Meetings', icon: 'clock' });
   if (assistantItems.length) { const ci = groups.findIndex(g => g.group === 'Communicate'); groups.splice(ci >= 0 ? ci + 1 : 2, 0, { group: 'Assistant', items: assistantItems }); }
   if (session.role === 'admin') { const g = groups.find(x => x.group === 'Admin'); if (g && !g.items.some(i => i.key === 'system')) g.items = g.items.concat({ key: 'system', label: 'System Health', icon: 'clipboard' }); }
+  // Notifications and Approvals are their own pages for every role.
+  groups.forEach((g, gi) => {
+    if (g.group === 'Overview' && !g.items.some(i => i.key === 'notifications')) groups[gi] = { ...g, items: g.items.concat({ key: 'notifications', label: 'Notifications', icon: 'bell', badge: () => unreadNotifCount }) };
+    if (g.group === 'Tasks' && !g.items.some(i => i.key === 'approvals')) {
+      const items = g.items.slice(); const at = items.findIndex(i => i.key === 'tasks');
+      items.splice(at >= 0 ? at + 1 : items.length, 0, { key: 'approvals', label: 'Approvals', icon: 'clipboard', badge: () => approvalsNeedingMeCount() });
+      groups[gi] = { ...g, items };
+    }
+  });
   if (window.LocationUI) window.LocationUI.navGroups(groups); // frontend/location.js (only when switched on)
   const active = currentTabKey();
   return `
@@ -695,28 +704,113 @@ function renderSidebar() {
 }
 const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'bell', task_closed: 'checkCircle', task_reminder: 'clock', task_reminder_3day: 'clock', task_warning: 'alertTriangle', task_warning_creator: 'alertTriangle', weekly_warning_digest: 'alertTriangle', followup_tagged: 'eye', task_submitted: 'checkCircle', mentioned_in_comment: 'bell', approval_requested: 'checkCircle', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', deadline_soon: 'clock', deadline_passed: 'alertTriangle', admin_late_flag: 'alertTriangle', task_reopened: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin' };
 const NOTIF_TYPE_LABEL = { task_assigned: 'Task Assigned', task_reply: 'Task Update', task_closed: 'Task Closed', task_reminder: 'Task Reminder', task_reminder_3day: '3-Day Reminder', task_warning: '7-Day Warning', task_warning_creator: 'Task Overdue Warning', weekly_warning_digest: 'Weekly Warning Summary', followup_tagged: 'Follow-up Requested', task_submitted: 'Awaiting Your Approval', mentioned_in_comment: 'Mentioned You', approval_requested: 'Approval Requested', approval_rejected: 'Approval Rejected', approval_approved: 'Fully Approved', deadline_soon: 'Deadline Soon', deadline_passed: 'Deadline Passed', admin_late_flag: 'Late User Flagged', task_reopened: 'Task Reopened', chat_mention: '💬 Mentioned in Chat', announcement: '📢 Announcement', location: '📍 Location', location_alert: '📍 Location Alert' };
-function renderNotifDrawer() {
-  const sorted = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+// Where tapping a notification takes you.
+function notifTarget(n) {
+  if (n.task_id) return `data-notif-goto-task="${esc(n.task_id)}"`;
+  if (n.type === 'chat_mention') return `data-notif-goto-tab="chat"${n.chat_room ? ` data-notif-chat-room="${esc(n.chat_room)}"` : ''}`;
+  if (n.type === 'announcement') return 'data-notif-goto-tab="announcements"';
+  if (n.type === 'location_alert') return 'data-notif-goto-tab="locations"';
+  if (n.type === 'location') return 'data-notif-goto-tab="mytracking"';
+  if (/^approval_/.test(n.type)) return 'data-notif-goto-tab="approvals"';
+  return '';
+}
+function istDayKey(iso) { try { return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }); } catch (e) { return ''; } }
+function notifDayLabel(key) {
+  const today = istDayKey(new Date().toISOString());
+  const yest = istDayKey(new Date(Date.now() - 86400000).toISOString());
+  if (key === today) return 'Today';
+  if (key === yest) return 'Yesterday';
+  try { return new Date(key + 'T12:00:00+05:30').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'Asia/Kolkata' }); } catch (e) { return key; }
+}
+function seenTimeText(n) {
+  if (!n.read_at) return 'Seen';
+  try {
+    const sameDay = istDayKey(n.read_at) === istDayKey(new Date().toISOString());
+    return 'Seen ' + new Date(n.read_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', ...(sameDay ? {} : { day: 'numeric', month: 'short' }) });
+  } catch (e) { return 'Seen'; }
+}
+function renderNotificationsView() {
+  const all = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const unread = all.filter(n => !n.read);
+  const filter = ui.notifFilter || 'all';
+  const list = filter === 'unread' ? unread : filter === 'seen' ? all.filter(n => n.read) : all;
+  const groups = [];
+  for (const n of list) { const k = istDayKey(n.created_at); const g = groups[groups.length - 1]; if (g && g.key === k) g.items.push(n); else groups.push({ key: k, items: [n] }); }
+  const chip = (key, label, count) => `<button class="owner-chip notif-filter ${filter === key ? 'active' : ''}" data-notif-filter="${key}">${label}${count != null ? ` <span class="muted small">${count}</span>` : ''}</button>`;
   return `
-  <div class="notif-drawer-bg" data-act="close-notifications">
-    <div class="notif-drawer glass" onclick="event.stopPropagation()">
-      <div class="flex-between" style="padding:18px 20px;border-bottom:1px solid var(--line);">
-        <b>Notifications</b>
-        <button class="close-x" data-act="close-notifications">✕</button>
+  <div class="card">
+    <div class="flex-between" style="flex-wrap:wrap;gap:10px;">
+      <div>
+        <div class="card-title" style="margin:0;">Notifications</div>
+        <div class="small muted">New ones get a ✓ once you have seen them. Tap one to open what it is about.</div>
       </div>
-      <div style="padding:8px 12px;max-height:calc(100vh - 60px);overflow-y:auto;">
-        ${sorted.length === 0 ? `<div class="empty">Nothing to show — all quiet.</div>` : sorted.map(n => `
-          <div class="notif-item" ${n.task_id ? `data-notif-goto-task="${esc(n.task_id)}"` : n.type === 'chat_mention' ? `data-notif-goto-tab="chat"${n.chat_room ? ` data-notif-chat-room="${esc(n.chat_room)}"` : ''}` : n.type === 'announcement' ? 'data-notif-goto-tab="announcements"' : n.type === 'location_alert' ? 'data-notif-goto-tab="locations"' : n.type === 'location' ? 'data-notif-goto-tab="mytracking"' : ''} style="${n.task_id || ['chat_mention', 'announcement', 'location', 'location_alert'].includes(n.type) ? 'cursor:pointer;' : ''}" data-mark-notif-read="${n.id}">
-            <div class="notif-icon">${icon(NOTIF_TYPE_ICON[n.type] || 'alertTriangle', 16)}</div>
-            <div style="flex:1;min-width:0;">
-              <div class="flex-between"><span class="small" style="font-weight:700;">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')}</span>${n.read ? `<span class="badge received">Read</span>` : `<span class="badge flag">New</span>`}</div>
-              <div class="small" style="margin-top:2px;">${esc(n.message)}</div>
-              <div class="muted small" style="margin-top:4px;">${fmtTime(n.created_at)}</div>
-            </div>
-          </div>`).join('')}
-      </div>
+      ${unread.length ? `<button class="btn btn-sm" data-act="notif-mark-all">✓ Mark all as seen</button>` : ''}
     </div>
+    <div class="notif-filters">${chip('all', 'All', all.length)}${chip('unread', 'New', unread.length)}${chip('seen', 'Seen', all.length - unread.length)}</div>
+  </div>
+  <div class="card notif-page">
+    ${list.length === 0 ? `<div class="empty">${filter === 'unread' ? 'Nothing new — you have seen everything. ✓' : 'Nothing to show — all quiet.'}</div>` : groups.map(g => `
+      <div class="notif-day">${esc(notifDayLabel(g.key))}</div>
+      ${g.items.map(n => {
+        const target = notifTarget(n);
+        return `
+        <div class="notif-item ${n.read ? 'seen' : 'unread'}" id="notif-${n.id}" data-notif-id="${n.id}" data-unread="${n.read ? 0 : 1}" ${target} style="${target ? 'cursor:pointer;' : ''}" data-mark-notif-read="${n.id}">
+          <div class="notif-icon">${icon(NOTIF_TYPE_ICON[n.type] || 'alertTriangle', 16)}</div>
+          <div style="flex:1;min-width:0;">
+            <div class="flex-between" style="gap:8px;"><span class="small" style="font-weight:700;">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')}</span>
+              ${n.read ? `<span class="notif-seen" title="${esc(seenTimeText(n))}">✓ ${esc(seenTimeText(n))}</span>` : `<span class="notif-new">● New</span>`}</div>
+            <div class="small" style="margin-top:2px;">${esc(n.message)}</div>
+            <div class="muted small" style="margin-top:4px;">${fmtTime(n.created_at)}${target ? ' · <span class="notif-open">Open ›</span>' : ''}</div>
+          </div>
+        </div>`;
+      }).join('')}`).join('')}
+    ${myNotifications.length >= 100 ? '<div class="small muted" style="margin-top:10px;">Showing your latest 100 notifications.</div>' : ''}
   </div>`;
+}
+// A notification counts as seen once it has been on screen for a moment while this page is open.
+let notifSeenObserver = null;
+const notifSeenTimers = new Map();
+const notifSeenQueue = new Set();
+let notifSeenFlushTimer = null;
+function flushNotifSeen() {
+  const ids = [...notifSeenQueue]; notifSeenQueue.clear();
+  if (!ids.length) return;
+  const now = new Date().toISOString();
+  for (const n of myNotifications) if (ids.includes(n.id) && !n.read) { n.read = 1; n.read_at = now; }
+  unreadNotifCount = myNotifications.filter(n => !n.read).length;
+  render();
+  api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids }) })
+    .then(r => { if (r && typeof r.unread === 'number') { unreadNotifCount = r.unread; render(); } })
+    .catch(() => { ids.forEach(id => notifSeenQueue.add(id)); });
+}
+function watchNotificationsSeen() {
+  if (typeof IntersectionObserver !== 'function') return;
+  if (!notifSeenObserver) notifSeenObserver = new IntersectionObserver((entries) => {
+    for (const en of entries) {
+      const id = Number(en.target.dataset.notifId);
+      clearTimeout(notifSeenTimers.get(id)); notifSeenTimers.delete(id);
+      if (!en.isIntersecting || en.target.dataset.unread !== '1') continue;
+      notifSeenTimers.set(id, setTimeout(() => {
+        notifSeenTimers.delete(id);
+        if (ui.adminTab !== 'notifications' || document.hidden) return;
+        notifSeenQueue.add(id);
+        clearTimeout(notifSeenFlushTimer); notifSeenFlushTimer = setTimeout(flushNotifSeen, 500);
+      }, 1200));
+    }
+  }, { threshold: 0.6 });
+  document.querySelectorAll('.notif-item[data-unread="1"]').forEach(el => notifSeenObserver.observe(el));
+}
+function bindNotificationsView() {
+  document.querySelectorAll('[data-notif-filter]').forEach(b => b.onclick = () => { ui.notifFilter = b.dataset.notifFilter; render(); window.scrollTo(0, 0); });
+  const all = document.querySelector('[data-act="notif-mark-all"]');
+  if (all) all.onclick = async () => {
+    const now = new Date().toISOString();
+    myNotifications.forEach(n => { if (!n.read) { n.read = 1; n.read_at = now; } });
+    unreadNotifCount = 0; render();
+    try { await api('/api/notifications/read-all', { method: 'POST' }); } catch (e) { /* refresh corrects it */ }
+    refreshData();
+  };
+  watchNotificationsSeen();
 }
 function renderTopbarSlim() {
   const title = PAGE_TITLES[ui.adminTab] || 'Task Manager';
@@ -724,13 +818,12 @@ function renderTopbarSlim() {
   return `
   <header class="topbar-slim">
     <div style="display:flex;align-items:center;gap:12px;">
-      <button class="icon-btn menu-toggle" data-act="toggle-sidebar" title="Show / hide menu" aria-label="Show or hide the menu">${icon('grid')}</button>
+      <button class="icon-btn menu-toggle" data-act="toggle-sidebar" title="Show / hide menu" aria-label="Show or hide the menu">${icon('grid')}${unreadNotifCount && ui.adminTab !== 'notifications' ? `<span class="dot">${unreadNotifCount > 99 ? '99+' : unreadNotifCount}</span>` : ''}</button>
       <div><div class="page-eyebrow">${eyebrow}</div><h1 class="page-title">${esc(title)}</h1></div>
     </div>
     <div></div>
     <div class="topbar-actions">
       ${window.LocationUI ? window.LocationUI.statusPill() : ''}
-      <button class="icon-btn" data-act="open-notifications" title="Notifications">${icon('bell')}${unreadNotifCount ? `<span class="dot">${unreadNotifCount}</span>` : ''}</button>
     </div>
   </header>
   ${session.mustChangePassword ? `
@@ -738,7 +831,7 @@ function renderTopbarSlim() {
     <span class="small">⚠ You're still using a temporary password.</span>
     <button class="btn btn-sm" data-act="reopen-password-change">Set a real password now</button>
   </div>` : ''}
-  ${ui.notifDrawerOpen ? renderNotifDrawer() : ''}`;
+`;
 }
 function bannerHTML() {
   if (!ui.banner) return '';
@@ -1391,7 +1484,6 @@ function unregisterAndroidDevice() {
 window.__androidBack = function () {
   try {
     if (ui.sidebarOpen) { ui.sidebarOpen = false; render(); return true; }
-    if (ui.notifDrawerOpen) { ui.notifDrawerOpen = false; render(); return true; }
     if (ui.importOpen) { ui.importOpen = false; resetImportState(); render(); return true; }
     if (ui.taskFormOpen) { ui.taskFormOpen = false; render(); return true; }
     if (ui.deadlineEditTaskId) { ui.deadlineEditTaskId = null; render(); return true; }
@@ -3095,16 +3187,164 @@ function renderTasksView() {
     <div id="task-form-box">${taskFormHTML()}</div>
   </div>
   ${assistantPanelHTML()}
+  ${approvalsHintHTML()}
+  ${renderMyTasksCard()}`;
+}
+/* ==================== APPROVALS PAGE ==================== */
+// Everything waiting on someone's yes / no, in one place:
+//   1. Task work you must approve (you created the task — Admin can switch to every task),
+//   2. Levels ready for you to release,
+//   3. Your own submitted parts still waiting for the creator,
+//   4. Documents (Send for Approval) — moved here from My Tasks.
+// The tasks themselves still live in My Tasks / All Tasks; approving here or inside the task is the same action.
+const isPartApproved = a => a.decision === 'approve' && !!a.completed_at;
+function docNeedsMe(r) {
+  const mine = (r.reviewers || []).find(rv => rv.username === session.username);
+  return (r.status === 'pending' && mine && !mine.decision) || (r.created_by_username === session.username && r.status === 'needs_revision');
+}
+function taskApprovalWork(scopeAll) {
+  const source = scopeAll && session.role === 'admin' ? allTasks : myTasks;
+  const toApprove = [], toRelease = [], mineWaiting = [];
+  for (const t of source || []) {
+    if (t.status !== 'open') continue;
+    const as = t.assignees || [];
+    const canApprove = t.created_by_username === session.username || (scopeAll && session.role === 'admin');
+    if (canApprove) {
+      for (const a of as) if (a.submitted_at && !isPartApproved(a)) toApprove.push({ t, a });
+      const maxStage = as.reduce((m, a) => Math.max(m, a.stage || 1), 1);
+      for (let st = 2; st <= maxStage; st++) {
+        const lvl = as.filter(a => (a.stage || 1) === st);
+        if (!lvl.length || lvl.every(a => a.is_released)) continue;
+        if (as.filter(a => (a.stage || 1) === st - 1).every(isPartApproved)) toRelease.push({ t, stage: st, people: lvl });
+      }
+    }
+  }
+  for (const t of myTasks || []) {
+    if (t.status !== 'open') continue;
+    const me = (t.assignees || []).find(a => a.username === session.username);
+    if (me && me.submitted_at && !isPartApproved(me)) mineWaiting.push({ t, a: me });
+  }
+  const bySubmitted = (x, y) => new Date(x.a.submitted_at) - new Date(y.a.submitted_at);
+  toApprove.sort(bySubmitted); mineWaiting.sort(bySubmitted);
+  return { toApprove, toRelease, mineWaiting };
+}
+function approvalsNeedingMeCount() {
+  const w = taskApprovalWork(false);
+  return w.toApprove.length + w.toRelease.length + (myApprovalRequests || []).filter(docNeedsMe).length;
+}
+function waitingSince(iso) {
+  const h = (Date.now() - new Date(iso).getTime()) / 3600000;
+  if (h < 1) return 'just now';
+  if (h < 24) return `${Math.floor(h)} h ago`;
+  return `${Math.floor(h / 24)} day${h >= 48 ? 's' : ''} ago`;
+}
+function approvalTaskHead(t) {
+  return `<div class="appr-task"><b>${esc(t.title)}</b> <span class="mono small muted">${esc(t.id)}</span>
+    <div class="small muted">${priorityBadgeHTML(t)} ${t.project ? `📁 ${esc(t.project)} · ` : ''}${t.deadline ? `Due ${esc(fmtDate(t.deadline))}` : ''}${t.created_by_username !== session.username ? ` · created by ${esc(t.created_by || personName(t.created_by_username))}` : ''}</div></div>`;
+}
+function renderApprovalsView() {
+  const scopeAll = session.role === 'admin' && ui.taskApprovalScope === 'all';
+  const w = taskApprovalWork(scopeAll);
+  const docsWaiting = (myApprovalRequests || []).filter(docNeedsMe).length;
+  const sum = (n, label, cls) => `<div class="appr-sum ${n ? cls : ''}"><b>${n}</b><span>${label}</span></div>`;
+  return `
+  <div class="card">
+    <div class="flex-between" style="flex-wrap:wrap;gap:10px;">
+      <div><div class="card-title" style="margin:0;">Approvals</div>
+        <div class="small muted">Work and documents waiting for a yes or no. Your tasks themselves stay in My Tasks${session.role === 'admin' ? ' and All Tasks' : ''}.</div></div>
+      ${session.role === 'admin' ? `<select id="task-approval-scope" style="width:auto;padding:4px 8px;">
+        <option value="mine" ${!scopeAll ? 'selected' : ''}>Tasks I created</option>
+        <option value="all" ${scopeAll ? 'selected' : ''}>All tasks (Admin)</option></select>` : ''}
+    </div>
+    <div class="appr-sums">
+      ${sum(w.toApprove.length, 'task parts to approve', 'hot')}
+      ${sum(w.toRelease.length, 'levels ready to release', 'hot')}
+      ${sum(docsWaiting, 'documents need you', 'hot')}
+      ${sum(w.mineWaiting.length, 'of your parts waiting', '')}
+    </div>
+  </div>
+
+  <div class="card" id="appr-tasks">
+    <div class="card-title">Task work waiting for your approval ${w.toApprove.length ? `<span class="badge flag" style="margin-left:6px;">${w.toApprove.length}</span>` : ''}</div>
+    ${w.toApprove.length === 0 ? `<div class="empty">Nothing to approve right now. When someone submits their part on a task ${scopeAll ? '' : 'you created '}it appears here.</div>` : w.toApprove.map(({ t, a }) => `
+      <div class="appr-item" id="appr-${esc(t.id)}-${esc(a.username)}">
+        ${approvalTaskHead(t)}
+        <div class="appr-who"><b>${esc(personName(a.username))}</b> <span class="muted small">Level ${a.stage || 1} · submitted ${fmtTime(a.submitted_at)} (${waitingSince(a.submitted_at)})</span></div>
+        <div class="doc-note" style="margin:6px 0;">${esc(a.submission_note || '(no note provided)')}</div>
+        <div class="row" style="align-items:flex-end;gap:8px;">
+          <div class="col"><input type="text" id="reject-reason-${t.id}-${esc(a.username)}" placeholder="Reason for rejecting (required to reject)"></div>
+          <div class="col" style="flex:0;white-space:nowrap;display:flex;gap:6px;">
+            <button class="btn btn-sm btn-primary" data-approve-assignee="${t.id}" data-username="${esc(a.username)}">✓ Approve</button>
+            <button class="btn btn-sm btn-danger" data-reject-assignee="${t.id}" data-username="${esc(a.username)}">Reject</button>
+            <button class="btn btn-sm" data-goto-task="${t.id}">Open task ›</button>
+          </div>
+        </div>
+      </div>`).join('')}
+  </div>
+
+  ${w.toRelease.length ? `
+  <div class="card">
+    <div class="card-title">Levels ready to release <span class="badge flag" style="margin-left:6px;">${w.toRelease.length}</span></div>
+    <div class="small muted" style="margin-bottom:6px;">The level before is fully approved and auto-release is off for these tasks — release the next level when you are ready.</div>
+    ${w.toRelease.map(({ t, stage, people }) => `
+      <div class="appr-item">
+        ${approvalTaskHead(t)}
+        <div class="small" style="margin:6px 0;">Level ${stage}: ${people.map(p => esc(personName(p.username))).join(', ')} — on hold</div>
+        <button class="btn btn-sm btn-teal" data-release-stage="${t.id}" data-stage="${stage}">Release Level ${stage}</button>
+        <button class="btn btn-sm" data-goto-task="${t.id}">Open task ›</button>
+      </div>`).join('')}
+  </div>` : ''}
+
+  <div class="card">
+    <div class="card-title">Your work waiting for approval ${w.mineWaiting.length ? `<span class="muted small">(${w.mineWaiting.length})</span>` : ''}</div>
+    ${w.mineWaiting.length === 0 ? '<div class="empty">None of your submitted parts are waiting.</div>' : w.mineWaiting.map(({ t, a }) => `
+      <div class="appr-item">
+        ${approvalTaskHead(t)}
+        <div class="small" style="margin-top:4px;">Submitted ${fmtTime(a.submitted_at)} (${waitingSince(a.submitted_at)}) — waiting on <b>${esc(t.created_by || personName(t.created_by_username))}</b></div>
+        <div class="doc-note" style="margin:6px 0;">${esc(a.submission_note || '')}</div>
+        <button class="btn btn-sm" data-goto-task="${t.id}">Open task ›</button>
+      </div>`).join('')}
+  </div>
+
   <div class="card">
     <div class="flex-between">
-      <div class="card-title" style="margin:0;">Send for Approval</div>
+      <div class="card-title" style="margin:0;">Send a document for approval</div>
       <button class="btn btn-sm" data-act="toggle-approval-form">📄 Send for Approval</button>
     </div>
-    <p class="small muted" style="margin-top:4px;">For documents that need a direct yes/no from specific people — they approve or reject the document itself, no work to submit.</p>
+    <p class="small muted" style="margin-top:4px;">For documents that need a direct yes/no from specific people — a quotation, contract or drawing. They approve or reject the document itself; there is no work to submit.</p>
     <div id="approval-form-box">${approvalFormHTML()}</div>
   </div>
-  ${renderApprovalsSection()}
-  ${renderMyTasksCard()}`;
+  ${renderApprovalsSection()}`;
+}
+// Open a task on My Tasks: switch page, find it by its ID and expand it.
+function openTaskOnMyTasks(taskId) {
+  const t = (myTasks || []).find(x => x.id === taskId);
+  const inAll = !t && session.role === 'admin' && (allTasks || []).some(x => x.id === taskId);
+  collapseTaskCards();
+  ui.adminTab = inAll ? 'alltasks' : 'tasks'; safeStorage.setItem('ls_last_tab', ui.adminTab);
+  ui.taskSearchQuery = taskId; ui.taskFilterProject = ''; ui.taskFilterPhase = ''; ui.taskFilterTagging = '';
+  ui.myOwnerFilter = 'all'; ui.myOwnerPerson = '';
+  if (t) {
+    const me = (t.assignees || []).find(a => a.username === session.username);
+    ui.myTasksTab = t.status !== 'open' ? 'closed' : (me && isPartApproved(me) ? 'waiting' : 'open');
+  }
+  openDetails.add(`task-card-${taskId}`);
+  render();
+  requestAnimationFrame(() => { const el = document.getElementById(`task-card-${taskId}`); if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' }); else window.scrollTo(0, 0); });
+}
+function bindApprovalsView() {
+  document.querySelectorAll('[data-goto-task]').forEach(b => b.onclick = () => openTaskOnMyTasks(b.dataset.gotoTask));
+  const sc = document.getElementById('task-approval-scope');
+  if (sc) sc.onchange = () => { ui.taskApprovalScope = sc.value; render(); };
+}
+// A small pointer on My Tasks to the Approvals page when something is waiting.
+function approvalsHintHTML() {
+  const n = approvalsNeedingMeCount();
+  if (!n) return '';
+  return `<div class="card appr-hint"><span>🗳️ <b>${n}</b> item${n === 1 ? '' : 's'} waiting for your approval.</span><button class="btn btn-sm btn-primary" data-tab-go="approvals">Open Approvals ›</button></div>`;
+}
+function bindApprovalsHint() {
+  document.querySelectorAll('[data-tab-go]').forEach(b => b.onclick = () => { collapseTaskCards(); ui.adminTab = b.dataset.tabGo; safeStorage.setItem('ls_last_tab', ui.adminTab); window.scrollTo(0, 0); render(); });
 }
 /* ==================== SEND FOR APPROVAL ==================== */
 function approvalFormHTML() {
@@ -3252,7 +3492,7 @@ function renderApprovalsSection() {
   return `
   <div class="card">
     <div class="flex-between">
-      <div class="card-title" style="margin:0;">Approval Requests ${waiting ? `<span class="badge flag" style="margin-left:6px;">${waiting} need you</span>` : ''}</div>
+      <div class="card-title" style="margin:0;">Document approvals ${waiting ? `<span class="badge flag" style="margin-left:6px;">${waiting} need you</span>` : ''}</div>
       ${session.role === 'admin' ? `
       <select id="approvals-scope" style="width:auto;padding:4px 8px;">
         <option value="mine" ${ui.approvalsScope !== 'all' ? 'selected' : ''}>Mine</option>
@@ -5473,6 +5713,8 @@ function renderInner() {
   let showingToday = false; // Today is also the fallback page, so bind it by what was rendered, not by tab name
   if (!dataLoadedOnce) body = renderLoadingSkeleton();
   else if (ui.adminTab === 'tasks') body = renderTasksView();
+  else if (ui.adminTab === 'notifications') body = renderNotificationsView();
+  else if (ui.adminTab === 'approvals') body = renderApprovalsView();
   else if (ui.adminTab === 'alltasks' && session.role === 'admin') body = renderAllTasksCard();
   else if (ui.adminTab === 'accounts' && session.role === 'admin') body = renderAccountsView();
   else if (ui.adminTab === 'performance' && session.role === 'admin') body = renderPerformanceView();
@@ -5507,7 +5749,9 @@ function renderInner() {
     </div>`);
   bindGlobal();
   if (ui.adminTab === 'tasks' || ui.adminTab === 'alltasks' || ui.adminTab === 'calendar' || ui.adminTab === 'mydashboard' || showingToday) { bindMyTasks(); bindFollowupForm(); bindSubtaskForm(); bindAddAssigneeForm(); }
-  if (ui.adminTab === 'tasks') { bindApprovalForm(); bindApprovalsSection(); }
+  if (ui.adminTab === 'approvals') { bindApprovalForm(); bindApprovalsSection(); bindApprovalsView(); bindMyTasks(); }
+  if (ui.adminTab === 'notifications') bindNotificationsView();
+  if (ui.adminTab === 'tasks') bindApprovalsHint();
   if (ui.adminTab === 'calendar') bindCalendarView();
   if (ui.adminTab === 'chat') bindChatView();
   if (ui.adminTab === 'announcements') bindAnnouncementsView();
@@ -5566,23 +5810,14 @@ function bindGlobal() {
   });
   const logoutBtn = document.querySelector('[data-act="logout"]'); if (logoutBtn) logoutBtn.onclick = () => logout();
   const reopenPwChange = document.querySelector('[data-act="reopen-password-change"]'); if (reopenPwChange) reopenPwChange.onclick = () => { ui.showPasswordChangeModal = true; safeStorage.removeItem('ls_pw_reminder_dismissed'); render(); };
-  const openNotif = document.querySelector('[data-act="open-notifications"]');
-  if (openNotif) openNotif.onclick = () => {
-    ui.notifDrawerOpen = true; render();
-    // Opening the panel IS "looking at" the notifications — matches how Gmail/Slack/LinkedIn
-    // handle it, and how Mihir Store Management's own notification panel already works. No need
-    // to make someone click each item individually just to clear the unread badge.
-    if (unreadNotifCount > 0) {
-      api('/api/notifications/read-all', { method: 'POST' }).then(() => refreshData()).catch(() => {});
-    }
-  };
-  document.querySelectorAll('[data-act="close-notifications"]').forEach(el => el.onclick = () => { ui.notifDrawerOpen = false; render(); });
   document.querySelectorAll('[data-mark-notif-read]').forEach(el => el.onclick = async () => {
-    const id = el.dataset.markNotifRead;
-    try { await api(`/api/notifications/${id}/read`, { method: 'POST' }); } catch (e) { /* ignore */ }
-    if (el.dataset.notifGotoTask) { ui.notifDrawerOpen = false; if (ui.adminTab !== 'tasks') collapseTaskCards(); ui.adminTab = 'tasks'; }
-    if (el.dataset.notifGotoTab) { ui.notifDrawerOpen = false; if (ui.adminTab !== el.dataset.notifGotoTab) collapseTaskCards(); ui.adminTab = el.dataset.notifGotoTab; safeStorage.setItem('ls_last_tab', ui.adminTab); if (ui.adminTab === 'chat') { if (el.dataset.notifChatRoom) { ui.chatRoom = el.dataset.notifChatRoom; ui.chatPrivForm = null; } openChatTab(); } }
-    await refreshData();
+    const id = Number(el.dataset.markNotifRead);
+    const n = myNotifications.find(x => x.id === id);
+    if (n && !n.read) { n.read = 1; n.read_at = new Date().toISOString(); unreadNotifCount = Math.max(0, unreadNotifCount - 1); }
+    api(`/api/notifications/${id}/read`, { method: 'POST' }).catch(() => {});
+    if (el.dataset.notifGotoTask) { openTaskOnMyTasks(el.dataset.notifGotoTask); return; }
+    if (el.dataset.notifGotoTab) { if (ui.adminTab !== el.dataset.notifGotoTab) collapseTaskCards(); ui.adminTab = el.dataset.notifGotoTab; safeStorage.setItem('ls_last_tab', ui.adminTab); window.scrollTo(0, 0); if (ui.adminTab === 'chat') { if (el.dataset.notifChatRoom) { ui.chatRoom = el.dataset.notifChatRoom; ui.chatPrivForm = null; } openChatTab(); } loadTabExtras(); }
+    render();
   });
   const toggleForm = document.querySelector('[data-act="toggle-task-form"]'); if (toggleForm) toggleForm.onclick = () => { ui.taskFormOpen = true; ui.taskFormIsDrawing = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; render(); };
   const toggleApproval = document.querySelector('[data-act="toggle-approval-form"]'); if (toggleApproval) toggleApproval.onclick = () => { ui.approvalFormOpen = true; ui.approvalFormReviewers = []; render(); };

@@ -375,6 +375,7 @@ async function init() {
   await ensureColumn('users', 'phone', 'TEXT');
   await ensureColumn('tasks', 'parent_task_id', 'TEXT');
   await ensureColumn('tasks', 'project', 'TEXT');
+  await ensureColumn('notifications', 'read_at', 'TEXT'); // when the person first saw it (the ✓ on the Notifications page)
   await ensureColumn('tasks', 'phase', 'TEXT');
   await ensureColumn('task_assignees', 'deadline_reminder_sent_at', 'TEXT');
   await ensureColumn('task_assignees', 'deadline_overdue_notified_at', 'TEXT');
@@ -1729,7 +1730,13 @@ module.exports = {
     return all('SELECT id, message, task_id, created_at FROM notifications WHERE username=? AND id > ? AND read=0 ORDER BY id ASC LIMIT ?', [username, afterId, limit]);
   },
   async listNotifications(username) { return all('SELECT * FROM notifications WHERE username=? ORDER BY created_at DESC LIMIT 100', [username]); },
-  async markNotificationRead(id, username) { await run('UPDATE notifications SET read=1 WHERE id=? AND username=?', [id, username]); },
-  async markAllNotificationsRead(username) { await run('UPDATE notifications SET read=1 WHERE username=?', [username]); },
+  async markNotificationRead(id, username) { await run('UPDATE notifications SET read=1, read_at=COALESCE(read_at, ?) WHERE id=? AND username=?', [new Date().toISOString(), id, username]); },
+  async markNotificationsRead(ids, username) {
+    const clean = (ids || []).map(Number).filter(n => Number.isInteger(n) && n > 0).slice(0, 200);
+    if (!clean.length) return 0;
+    const r = await run(`UPDATE notifications SET read=1, read_at=COALESCE(read_at, ?) WHERE username=? AND read=0 AND id IN (${clean.map(() => '?').join(',')})`, [new Date().toISOString(), username, ...clean]);
+    return r && r.changes != null ? r.changes : clean.length;
+  },
+  async markAllNotificationsRead(username) { await run('UPDATE notifications SET read=1, read_at=COALESCE(read_at, ?) WHERE username=? AND read=0', [new Date().toISOString(), username]); },
   async countUnreadNotifications(username) { const r = await get('SELECT COUNT(*) c FROM notifications WHERE username=? AND read=0', [username]); return Number(r.c); },
 };

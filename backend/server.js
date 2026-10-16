@@ -2826,6 +2826,13 @@ app.post('/api/notifications/:id/read', auth(ALL_ROLES), async (req, res) => {
   await db.markNotificationRead(req.params.id, req.user.username);
   res.json({ ok: true });
 });
+// The Notifications page marks items as seen once they have been on screen for a moment.
+app.post('/api/notifications/read', auth(ALL_ROLES), async (req, res) => {
+  const ids = Array.isArray((req.body || {}).ids) ? req.body.ids : [];
+  if (!ids.length) return res.status(400).json({ error: 'Nothing to mark.' });
+  await db.markNotificationsRead(ids, req.user.username);
+  res.json({ ok: true, unread: await db.countUnreadNotifications(req.user.username) });
+});
 app.post('/api/notifications/read-all', auth(ALL_ROLES), async (req, res) => {
   await db.markAllNotificationsRead(req.user.username);
   res.json({ ok: true });
