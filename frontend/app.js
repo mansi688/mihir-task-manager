@@ -244,6 +244,12 @@ function bindPasswordToggles() {
 }
 
 /* ==================== UTILITIES ==================== */
+// A fresh id for one submission of a form; sent with "create" requests so a repeated tap or a
+// retry after a lost answer can never create the same thing twice.
+function newRequestKey() {
+  try { if (window.crypto && crypto.randomUUID) return crypto.randomUUID(); } catch (e) { /* older browsers */ }
+  return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers['Authorization'] = 'Bearer ' + token;
@@ -2717,7 +2723,7 @@ function taskFormHTML() {
       <input type="file" id="new-task-file" multiple>
       <div data-pending-preview="task-new">${pendingFilesHTML('task-new')}</div>
       <div style="margin-top:6px;">
-        <button class="btn btn-primary btn-sm" data-act="submit-task">${isDrawingRequest ? 'Send Drawing Request' : 'Create Task'}</button>
+        <button class="btn btn-primary btn-sm" data-act="submit-task" ${ui.taskCreating ? 'disabled aria-busy="true"' : ''}>${ui.taskCreating ? 'Creating…' : (isDrawingRequest ? 'Send Drawing Request' : 'Create Task')}</button>
         <button class="btn btn-sm" data-act="cancel-task-form" style="margin-left:6px;">Cancel</button>
       </div>
     </div>`;
@@ -2760,6 +2766,7 @@ function bindTaskForm() {
   };
   const submitTaskBtn = document.querySelector('[data-act="submit-task"]');
   if (submitTaskBtn) submitTaskBtn.onclick = async () => {
+    if (ui.taskCreating) return; // already sending — a second tap must not create a second task
     const titleEl = document.getElementById('new-task-title');
     const deadlineEl = document.getElementById('new-task-deadline');
     if (!titleEl || !deadlineEl) { setBanner('Something went wrong finding the form fields — try closing and reopening the New Task form.'); render(); return; }
@@ -2789,8 +2796,13 @@ function bindTaskForm() {
       assignedToList = allNames;
     }
     // Tagging people is optional — the task can be created now and people tagged later.
+    // The same key is kept until the task is created, so a retry after an error never duplicates it.
+    if (!ui.taskFormKey) ui.taskFormKey = newRequestKey();
+    ui.taskCreating = true;
+    submitTaskBtn.disabled = true; submitTaskBtn.textContent = 'Creating…';
     try {
       await api('/api/tasks', { method: 'POST', body: JSON.stringify({
+        clientRequestId: ui.taskFormKey,
         title, description, priority, deadline: fullDeadline, assignedToList,
         project: project || null, phase: phase || null,
         stages: stagesPayload ? stagesPayload.map(usernames => ({ usernames })) : null,
@@ -2798,15 +2810,16 @@ function bindTaskForm() {
         dependsOnTaskId, attachments: pendingFiles['task-new'] || [], isDrawingRequest,
       }) });
       takePendingFiles('task-new'); ui.taskFormOpen = false; ui.taskFormTags = [];
-      ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false;
+      ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; ui.taskFormKey = null;
+      ui.taskCreating = false;
       celebrate(isDrawingRequest ? 'Drawing request sent! 📐' : undefined, RAISE_MESSAGES);
       setBanner(isDrawingRequest ? 'Drawing request sent.' : 'Task created.', 'ok');
       await refreshData();
-    } catch (e) { setBanner(e.message); render(); }
+    } catch (e) { ui.taskCreating = false; setBanner(e.message); render(); }
   };
   const cancelTaskFormBtn = document.querySelector('[data-act="cancel-task-form"]');
   if (cancelTaskFormBtn) cancelTaskFormBtn.onclick = () => {
-    ui.taskFormOpen = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false;
+    ui.taskFormOpen = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; ui.taskFormKey = null;
     takePendingFiles('task-new'); render();
   };
   bindFilePicker(document.getElementById('new-task-file'), 'task-new');
@@ -3375,13 +3388,15 @@ function bindApprovalForm() {
     if (!titleEl.reportValidity()) return;
     if (reviewers.length === 0) { alert('Tag at least one approver.'); return; }
     if (!ui.pendingApprovalFile) { alert('Select a document first.'); return; }
+    if (submitBtn.disabled) return;
+    submitBtn.disabled = true; submitBtn.textContent = 'Sending…';
     try {
       await api('/api/approvals', { method: 'POST', body: JSON.stringify({ title, description, reviewers, fileData: ui.pendingApprovalFile, fileName: ui.pendingApprovalFileName }) });
       ui.approvalFormOpen = false; ui.approvalFormReviewers = []; ui.pendingApprovalFile = null; ui.pendingApprovalFileName = null;
       celebrate('Sent for approval! 📄', RAISE_MESSAGES);
       setBanner('Sent for approval.', 'ok');
       await refreshData();
-    } catch (e) { setBanner(e.message); render(); }
+    } catch (e) { submitBtn.disabled = false; submitBtn.textContent = 'Send for Approval'; setBanner(e.message); render(); }
   };
   const cancelBtn = document.querySelector('[data-act="cancel-approval-form"]');
   if (cancelBtn) cancelBtn.onclick = () => { ui.approvalFormOpen = false; ui.approvalFormReviewers = []; ui.pendingApprovalFile = null; ui.pendingApprovalFileName = null; render(); };
@@ -5800,7 +5815,7 @@ function bindGlobal() {
     if (el.dataset.notifGotoTab) { if (ui.adminTab !== el.dataset.notifGotoTab) collapseTaskCards(); ui.adminTab = el.dataset.notifGotoTab; safeStorage.setItem('ls_last_tab', ui.adminTab); window.scrollTo(0, 0); if (ui.adminTab === 'chat') { if (el.dataset.notifChatRoom) { ui.chatRoom = el.dataset.notifChatRoom; ui.chatPrivForm = null; } openChatTab(); } loadTabExtras(); }
     render();
   });
-  const toggleForm = document.querySelector('[data-act="toggle-task-form"]'); if (toggleForm) toggleForm.onclick = () => { ui.taskFormOpen = true; ui.taskFormIsDrawing = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; render(); };
+  const toggleForm = document.querySelector('[data-act="toggle-task-form"]'); if (toggleForm) toggleForm.onclick = () => { ui.taskFormOpen = true; ui.taskFormIsDrawing = false; ui.taskFormKey = newRequestKey(); ui.taskCreating = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; render(); };
   const toggleApproval = document.querySelector('[data-act="toggle-approval-form"]'); if (toggleApproval) toggleApproval.onclick = () => { ui.approvalFormOpen = true; ui.approvalFormReviewers = []; render(); };
 }
 // A subtask is created through the normal task-creation endpoint with parentTaskId set — same
@@ -5888,11 +5903,14 @@ function bindSubtaskForm() {
     if (!title) { alert('Enter a title for the subtask.'); return; }
     if (!deadline) { alert('Pick a deadline for the subtask.'); return; }
     if (usernames.length === 0) { alert('Select at least one person to assign the subtask to.'); return; }
+    if (submitBtn.disabled) return;
+    if (!ui.subtaskFormKey) ui.subtaskFormKey = newRequestKey();
+    submitBtn.disabled = true; submitBtn.textContent = 'Creating…';
     try {
-      await api('/api/tasks', { method: 'POST', body: JSON.stringify({ title, priority: 'medium', deadline, assignedToList: usernames, parentTaskId: parentId }) });
-      ui.subtaskFormTaskId = null; ui.subtaskFormTags = [];
+      await api('/api/tasks', { method: 'POST', body: JSON.stringify({ clientRequestId: ui.subtaskFormKey, title, priority: 'medium', deadline, assignedToList: usernames, parentTaskId: parentId }) });
+      ui.subtaskFormTaskId = null; ui.subtaskFormTags = []; ui.subtaskFormKey = null;
       setBanner('Subtask created.', 'ok'); await refreshData();
-    } catch (e) { setBanner(e.message); render(); }
+    } catch (e) { submitBtn.disabled = false; submitBtn.textContent = 'Create Subtask'; setBanner(e.message); render(); }
   };
 }
 function bindMyTasks() {
@@ -6083,7 +6101,7 @@ function bindMyTasks() {
   });
   document.querySelectorAll('[data-act="toggle-subtask-form"]').forEach(btn => btn.onclick = () => {
     const id = btn.dataset.taskId;
-    ui.subtaskFormTaskId = (ui.subtaskFormTaskId === id) ? null : id;
+    ui.subtaskFormTaskId = (ui.subtaskFormTaskId === id) ? null : id; ui.subtaskFormKey = null;
     ui.subtaskFormTags = [];
     render();
   });

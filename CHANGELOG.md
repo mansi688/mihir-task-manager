@@ -4,6 +4,18 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — A task is never created twice by a double tap
+### Fixed
+- Tapping **Create Task** twice (or again while a slow server was still answering) could create the same task twice —
+  10 such pairs were found in production, 8 of them under 3 seconds apart.
+  - The button now locks and shows "Creating…" until the server answers (also Add Subtask and Send for Approval).
+  - Every New Task / subtask form sends a one-time `clientRequestId`; the server never creates a second task for the
+    same id (also when two requests arrive at the same moment, or a retry follows a lost answer).
+  - Pages still open from before this update (no id) are protected too: same person, title, deadline and people
+    within 15 seconds returns the task already created.
+### Database / rollback
+- Adds column `tasks.client_request_id` (TEXT, nullable) and an index, automatically at start-up. Additive.
+
 ## [Unreleased] — Round "Seen" button on notifications
 ### Changed
 - Each notification has a round button on the right. Tap it to mark that notification as seen: it turns into a green

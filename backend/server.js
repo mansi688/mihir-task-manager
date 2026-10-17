@@ -1873,7 +1873,54 @@ async function insertTaskRecords(tx, actor, spec, { notify = true } = {}) {
    Anyone can create a task and tag one or more people on it. A task closes only once everyone
    tagged has completed their part — OR whoever created it (plus Admin, as the one retained
    override) force-closes it early. */
+// ---- Double-submit protection for creating tasks ----
+// A double tap on "Create Task" (or a tap repeated while a slow server is still answering) used to
+// create the same task twice. Every New Task form now sends a clientRequestId; the same id never
+// creates a second task. Requests without one (an old page still open) are matched on
+// person + title + deadline + people within 15 seconds instead.
+const taskCreateInFlight = new Map(); // key -> Promise<taskId|null>
+function taskCreateKey(req) {
+  const b = req.body || {};
+  const crid = str(b.clientRequestId).trim().slice(0, 80);
+  if (crid) return { key: `${req.user.username}|req|${crid}`, crid };
+  const people = (Array.isArray(b.stages) ? b.stages.flatMap(s => (s && Array.isArray(s.usernames)) ? s.usernames : []) : (Array.isArray(b.assignedToList) ? b.assignedToList : [b.assignedTo])).map(u => str(u).trim()).filter(Boolean).sort().join(',');
+  return { key: `${req.user.username}|fp|${str(b.title).trim().toLowerCase()}|${str(b.deadline).trim()}|${str(b.parentTaskId).trim()}|${people}`, crid: '' };
+}
 app.post('/api/tasks', auth(ALL_ROLES), async (req, res) => {
+  const { key, crid } = taskCreateKey(req);
+  const b = req.body || {};
+  // 1. The same request is still being processed — wait for it and answer with its task.
+  //    (Checked and claimed with no await in between, so two requests arriving together can't both pass.)
+  const running = taskCreateInFlight.get(key);
+  if (running) {
+    const id = await running;
+    if (id) return res.json({ ok: true, id, duplicate: true });
+  }
+  let done;
+  const mine = new Promise(r => { done = r; });
+  taskCreateInFlight.set(key, mine);
+  let createdId = null;
+  const release = () => { done(createdId); setTimeout(() => { if (taskCreateInFlight.get(key) === mine) taskCreateInFlight.delete(key); }, 20000); };
+  // 2. Already created earlier (the answer may have been lost on a bad connection).
+  let earlier = null;
+  try {
+    earlier = crid
+      ? await db.findTaskByClientRequest(req.user.username, crid)
+      : await db.findRecentSameTask(req.user.username, str(b.title).trim(), str(b.deadline).trim(), str(b.parentTaskId).trim(), new Date(Date.now() - 15000).toISOString());
+  } catch (e) { earlier = null; }
+  if (earlier) { createdId = earlier; release(); return res.json({ ok: true, id: earlier, duplicate: true }); }
+  const json = res.json.bind(res);
+  res.json = (body) => { if (body && body.ok && body.id) createdId = body.id; return json(body); };
+  try {
+    await createTaskRoute(req, res, crid);
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ error: 'Could not create the task — please try again.' });
+    log('ERROR', 'create task failed', { error: e.message });
+  } finally {
+    release();
+  }
+});
+async function createTaskRoute(req, res, clientRequestId) {
   const title = str((req.body || {}).title).trim();
   const description = str((req.body || {}).description).trim();
   const priority = ['high', 'medium', 'low'].includes(str((req.body || {}).priority)) ? str((req.body || {}).priority) : 'medium';
@@ -1967,6 +2014,7 @@ app.post('/api/tasks', auth(ALL_ROLES), async (req, res) => {
       attachment, attachmentName, isDrawingRequest, autoReleaseStages, stageGroups, usersByUsername, individualDeadlines,
     });
     if (uploads.files.length) await db.addTaskFiles(id, null, uploads.files, req.user.username, tx);
+    if (clientRequestId) await tx.run('UPDATE tasks SET client_request_id=? WHERE id=?', [clientRequestId, id]);
   });
   // Tell the prerequisite task's creator and assignees that something new now depends on it —
   // clears up "does picking this send a notification?": yes, but only to the task it depends
@@ -1992,7 +2040,7 @@ app.post('/api/tasks', auth(ALL_ROLES), async (req, res) => {
   }
   await auditFromReq(req, 'task_created', `Created ${parentTask ? 'subtask' : 'task'} "${title}" (${id})${parentTask ? ` under "${parentTask.title}"` : ''}.`);
   res.json({ ok: true, id });
-});
+}
 /* ============ BULK TASK IMPORT (CSV / Excel) ============
    Two steps, so nothing is ever created by surprise: /preview parses the file and returns every
    row with the people it resolved and any problems; /import re-reads the same file, re-checks

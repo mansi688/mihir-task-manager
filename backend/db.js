@@ -375,7 +375,9 @@ async function init() {
   await ensureColumn('users', 'phone', 'TEXT');
   await ensureColumn('tasks', 'parent_task_id', 'TEXT');
   await ensureColumn('tasks', 'project', 'TEXT');
-  await ensureColumn('notifications', 'read_at', 'TEXT'); // when the person first saw it (the ✓ on the Notifications page)
+  await ensureColumn('notifications', 'read_at', 'TEXT');
+  await ensureColumn('tasks', 'client_request_id', 'TEXT'); // one per New Task form — stops a double tap creating two tasks
+  await run('CREATE INDEX IF NOT EXISTS idx_tasks_client_request ON tasks(created_by_username, client_request_id) WHERE client_request_id IS NOT NULL'); // when the person first saw it (the ✓ on the Notifications page)
   await ensureColumn('tasks', 'phase', 'TEXT');
   await ensureColumn('task_assignees', 'deadline_reminder_sent_at', 'TEXT');
   await ensureColumn('task_assignees', 'deadline_overdue_notified_at', 'TEXT');
@@ -742,6 +744,11 @@ module.exports = {
       [id, title, description || null, priority, deadline || null, created_by, created_by_username, depends_on_task_id || null, attachment || null, attachment_name || null, is_drawing_request ? 1 : 0, parent_task_id || null, project || null, phase || null, new Date().toISOString()]);
   },
   async getTask(id) { return get('SELECT * FROM tasks WHERE id=?', [id]); },
+  async findTaskByClientRequest(username, key) { const r = await get('SELECT id FROM tasks WHERE created_by_username=? AND client_request_id=? ORDER BY created_at LIMIT 1', [username, key]); return r ? r.id : null; },
+  async findRecentSameTask(username, title, deadline, parentTaskId, sinceIso) {
+    const r = await get(`SELECT id FROM tasks WHERE created_by_username=? AND title=? AND COALESCE(deadline,'')=? AND COALESCE(parent_task_id,'')=? AND created_at >= ? ORDER BY created_at LIMIT 1`, [username, title, deadline || '', parentTaskId || '', sinceIso]);
+    return r ? r.id : null;
+  },
   async listSubtasks(parentTaskId) { return all('SELECT * FROM tasks WHERE parent_task_id=? ORDER BY created_at ASC', [parentTaskId]); },
   async listOpenSubtasks(parentTaskId) { return all("SELECT * FROM tasks WHERE parent_task_id=? AND status='open'", [parentTaskId]); },
   async addTaskAssignee(taskId, username, team, stage, isReleased, individualDeadline, tx) {
