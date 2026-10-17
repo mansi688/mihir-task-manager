@@ -4,6 +4,15 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Round "Seen" button on notifications
+### Changed
+- Each notification has a round button on the right. Tap it to mark that notification as seen: it turns into a green
+  ✓ and the notification shows "✓ Seen <date>, <time>". Just looking at the page no longer marks anything seen.
+- Opening a notification (tapping it to go to the task, chat or page it is about) also marks it seen.
+  "Mark all as seen" still marks everything at once.
+### Database / rollback
+- No database changes. Front-end only.
+
 ## [Unreleased] — Notifications page, Approvals page, ✓ seen marks
 ### Changed
 - **Notifications** is now its own page in the menu (Overview → Notifications, with the unread count) instead of

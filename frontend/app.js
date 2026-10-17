@@ -725,8 +725,10 @@ function notifDayLabel(key) {
 function seenTimeText(n) {
   if (!n.read_at) return 'Seen';
   try {
-    const sameDay = istDayKey(n.read_at) === istDayKey(new Date().toISOString());
-    return 'Seen ' + new Date(n.read_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit', ...(sameDay ? {} : { day: 'numeric', month: 'short' }) });
+    const d = new Date(n.read_at);
+    const date = d.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' });
+    const time = d.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit' });
+    return `Seen ${date}, ${time}`;
   } catch (e) { return 'Seen'; }
 }
 function renderNotificationsView() {
@@ -742,7 +744,7 @@ function renderNotificationsView() {
     <div class="flex-between" style="flex-wrap:wrap;gap:10px;">
       <div>
         <div class="card-title" style="margin:0;">Notifications</div>
-        <div class="small muted">New ones get a ✓ once you have seen them. Tap one to open what it is about.</div>
+        <div class="small muted">Tap the round button ◯ to mark a notification as seen — it turns into ✓ with the date and time. Tap the notification itself to open what it is about.</div>
       </div>
       ${unread.length ? `<button class="btn btn-sm" data-act="notif-mark-all">✓ Mark all as seen</button>` : ''}
     </div>
@@ -754,51 +756,30 @@ function renderNotificationsView() {
       ${g.items.map(n => {
         const target = notifTarget(n);
         return `
-        <div class="notif-item ${n.read ? 'seen' : 'unread'}" id="notif-${n.id}" data-notif-id="${n.id}" data-unread="${n.read ? 0 : 1}" ${target} style="${target ? 'cursor:pointer;' : ''}" data-mark-notif-read="${n.id}">
+        <div class="notif-item ${n.read ? 'seen' : 'unread'}" id="notif-${n.id}" data-notif-id="${n.id}">
           <div class="notif-icon">${icon(NOTIF_TYPE_ICON[n.type] || 'alertTriangle', 16)}</div>
-          <div style="flex:1;min-width:0;">
-            <div class="flex-between" style="gap:8px;"><span class="small" style="font-weight:700;">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')}</span>
-              ${n.read ? `<span class="notif-seen" title="${esc(seenTimeText(n))}">✓ ${esc(seenTimeText(n))}</span>` : `<span class="notif-new">● New</span>`}</div>
+          <div class="notif-body" ${target} style="flex:1;min-width:0;${target ? 'cursor:pointer;' : ''}" ${target ? `data-mark-notif-read="${n.id}"` : ''}>
+            <div class="small" style="font-weight:700;">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')} ${n.read ? '' : '<span class="notif-new">● New</span>'}</div>
             <div class="small" style="margin-top:2px;">${esc(n.message)}</div>
             <div class="muted small" style="margin-top:4px;">${fmtTime(n.created_at)}${target ? ' · <span class="notif-open">Open ›</span>' : ''}</div>
+            ${n.read ? `<div class="notif-seen">✓ ${esc(seenTimeText(n))}</div>` : ''}
           </div>
+          <button type="button" class="notif-seen-btn ${n.read ? 'done' : ''}" data-notif-seen="${n.id}" ${n.read ? 'disabled' : ''} title="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}" aria-label="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}">${n.read ? '✓' : ''}</button>
         </div>`;
       }).join('')}`).join('')}
     ${myNotifications.length >= 100 ? '<div class="small muted" style="margin-top:10px;">Showing your latest 100 notifications.</div>' : ''}
   </div>`;
 }
-// A notification counts as seen once it has been on screen for a moment while this page is open.
-let notifSeenObserver = null;
-const notifSeenTimers = new Map();
-const notifSeenQueue = new Set();
-let notifSeenFlushTimer = null;
-function flushNotifSeen() {
-  const ids = [...notifSeenQueue]; notifSeenQueue.clear();
-  if (!ids.length) return;
-  const now = new Date().toISOString();
-  for (const n of myNotifications) if (ids.includes(n.id) && !n.read) { n.read = 1; n.read_at = now; }
-  unreadNotifCount = myNotifications.filter(n => !n.read).length;
+// A notification is marked seen when the person taps its round Seen button (or opens it).
+function markNotifSeen(id) {
+  const n = myNotifications.find(x => x.id === id);
+  if (!n || n.read) return;
+  n.read = 1; n.read_at = new Date().toISOString();
+  unreadNotifCount = myNotifications.filter(x => !x.read).length;
   render();
-  api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids }) })
+  api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids: [id] }) })
     .then(r => { if (r && typeof r.unread === 'number') { unreadNotifCount = r.unread; render(); } })
-    .catch(() => { ids.forEach(id => notifSeenQueue.add(id)); });
-}
-function watchNotificationsSeen() {
-  if (typeof IntersectionObserver !== 'function') return;
-  if (!notifSeenObserver) notifSeenObserver = new IntersectionObserver((entries) => {
-    for (const en of entries) {
-      const id = Number(en.target.dataset.notifId);
-      clearTimeout(notifSeenTimers.get(id)); notifSeenTimers.delete(id);
-      if (!en.isIntersecting || en.target.dataset.unread !== '1') continue;
-      notifSeenTimers.set(id, setTimeout(() => {
-        notifSeenTimers.delete(id);
-        if (ui.adminTab !== 'notifications' || document.hidden) return;
-        notifSeenQueue.add(id);
-        clearTimeout(notifSeenFlushTimer); notifSeenFlushTimer = setTimeout(flushNotifSeen, 500);
-      }, 1200));
-    }
-  }, { threshold: 0.6 });
-  document.querySelectorAll('.notif-item[data-unread="1"]').forEach(el => notifSeenObserver.observe(el));
+    .catch(() => { n.read = 0; n.read_at = null; unreadNotifCount += 1; setBanner('Could not mark it as seen — check your connection and try again.'); render(); });
 }
 function bindNotificationsView() {
   document.querySelectorAll('[data-notif-filter]').forEach(b => b.onclick = () => { ui.notifFilter = b.dataset.notifFilter; render(); window.scrollTo(0, 0); });
@@ -810,7 +791,7 @@ function bindNotificationsView() {
     try { await api('/api/notifications/read-all', { method: 'POST' }); } catch (e) { /* refresh corrects it */ }
     refreshData();
   };
-  watchNotificationsSeen();
+  document.querySelectorAll('[data-notif-seen]').forEach(b => b.onclick = (e) => { e.stopPropagation(); markNotifSeen(Number(b.dataset.notifSeen)); });
 }
 function renderTopbarSlim() {
   const title = PAGE_TITLES[ui.adminTab] || 'Task Manager';
