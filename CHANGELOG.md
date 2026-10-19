@@ -4,6 +4,22 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Task Closure page (closure requests)
+### Added
+- **Task Closure** page (Tasks → Task Closure, with a count of requests waiting for you). People tagged on a task can
+  ask its creator to close it, with a reason — from inside the task (🔒 Ask to close) or from the page.
+- The creator (or Admin, who can switch to all tasks) closes it (✓ Close task, optional note) or keeps it open with
+  a reason (Keep open). The usual close rules still apply (no open subtasks, not blocked by another task).
+- The requester can withdraw a waiting request. Everyone involved is notified; requests, declines and withdrawals
+  appear in the task's history and the Audit Log. Closing a task any other way answers its waiting requests.
+- API: `POST /api/tasks/:id/closure-requests`, `GET /api/closure-requests[?scope=all]`,
+  `POST /api/closure-requests/:id/approve|decline|cancel`.
+### Fixed
+- An open task could close by itself after an action showed a message at the top of the page (e.g. "Request sent"),
+  because the message shifted the page layout. The message now has a fixed place.
+### Database / rollback
+- Adds table `task_closure_requests` automatically at start-up. Additive.
+
 ## [Unreleased] — A task is never created twice by a double tap
 ### Fixed
 - Tapping **Create Task** twice (or again while a slow server was still answering) could create the same task twice —

@@ -2658,7 +2658,12 @@ app.post('/api/tasks/:id/approve/:username', auth(ALL_ROLES), async (req, res) =
   if (!stillOpen) { await db.closeTask(task.id, req.user.name); await releaseDependentsOf(task); }
   await auditFromReq(req, 'task_approved', `Approved ${req.params.username}'s part of "${task.title}"${!stillOpen ? ' — this closed the task, everyone is now approved' : ''}.`);
   await taskEvent(req, task.id, 'APPROVED', `Approved the part of ${await displayName(req.params.username)}`, { meta: { username: req.params.username } });
-    if (!stillOpen) await taskEvent(req, task.id, 'COMPLETED', 'Everyone approved — task closed');
+    if (!stillOpen) {
+      await taskEvent(req, task.id, 'COMPLETED', 'Everyone approved — task closed');
+      for (const r of await db.settleClosureRequests(task.id, req.user.username)) {
+        if (r.requested_by !== req.user.username) await db.createNotification({ username: r.requested_by, type: 'closure_approved', message: `"${task.title}" is now closed — everyone's part was approved.`, task_id: task.id });
+      }
+    }
   res.json({ ok: true, taskClosed: !stillOpen });
 });
 // Manual stage release — creator/Admin only, for tasks that didn't opt into auto-release, or
@@ -2743,30 +2748,113 @@ app.post('/api/tasks/:id/reject/:username', auth(ALL_ROLES), async (req, res) =>
 });
 // Force-close: restricted to whoever created this specific task, plus Admin as the one
 // retained override.
-app.post('/api/tasks/:id/close', auth(ALL_ROLES), async (req, res) => {
-  const task = await db.getTask(req.params.id);
-  if (!task) return res.status(404).json({ error: 'Task not found.' });
-  if (task.status !== 'open') return res.status(400).json({ error: 'Task is not open.' });
+// Closing a task by its creator or Admin — shared by the Close button and by approving a closure request.
+// Returns { ok: true } or { status, error }.
+async function closeTaskByOwner(req, task, how, opts = {}) {
+  if (!task) return { status: 404, error: 'Task not found.' };
+  if (task.status !== 'open') return { status: 400, error: 'Task is not open.' };
   const isCreator = task.created_by_username && task.created_by_username === req.user.username;
-  if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can force-close it.' });
+  if (!(req.user.role === 'admin' || isCreator)) return { status: 403, error: 'Only whoever created this task (or Admin) can close it.' };
   if (await db.isTaskBlocked(task.id)) {
     const prereq = await db.getTask(task.depends_on_task_id);
-    return res.status(400).json({ error: `This task depends on "${prereq ? prereq.title : task.depends_on_task_id}", which isn't closed yet.` });
+    return { status: 400, error: `This task depends on "${prereq ? prereq.title : task.depends_on_task_id}", which isn't closed yet.` };
   }
   const openSubtasks = await db.listOpenSubtasks(task.id);
   if (openSubtasks.length > 0) {
-    return res.status(400).json({ error: `This task has ${openSubtasks.length} open subtask${openSubtasks.length === 1 ? '' : 's'} that must be closed first: ${openSubtasks.map(s => `"${s.title}"`).join(', ')}.` });
+    return { status: 400, error: `This task has ${openSubtasks.length} open subtask${openSubtasks.length === 1 ? '' : 's'} that must be closed first: ${openSubtasks.map(s => `"${s.title}"`).join(', ')}.` };
   }
   const stillOpenAssignees = (await db.listAssignees(task.id)).filter(a => !(a.decision === 'approve' && a.completed_at));
   const didClose = await db.closeTask(task.id, req.user.name);
-  if (!didClose) return res.status(400).json({ error: 'This task was already closed — probably by someone else just now.' });
+  if (!didClose) return { status: 400, error: 'This task was already closed — probably by someone else just now.' };
   await releaseDependentsOf(task);
   if (stillOpenAssignees.length > 0) {
-    await auditFromReq(req, 'task_force_closed', `Force-closed "${task.title}" while ${stillOpenAssignees.map(a => a.username).join(', ')} had not yet been approved.`);
+    await auditFromReq(req, 'task_force_closed', `Force-closed "${task.title}"${how ? ` (${how})` : ''} while ${stillOpenAssignees.map(a => a.username).join(', ')} had not yet been approved.`);
   } else {
-    await auditFromReq(req, 'task_closed', `Closed "${task.title}" — everyone's part was already approved.`);
+    await auditFromReq(req, 'task_closed', `Closed "${task.title}"${how ? ` (${how})` : ''} — everyone's part was already approved.`);
   }
-  await taskEvent(req, task.id, 'COMPLETED', 'Task closed', { old: 'open', new: 'closed' });
+  await taskEvent(req, task.id, 'COMPLETED', how ? `Task closed — ${how}` : 'Task closed', { old: 'open', new: 'closed' });
+  // anyone still waiting on a closure request for this task gets an answer
+  const settled = await db.settleClosureRequests(task.id, req.user.username);
+  for (const r of settled) {
+    if (r.id !== opts.exceptRequestId && r.requested_by !== req.user.username) await db.createNotification({ username: r.requested_by, type: 'closure_approved', message: `"${task.title}" has been closed by ${req.user.name}.`, task_id: task.id });
+  }
+  return { ok: true };
+}
+app.post('/api/tasks/:id/close', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
+  const r = await closeTaskByOwner(req, task, null);
+  if (!r.ok) return res.status(r.status).json({ error: r.error });
+  res.json({ ok: true });
+});
+// ---- Closure requests ----
+// Someone tagged on a task can ask its creator to close it (work finished, no longer needed, a
+// duplicate…). The creator — or Admin — approves (the task closes, with the usual close rules) or
+// declines with a reason. Everything is notified and written to the task's history.
+app.post('/api/tasks/:id/closure-requests', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: 'Task not found.' });
+  if (task.status !== 'open') return res.status(400).json({ error: 'This task is already closed.' });
+  const reason = str((req.body || {}).reason).trim();
+  if (reason.length < 5) return res.status(400).json({ error: 'Write a short reason (at least 5 characters) so the creator knows why.' });
+  if (tooLong(reason, 1000)) return res.status(400).json({ error: 'Reason is too long (max 1000 characters).' });
+  if (task.created_by_username === req.user.username) return res.status(400).json({ error: 'You created this task — you can close it yourself with Close Task.' });
+  const tagged = (await db.listAssignees(task.id)).some(a => a.username === req.user.username);
+  if (!tagged) return res.status(403).json({ error: 'Only people tagged on this task can ask for it to be closed.' });
+  if (await db.pendingClosureRequest(task.id, req.user.username)) return res.status(400).json({ error: 'You already asked to close this task — waiting for the creator to decide.' });
+  const r = await db.createClosureRequest({ taskId: task.id, username: req.user.username, reason });
+  const me = await db.getUser(req.user.username);
+  if (task.created_by_username) await db.createNotification({ username: task.created_by_username, type: 'closure_requested', message: `${me ? me.name : req.user.username} asked to close "${task.title}": ${reason.slice(0, 200)}`, task_id: task.id });
+  await taskEvent(req, task.id, 'CLOSURE_REQUESTED', `Asked the creator to close this task: ${reason}`);
+  await auditFromReq(req, 'closure_requested', `Asked to close "${task.title}" (${task.id}): ${reason.slice(0, 300)}`);
+  res.json({ ok: true, request: r });
+});
+app.get('/api/closure-requests', auth(ALL_ROLES), async (req, res) => {
+  const all = req.user.role === 'admin' && req.query.scope === 'all';
+  const [toDecide, mine] = await Promise.all([db.listClosureRequestsToDecide(req.user.username, all), db.listMyClosureRequests(req.user.username)]);
+  res.json({ toDecide, mine });
+});
+async function loadRequestForDecision(req, res) {
+  const r = await db.getClosureRequest(Number(req.params.id));
+  if (!r) { res.status(404).json({ error: 'Request not found.' }); return null; }
+  if (r.status !== 'pending') { res.status(400).json({ error: 'This request has already been answered.' }); return null; }
+  const task = await db.getTask(r.task_id);
+  if (!task) { res.status(404).json({ error: 'Task not found.' }); return null; }
+  const isCreator = task.created_by_username === req.user.username;
+  if (!(isCreator || req.user.role === 'admin')) { res.status(403).json({ error: 'Only whoever created this task (or Admin) can decide.' }); return null; }
+  return { r, task };
+}
+app.post('/api/closure-requests/:id/approve', auth(ALL_ROLES), async (req, res) => {
+  const x = await loadRequestForDecision(req, res); if (!x) return;
+  const note = str((req.body || {}).note).trim().slice(0, 1000);
+  const requester = await db.getUser(x.r.requested_by);
+  const result = await closeTaskByOwner(req, x.task, `closure requested by ${requester ? requester.name : x.r.requested_by}`, { exceptRequestId: x.r.id });
+  if (!result.ok) return res.status(result.status).json({ error: result.error });
+  // closeTaskByOwner settled every pending request as 'closed'; mark this one as the approved one
+  await db.markClosureApproved(x.r.id, req.user.username, note);
+  if (x.r.requested_by !== req.user.username) {
+    await db.createNotification({ username: x.r.requested_by, type: 'closure_approved', message: `${req.user.name} approved your request — "${x.task.title}" is now closed.${note ? ` Note: ${note.slice(0, 200)}` : ''}`, task_id: x.task.id });
+  }
+  res.json({ ok: true });
+});
+app.post('/api/closure-requests/:id/decline', auth(ALL_ROLES), async (req, res) => {
+  const x = await loadRequestForDecision(req, res); if (!x) return;
+  const note = str((req.body || {}).note).trim();
+  if (note.length < 5) return res.status(400).json({ error: 'Write a reason (at least 5 characters) so they know why the task stays open.' });
+  const done = await db.decideClosureRequest(x.r.id, 'declined', req.user.username, note.slice(0, 1000));
+  if (!done) return res.status(400).json({ error: 'This request has already been answered.' });
+  const requester = await db.getUser(x.r.requested_by);
+  await db.createNotification({ username: x.r.requested_by, type: 'closure_declined', message: `${req.user.name} kept "${x.task.title}" open: ${note.slice(0, 200)}`, task_id: x.task.id });
+  await taskEvent(req, x.task.id, 'CLOSURE_DECLINED', `Declined ${requester ? requester.name : x.r.requested_by}'s request to close: ${note}`);
+  await auditFromReq(req, 'closure_declined', `Kept "${x.task.title}" (${x.task.id}) open — declined ${x.r.requested_by}'s closure request: ${note.slice(0, 300)}`);
+  res.json({ ok: true });
+});
+app.post('/api/closure-requests/:id/cancel', auth(ALL_ROLES), async (req, res) => {
+  const r = await db.getClosureRequest(Number(req.params.id));
+  if (!r) return res.status(404).json({ error: 'Request not found.' });
+  if (r.requested_by !== req.user.username) return res.status(403).json({ error: 'Only the person who asked can withdraw it.' });
+  const done = await db.decideClosureRequest(r.id, 'cancelled', req.user.username, null);
+  if (!done) return res.status(400).json({ error: 'This request has already been answered.' });
+  await taskEvent(req, r.task_id, 'CLOSURE_WITHDRAWN', 'Withdrew the request to close this task');
   res.json({ ok: true });
 });
 // Cancel: distinct from closing — for a task that was created by mistake or is being

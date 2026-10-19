@@ -46,6 +46,7 @@ let hrTotalTasksCompleted = 0;
 let reportsTaskList = []; // admin-only
 let currentTaskReport = null;
 let myNotifications = [];
+let closureData = { toDecide: [], mine: [] }; // closure requests (Task Closure page)
 let unreadNotifCount = 0;
 let theme = safeStorage.getItem('ks_theme') || 'light';
 document.documentElement.setAttribute('data-theme', theme);
@@ -102,7 +103,7 @@ if (token) {
   if (safeStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0;
+  myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [] };
   ui = defaultUiState(); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
   announcements = []; canPostAnnouncements = false; chat.rooms = []; chat.messages = {}; chat.hasOlder = {}; chat.lastVersion = null;
 }
@@ -560,7 +561,7 @@ const CAD_DRAWING_EXTENSIONS = ['.dwg', '.dxf', '.rvt', '.rfa', '.skp', '.dgn', 
 
 /* ==================== ROLES / NAV ==================== */
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -670,7 +671,8 @@ function renderSidebar() {
     if (g.group === 'Overview' && !g.items.some(i => i.key === 'notifications')) groups[gi] = { ...g, items: g.items.concat({ key: 'notifications', label: 'Notifications', icon: 'bell', badge: () => unreadNotifCount }) };
     if (g.group === 'Tasks' && !g.items.some(i => i.key === 'approvals')) {
       const items = g.items.slice(); const at = items.findIndex(i => i.key === 'tasks');
-      items.splice(at >= 0 ? at + 1 : items.length, 0, { key: 'approvals', label: 'Approvals', icon: 'clipboard', badge: () => approvalsNeedingMeCount() });
+      items.splice(at >= 0 ? at + 1 : items.length, 0, { key: 'approvals', label: 'Approvals', icon: 'clipboard', badge: () => approvalsNeedingMeCount() },
+        { key: 'closure', label: 'Task Closure', icon: 'checkCircle', badge: () => (closureData.toDecide || []).length });
       groups[gi] = { ...g, items };
     }
   });
@@ -708,10 +710,11 @@ function renderSidebar() {
     </div>
   </aside>`;
 }
-const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'bell', task_closed: 'checkCircle', task_reminder: 'clock', task_reminder_3day: 'clock', task_warning: 'alertTriangle', task_warning_creator: 'alertTriangle', weekly_warning_digest: 'alertTriangle', followup_tagged: 'eye', task_submitted: 'checkCircle', mentioned_in_comment: 'bell', approval_requested: 'checkCircle', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', deadline_soon: 'clock', deadline_passed: 'alertTriangle', admin_late_flag: 'alertTriangle', task_reopened: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin' };
-const NOTIF_TYPE_LABEL = { task_assigned: 'Task Assigned', task_reply: 'Task Update', task_closed: 'Task Closed', task_reminder: 'Task Reminder', task_reminder_3day: '3-Day Reminder', task_warning: '7-Day Warning', task_warning_creator: 'Task Overdue Warning', weekly_warning_digest: 'Weekly Warning Summary', followup_tagged: 'Follow-up Requested', task_submitted: 'Awaiting Your Approval', mentioned_in_comment: 'Mentioned You', approval_requested: 'Approval Requested', approval_rejected: 'Approval Rejected', approval_approved: 'Fully Approved', deadline_soon: 'Deadline Soon', deadline_passed: 'Deadline Passed', admin_late_flag: 'Late User Flagged', task_reopened: 'Task Reopened', chat_mention: '💬 Mentioned in Chat', announcement: '📢 Announcement', location: '📍 Location', location_alert: '📍 Location Alert' };
+const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'bell', task_closed: 'checkCircle', task_reminder: 'clock', task_reminder_3day: 'clock', task_warning: 'alertTriangle', task_warning_creator: 'alertTriangle', weekly_warning_digest: 'alertTriangle', followup_tagged: 'eye', task_submitted: 'checkCircle', mentioned_in_comment: 'bell', approval_requested: 'checkCircle', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', deadline_soon: 'clock', deadline_passed: 'alertTriangle', admin_late_flag: 'alertTriangle', task_reopened: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', closure_requested: 'checkCircle', closure_approved: 'checkCircle', closure_declined: 'alertTriangle' };
+const NOTIF_TYPE_LABEL = { task_assigned: 'Task Assigned', task_reply: 'Task Update', task_closed: 'Task Closed', task_reminder: 'Task Reminder', task_reminder_3day: '3-Day Reminder', task_warning: '7-Day Warning', task_warning_creator: 'Task Overdue Warning', weekly_warning_digest: 'Weekly Warning Summary', followup_tagged: 'Follow-up Requested', task_submitted: 'Awaiting Your Approval', mentioned_in_comment: 'Mentioned You', approval_requested: 'Approval Requested', approval_rejected: 'Approval Rejected', approval_approved: 'Fully Approved', deadline_soon: 'Deadline Soon', deadline_passed: 'Deadline Passed', admin_late_flag: 'Late User Flagged', task_reopened: 'Task Reopened', chat_mention: '💬 Mentioned in Chat', announcement: '📢 Announcement', location: '📍 Location', location_alert: '📍 Location Alert', closure_requested: 'Closure Requested', closure_approved: 'Closure Approved', closure_declined: 'Closure Declined' };
 // Where tapping a notification takes you.
 function notifTarget(n) {
+  if (/^closure_/.test(n.type)) return 'data-notif-goto-tab="closure"';
   if (n.task_id) return `data-notif-goto-task="${esc(n.task_id)}"`;
   if (n.type === 'chat_mention') return `data-notif-goto-tab="chat"${n.chat_room ? ` data-notif-chat-room="${esc(n.chat_room)}"` : ''}`;
   if (n.type === 'announcement') return 'data-notif-goto-tab="announcements"';
@@ -1511,6 +1514,7 @@ function dataRequests() {
     sectionsList: '/api/drawing-sections', phasesList: '/api/task-phases', openTaskTitles: '/api/tasks/open-titles', me: '/api/auth/me',
     notif: '/api/notifications', myApprovalRequests: '/api/approvals/mine', announcementsResp: '/api/announcements',
     features: '/api/features', suggestions: '/api/suggestions',
+    closureData: `/api/closure-requests${session.role === 'admin' && ui.closureScope === 'all' ? '?scope=all' : ''}`,
   };
   if (isAdmin) { core.allTasks = '/api/tasks'; core.allApprovalRequests = '/api/approvals'; }
   const extras = {
@@ -1548,6 +1552,7 @@ function applyData(key, v) {
       safeStorage.setItem('ls_session', JSON.stringify(session));
       break;
     case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; break;
+    case 'closureData': closureData = v || { toDecide: [], mine: [] }; break;
     case 'myApprovalRequests': myApprovalRequests = v; break;
     case 'announcementsResp': announcements = v.items || []; canPostAnnouncements = !!v.canPost; break;
     case 'allApprovalRequests': allApprovalRequests = v; break;
@@ -1734,9 +1739,9 @@ const HISTORY_ACTION_LABEL = {
   SUBMITTED: 'Submitted', APPROVED: 'Approved', REJECTED: 'Rejected', COMPLETED: 'Completed', REOPENED: 'Reopened', CANCELLED: 'Cancelled',
   DEADLINE_CHANGED: 'Deadline changed', INDIVIDUAL_DEADLINE_CHANGED: 'Personal deadline', FOLLOW_UP: 'Kept informed', FOLLOW_UP_SENT: 'Follow-up sent', DRAWING_REQUESTED: 'Drawing requested',
   CHECKLIST_ITEM_ADDED: 'Checklist item added', CHECKLIST_ITEM_TOGGLED: 'Checklist ticked', CHECKLIST_ITEM_REMOVED: 'Checklist item removed',
-  SUBTASK_CREATED: 'Subtask', ARCHIVED: 'Archived', DELETED: 'Deleted', NOTIFICATION_SENT: 'Notification',
+  SUBTASK_CREATED: 'Subtask', CLOSURE_REQUESTED: 'Closure requested', CLOSURE_DECLINED: 'Closure declined', CLOSURE_WITHDRAWN: 'Closure withdrawn', ARCHIVED: 'Archived', DELETED: 'Deleted', NOTIFICATION_SENT: 'Notification',
 };
-const HISTORY_ACTION_TONE = { APPROVED: 'good', COMPLETED: 'good', REJECTED: 'bad', CANCELLED: 'bad', DELETED: 'bad', DEADLINE_CHANGED: 'warn', INDIVIDUAL_DEADLINE_CHANGED: 'warn', REOPENED: 'warn', FOLLOW_UP_SENT: 'warn' };
+const HISTORY_ACTION_TONE = { APPROVED: 'good', COMPLETED: 'good', REJECTED: 'bad', CANCELLED: 'bad', DELETED: 'bad', DEADLINE_CHANGED: 'warn', INDIVIDUAL_DEADLINE_CHANGED: 'warn', REOPENED: 'warn', FOLLOW_UP_SENT: 'warn', CLOSURE_REQUESTED: 'warn', CLOSURE_DECLINED: 'bad' };
 const HISTORY_SOURCE_LABEL = { web: 'Web', import: 'Import', whatsapp: 'WhatsApp', email: 'Email', voice: 'Voice', meeting: 'Meeting', api: 'API', ai: 'AI' };
 const histLabel = t => HISTORY_ACTION_LABEL[t] || String(t).replace(/_/g, ' ').toLowerCase().replace(/^\w/, c => c.toUpperCase());
 function histDateParts(iso) {
@@ -2208,7 +2213,9 @@ function renderTaskItem(t) {
       ${canApproveHere || session.role === 'director' ? `<button class="btn btn-sm btn-primary" data-act="nudge-task" data-task-id="${t.id}" title="Remind everyone whose part is still open (at most once every few hours per person)">📣 Follow up</button>` : ''}
       <button class="btn btn-sm" data-act="toggle-followup-form" data-task-id="${t.id}" title="Add people who should be kept informed — they are not assigned work">👀 Keep someone informed</button>
       <button class="btn btn-sm" data-act="toggle-subtask-form" data-task-id="${t.id}">➕ Add Subtask</button>
+      ${iAmTagged && !isCreator && !myPendingClosure(t.id) ? `<button class="btn btn-sm" data-act="toggle-closure-form" data-task-id="${t.id}" title="Ask ${esc(t.created_by || 'the creator')} to close this task">🔒 Ask to close</button>` : ''}
     </div>
+    ${closureRequestBlockHTML(t, iAmTagged && !isCreator)}
     <div id="followup-form-box-${t.id}">${ui.followupFormTaskId === t.id ? followupFormHTML(t.id) : ''}</div>
     <div id="subtask-form-box-${t.id}">${ui.subtaskFormTaskId === t.id ? subtaskFormHTML(t.id) : ''}</div>
     ` : ''}
@@ -3339,6 +3346,127 @@ function approvalsHintHTML() {
 }
 function bindApprovalsHint() {
   document.querySelectorAll('[data-tab-go]').forEach(b => b.onclick = () => { collapseTaskCards(); ui.adminTab = b.dataset.tabGo; safeStorage.setItem('ls_last_tab', ui.adminTab); window.scrollTo(0, 0); render(); });
+}
+/* ==================== TASK CLOSURE (closure requests) ==================== */
+// Someone tagged on a task asks its creator to close it; the creator (or Admin) approves — the task
+// closes — or declines with a reason. Requests are made from inside a task or from this page.
+function myPendingClosure(taskId) { return (closureData.mine || []).find(r => r.task_id === taskId && r.status === 'pending'); }
+const CLOSURE_STATUS = { pending: ['Waiting for decision', 'po_pending'], approved: ['Approved — task closed', 'received'], declined: ['Declined — task stays open', 'flag'], cancelled: ['Withdrawn', 'created'], closed: ['Task closed', 'received'] };
+function closureRequestBlockHTML(t, canAsk) {
+  const pending = myPendingClosure(t.id);
+  if (pending) return `<div class="notice" style="margin-top:10px;">🔒 You asked to close this task ${fmtTime(pending.created_at)} — waiting for ${esc(t.created_by || 'the creator')}. <span class="muted">"${esc(pending.reason)}"</span> <button class="btn btn-sm" style="margin-left:6px;" data-closure-cancel="${pending.id}">Withdraw</button></div>`;
+  if (!canAsk || ui.closureFormTaskId !== t.id) return '';
+  return `<div class="card" style="background:var(--panel);margin-top:10px;padding:10px 14px;">
+    <label>Why should this task be closed? <span class="muted small">(${esc(t.created_by || 'The creator')} will see this and decide)</span></label>
+    <textarea id="closure-reason-${t.id}" placeholder="e.g. Work finished on site — photos in the reply above / No longer needed / Duplicate of another task"></textarea>
+    <div style="margin-top:6px;display:flex;gap:6px;"><button class="btn btn-sm btn-primary" data-closure-submit="${t.id}">Send request</button><button class="btn btn-sm" data-act="toggle-closure-form" data-task-id="${t.id}">Cancel</button></div>
+  </div>`;
+}
+async function sendClosureRequest(taskId, reason, btn) {
+  if (reason.length < 5) { alert('Write a short reason (at least 5 characters).'); return false; }
+  if (btn) { if (btn.disabled) return false; btn.disabled = true; btn.textContent = 'Sending…'; }
+  try {
+    await api(`/api/tasks/${taskId}/closure-requests`, { method: 'POST', body: JSON.stringify({ reason }) });
+    ui.closureFormTaskId = null;
+    setBanner('Request sent — the task creator has been notified.', 'ok');
+    await refreshData();
+    return true;
+  } catch (e) { if (btn) { btn.disabled = false; btn.textContent = 'Send request'; } setBanner(e.message); render(); return false; }
+}
+function bindClosureForms() {
+  document.querySelectorAll('[data-act="toggle-closure-form"]').forEach(b => b.onclick = () => { const id = b.dataset.taskId; ui.closureFormTaskId = ui.closureFormTaskId === id ? null : id; render(); });
+  document.querySelectorAll('[data-closure-submit]').forEach(b => b.onclick = () => { const id = b.dataset.closureSubmit; const el = document.getElementById(`closure-reason-${id}`); sendClosureRequest(id, el ? el.value.trim() : '', b); });
+  document.querySelectorAll('[data-closure-cancel]').forEach(b => b.onclick = async () => {
+    if (b.disabled) return; b.disabled = true;
+    try { await api(`/api/closure-requests/${b.dataset.closureCancel}/cancel`, { method: 'POST' }); setBanner('Request withdrawn.', 'ok'); await refreshData(); }
+    catch (e) { b.disabled = false; setBanner(e.message); render(); }
+  });
+}
+function renderClosureView() {
+  const toDecide = closureData.toDecide || [];
+  const mine = closureData.mine || [];
+  const scopeAll = session.role === 'admin' && ui.closureScope === 'all';
+  // open tasks I'm tagged on (not my own) with no pending request — for the "ask to close" picker
+  const askable = (myTasks || []).filter(t => t.status === 'open' && t.created_by_username !== session.username && (t.assignees || []).some(a => a.username === session.username) && !myPendingClosure(t.id))
+    .sort((a, b) => String(a.title).localeCompare(String(b.title)));
+  const head = (r) => `<div class="appr-task"><b>${esc(r.task_title)}</b> <span class="mono small muted">${esc(r.task_id)}</span>
+    <div class="small muted">${r.task_project ? `📁 ${esc(r.task_project)} · ` : ''}${r.task_deadline ? `Due ${esc(fmtDate(r.task_deadline))} · ` : ''}created by ${esc(r.task_creator_name || personName(r.task_creator))}</div></div>`;
+  return `
+  <div class="card">
+    <div class="flex-between" style="flex-wrap:wrap;gap:10px;">
+      <div><div class="card-title" style="margin:0;">Task Closure</div>
+        <div class="small muted">People tagged on a task can ask its creator to close it. The creator approves (the task closes) or keeps it open with a reason.</div></div>
+      ${session.role === 'admin' ? `<select id="closure-scope" style="width:auto;padding:4px 8px;"><option value="mine" ${!scopeAll ? 'selected' : ''}>Tasks I created</option><option value="all" ${scopeAll ? 'selected' : ''}>All tasks (Admin)</option></select>` : ''}
+    </div>
+  </div>
+
+  <div class="card" id="closure-decide">
+    <div class="card-title">Requests waiting for your decision ${toDecide.length ? `<span class="badge flag" style="margin-left:6px;">${toDecide.length}</span>` : ''}</div>
+    ${toDecide.length === 0 ? `<div class="empty">No closure requests waiting. When someone asks to close a task ${scopeAll ? '' : 'you created '}it appears here.</div>` : toDecide.map(r => `
+      <div class="appr-item">
+        ${head(r)}
+        <div class="appr-who"><b>${esc(personName(r.requested_by))}</b> <span class="muted small">asked ${fmtTime(r.created_at)} (${waitingSince(r.created_at)})</span></div>
+        <div class="doc-note" style="margin:6px 0;">${esc(r.reason)}</div>
+        <div class="row" style="align-items:flex-end;gap:8px;">
+          <div class="col"><input type="text" id="closure-note-${r.id}" placeholder="Note (required to keep it open, optional to close)"></div>
+          <div class="col" style="flex:0;white-space:nowrap;display:flex;gap:6px;">
+            <button class="btn btn-sm btn-primary" data-closure-approve="${r.id}">✓ Close task</button>
+            <button class="btn btn-sm btn-danger" data-closure-decline="${r.id}">Keep open</button>
+            <button class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button>
+          </div>
+        </div>
+      </div>`).join('')}
+  </div>
+
+  <div class="card">
+    <div class="card-title">Ask to close a task</div>
+    ${askable.length === 0 ? '<div class="empty">No open tasks to ask about — you can only ask to close tasks you are tagged on (and did not create).</div>' : `
+    <label>Task</label>
+    <select id="closure-new-task"><option value="">— pick one of your tasks —</option>${askable.map(t => `<option value="${esc(t.id)}">${esc(t.title)} (${esc(t.id)}) — ${esc(t.created_by || personName(t.created_by_username))}</option>`).join('')}</select>
+    <label>Reason</label>
+    <textarea id="closure-new-reason" placeholder="e.g. Work finished on site — photos in the task / No longer needed / Duplicate"></textarea>
+    <button class="btn btn-sm btn-primary" style="margin-top:6px;" data-act="closure-new-send">Send request</button>`}
+  </div>
+
+  <div class="card">
+    <div class="card-title">Your requests ${mine.length ? `<span class="muted small">(${mine.length})</span>` : ''}</div>
+    ${mine.length === 0 ? '<div class="empty">You have not asked to close any task yet.</div>' : mine.map(r => {
+      const st = CLOSURE_STATUS[r.status] || [r.status, 'created'];
+      return `
+      <div class="appr-item">
+        <div class="flex-between" style="gap:8px;"><div class="appr-task"><b>${esc(r.task_title)}</b> <span class="mono small muted">${esc(r.task_id)}</span></div><span class="badge ${st[1]}">${esc(st[0])}</span></div>
+        <div class="small muted">Asked ${fmtTime(r.created_at)} · creator ${esc(r.task_creator_name || personName(r.task_creator))}${r.decided_at && r.status !== 'pending' ? ` · answered ${fmtTime(r.decided_at)}${r.decided_by ? ` by ${esc(personName(r.decided_by))}` : ''}` : ''}</div>
+        <div class="doc-note" style="margin:6px 0;">${esc(r.reason)}</div>
+        ${r.decision_note ? `<div class="small"><b>Answer:</b> ${esc(r.decision_note)}</div>` : ''}
+        <div style="margin-top:6px;display:flex;gap:6px;">${r.status === 'pending' ? `<button class="btn btn-sm" data-closure-cancel="${r.id}">Withdraw</button>` : ''}<button class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button></div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+function bindClosureView() {
+  document.querySelectorAll('[data-goto-task]').forEach(b => b.onclick = () => openTaskOnMyTasks(b.dataset.gotoTask));
+  const sc = document.getElementById('closure-scope');
+  if (sc) sc.onchange = () => { ui.closureScope = sc.value; refreshData(); };
+  const send = document.querySelector('[data-act="closure-new-send"]');
+  if (send) send.onclick = async () => {
+    const t = document.getElementById('closure-new-task').value;
+    if (!t) { alert('Pick a task first.'); return; }
+    const ok = await sendClosureRequest(t, document.getElementById('closure-new-reason').value.trim(), send);
+    if (ok) { const r = document.getElementById('closure-new-reason'); if (r) r.value = ''; }
+  };
+  document.querySelectorAll('[data-closure-approve]').forEach(b => b.onclick = async () => {
+    if (b.disabled) return; b.disabled = true; b.textContent = 'Closing…';
+    const id = b.dataset.closureApprove; const note = (document.getElementById(`closure-note-${id}`) || {}).value || '';
+    try { await api(`/api/closure-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({ note: note.trim() }) }); celebrate(undefined, CLOSE_MESSAGES); setBanner('Task closed.', 'ok'); await refreshData(); }
+    catch (e) { b.disabled = false; b.textContent = '✓ Close task'; setBanner(e.message); render(); }
+  });
+  document.querySelectorAll('[data-closure-decline]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.closureDecline; const note = ((document.getElementById(`closure-note-${id}`) || {}).value || '').trim();
+    if (note.length < 5) { alert('Write a short reason (at least 5 characters) so they know why the task stays open.'); return; }
+    if (b.disabled) return; b.disabled = true;
+    try { await api(`/api/closure-requests/${id}/decline`, { method: 'POST', body: JSON.stringify({ note }) }); setBanner('Kept open — they have been told why.', 'ok'); await refreshData(); }
+    catch (e) { b.disabled = false; setBanner(e.message); render(); }
+  });
 }
 /* ==================== SEND FOR APPROVAL ==================== */
 function approvalFormHTML() {
@@ -5711,6 +5839,7 @@ function renderInner() {
   else if (ui.adminTab === 'tasks') body = renderTasksView();
   else if (ui.adminTab === 'notifications') body = renderNotificationsView();
   else if (ui.adminTab === 'approvals') body = renderApprovalsView();
+  else if (ui.adminTab === 'closure') body = renderClosureView();
   else if (ui.adminTab === 'alltasks' && session.role === 'admin') body = renderAllTasksCard();
   else if (ui.adminTab === 'accounts' && session.role === 'admin') body = renderAccountsView();
   else if (ui.adminTab === 'performance' && session.role === 'admin') body = renderPerformanceView();
@@ -5737,7 +5866,7 @@ function renderInner() {
       <div class="main-col">
         ${renderTopbarSlim()}
         <main class="content">
-          ${bannerHTML()}
+          <div id="banner-slot">${bannerHTML()}</div>
           <div id="notif-prompt-box">${dataLoadedOnce ? notifPromptHTML() : ''}</div>
           ${body}
         </main>
@@ -5747,6 +5876,8 @@ function renderInner() {
   if (ui.adminTab === 'tasks' || ui.adminTab === 'alltasks' || ui.adminTab === 'calendar' || ui.adminTab === 'mydashboard' || showingToday) { bindMyTasks(); bindFollowupForm(); bindSubtaskForm(); bindAddAssigneeForm(); }
   if (ui.adminTab === 'approvals') { bindApprovalForm(); bindApprovalsSection(); bindApprovalsView(); bindMyTasks(); }
   if (ui.adminTab === 'notifications') bindNotificationsView();
+  if (ui.adminTab === 'closure') bindClosureView();
+  bindClosureForms();
   if (ui.adminTab === 'tasks') bindApprovalsHint();
   if (ui.adminTab === 'calendar') bindCalendarView();
   if (ui.adminTab === 'chat') bindChatView();

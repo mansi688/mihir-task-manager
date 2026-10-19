@@ -376,6 +376,19 @@ async function init() {
   await ensureColumn('tasks', 'parent_task_id', 'TEXT');
   await ensureColumn('tasks', 'project', 'TEXT');
   await ensureColumn('notifications', 'read_at', 'TEXT');
+  await run(`CREATE TABLE IF NOT EXISTS task_closure_requests(
+    id SERIAL PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_by TEXT,
+    decision_note TEXT,
+    created_at TEXT NOT NULL,
+    decided_at TEXT
+  )`);
+  await run('CREATE INDEX IF NOT EXISTS idx_closure_req_task ON task_closure_requests(task_id, status)');
+  await run('CREATE INDEX IF NOT EXISTS idx_closure_req_user ON task_closure_requests(requested_by, created_at)');
   await ensureColumn('tasks', 'client_request_id', 'TEXT'); // one per New Task form — stops a double tap creating two tasks
   await run('CREATE INDEX IF NOT EXISTS idx_tasks_client_request ON tasks(created_by_username, client_request_id) WHERE client_request_id IS NOT NULL'); // when the person first saw it (the ✓ on the Notifications page)
   await ensureColumn('tasks', 'phase', 'TEXT');
@@ -744,6 +757,31 @@ module.exports = {
       [id, title, description || null, priority, deadline || null, created_by, created_by_username, depends_on_task_id || null, attachment || null, attachment_name || null, is_drawing_request ? 1 : 0, parent_task_id || null, project || null, phase || null, new Date().toISOString()]);
   },
   async getTask(id) { return get('SELECT * FROM tasks WHERE id=?', [id]); },
+  // ---- closure requests: a tagged person asks the task's creator to close it ----
+  async createClosureRequest({ taskId, username, reason }) {
+    return get('INSERT INTO task_closure_requests(task_id, requested_by, reason, status, created_at) VALUES(?,?,?,?,?) RETURNING *', [taskId, username, reason, 'pending', new Date().toISOString()]);
+  },
+  async getClosureRequest(id) { return get('SELECT * FROM task_closure_requests WHERE id=?', [id]); },
+  async pendingClosureRequest(taskId, username) { return get("SELECT * FROM task_closure_requests WHERE task_id=? AND requested_by=? AND status='pending' LIMIT 1", [taskId, username]); },
+  async listClosureRequestsToDecide(username, everyTask) {
+    return all(`SELECT r.*, t.title AS task_title, t.project AS task_project, t.deadline AS task_deadline, t.priority AS task_priority, t.created_by_username AS task_creator, t.created_by AS task_creator_name
+      FROM task_closure_requests r JOIN tasks t ON t.id = r.task_id
+      WHERE r.status='pending' AND t.status='open' ${everyTask ? '' : 'AND t.created_by_username=?'} ORDER BY r.created_at`, everyTask ? [] : [username]);
+  },
+  async listMyClosureRequests(username) {
+    return all(`SELECT r.*, t.title AS task_title, t.status AS task_status, t.project AS task_project, t.created_by_username AS task_creator, t.created_by AS task_creator_name
+      FROM task_closure_requests r JOIN tasks t ON t.id = r.task_id WHERE r.requested_by=? ORDER BY r.created_at DESC LIMIT 50`, [username]);
+  },
+  async decideClosureRequest(id, status, decidedBy, note) {
+    return get("UPDATE task_closure_requests SET status=?, decided_by=?, decision_note=?, decided_at=? WHERE id=? AND status='pending' RETURNING *", [status, decidedBy, note || null, new Date().toISOString(), id]);
+  },
+  async markClosureApproved(id, decidedBy, note) {
+    return get("UPDATE task_closure_requests SET status='approved', decided_by=?, decision_note=?, decided_at=? WHERE id=? RETURNING *", [decidedBy, note || null, new Date().toISOString(), id]);
+  },
+  // When a task closes (by any route), other open requests on it are settled.
+  async settleClosureRequests(taskId, decidedBy) {
+    return all("UPDATE task_closure_requests SET status='closed', decided_by=?, decided_at=? WHERE task_id=? AND status='pending' RETURNING *", [decidedBy, new Date().toISOString(), taskId]);
+  },
   async findTaskByClientRequest(username, key) { const r = await get('SELECT id FROM tasks WHERE created_by_username=? AND client_request_id=? ORDER BY created_at LIMIT 1', [username, key]); return r ? r.id : null; },
   async findRecentSameTask(username, title, deadline, parentTaskId, sinceIso) {
     const r = await get(`SELECT id FROM tasks WHERE created_by_username=? AND title=? AND COALESCE(deadline,'')=? AND COALESCE(parent_task_id,'')=? AND created_at >= ? ORDER BY created_at LIMIT 1`, [username, title, deadline || '', parentTaskId || '', sinceIso]);
