@@ -710,8 +710,28 @@ function renderSidebar() {
     </div>
   </aside>`;
 }
-const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'bell', task_closed: 'checkCircle', task_reminder: 'clock', task_reminder_3day: 'clock', task_warning: 'alertTriangle', task_warning_creator: 'alertTriangle', weekly_warning_digest: 'alertTriangle', followup_tagged: 'eye', task_submitted: 'checkCircle', mentioned_in_comment: 'bell', approval_requested: 'checkCircle', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', deadline_soon: 'clock', deadline_passed: 'alertTriangle', admin_late_flag: 'alertTriangle', task_reopened: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', closure_requested: 'checkCircle', closure_approved: 'checkCircle', closure_declined: 'alertTriangle' };
-const NOTIF_TYPE_LABEL = { task_assigned: 'Task Assigned', task_reply: 'Task Update', task_closed: 'Task Closed', task_reminder: 'Task Reminder', task_reminder_3day: '3-Day Reminder', task_warning: '7-Day Warning', task_warning_creator: 'Task Overdue Warning', weekly_warning_digest: 'Weekly Warning Summary', followup_tagged: 'Follow-up Requested', task_submitted: 'Awaiting Your Approval', mentioned_in_comment: 'Mentioned You', approval_requested: 'Approval Requested', approval_rejected: 'Approval Rejected', approval_approved: 'Fully Approved', deadline_soon: 'Deadline Soon', deadline_passed: 'Deadline Passed', admin_late_flag: 'Late User Flagged', task_reopened: 'Task Reopened', chat_mention: '💬 Mentioned in Chat', announcement: '📢 Announcement', location: '📍 Location', location_alert: '📍 Location Alert', closure_requested: 'Closure Requested', closure_approved: 'Closure Approved', closure_declined: 'Closure Declined' };
+// ---- Notification categories: every type the server sends belongs to exactly one tab. ----
+const NOTIF_CATS = [
+  { key: 'all', label: 'All', icon: 'bell', hint: 'Everything, newest first.' },
+  { key: 'reminder', label: 'Reminders', icon: 'clock', hint: 'Alerts to finish your tasks — still-open nudges, "due in X hours", due today and the 3-day countdown.' },
+  { key: 'warning', label: 'Warnings', icon: 'alertTriangle', hint: 'Overdue tasks, and people who have not completed their part (48-hour warnings, 60-hour flags, weekly summary).' },
+  { key: 'task', label: 'Task updates', icon: 'checkCircle', hint: 'New tasks, replies, mentions, level changes, re-opened or closed tasks.' },
+  { key: 'approval', label: 'Approvals', icon: 'clipboard', hint: 'Approval requests and decisions, and task closure requests.' },
+  { key: 'message', label: 'Messages', icon: 'chat', hint: 'Chat mentions and announcements.' },
+  { key: 'location', label: 'Location', icon: 'mapPin', hint: 'Site visits, place links and location alerts.' },
+  { key: 'other', label: 'Other', icon: 'bell', hint: 'Everything else.' },
+];
+const NOTIF_TYPE_CAT = {
+  task_reminder: 'reminder', task_reminder_recurring: 'reminder', task_reminder_3day: 'reminder', deadline_window: 'reminder', deadline_soon: 'reminder', deadline_due_today: 'reminder', follow_up: 'reminder',
+  deadline_passed: 'warning', task_overdue_days: 'warning', task_warning: 'warning', task_warning_urgent: 'warning', task_warning_creator: 'warning', task_flagged: 'warning', admin_late_flag: 'warning', weekly_warning_digest: 'warning',
+  task_assigned: 'task', task_reply: 'task', task_closed: 'task', task_reopened: 'task', task_deleted: 'task', task_rejected: 'task', individual_deadline_set: 'task', level_changed: 'task', mentioned_in_comment: 'task', followup_tagged: 'task', meeting_summary: 'task',
+  task_submitted: 'approval', approval_requested: 'approval', approval_rejected: 'approval', approval_approved: 'approval', closure_requested: 'approval', closure_approved: 'approval', closure_declined: 'approval',
+  chat_mention: 'message', announcement: 'message',
+  location: 'location', location_alert: 'location', site_visit: 'location', place_linked: 'location',
+};
+const notifCat = n => NOTIF_TYPE_CAT[n.type] || 'other';
+const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin' };
+const NOTIF_TYPE_LABEL = { task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked' };
 // Where tapping a notification takes you.
 function notifTarget(n) {
   if (/^closure_/.test(n.type)) return 'data-notif-goto-tab="closure"';
@@ -740,37 +760,85 @@ function seenTimeText(n) {
     return `Seen ${date}, ${time}`;
   } catch (e) { return 'Seen'; }
 }
+function notifAgo(iso) {
+  const mins = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (!isFinite(mins)) return '';
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const h = Math.round(mins / 60);
+  if (h < 24) return `${h} hr ago`;
+  try { return new Date(iso).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; }
+}
+// Warnings that name someone who has not done their part ("rahul.s has not completed …").
+function notifBehindPeople(list) {
+  const byUser = new Map();
+  for (const n of list) {
+    if (n.type !== 'task_warning_creator' && n.type !== 'admin_late_flag') continue;
+    const m = /^([A-Za-z0-9._-]+) has not completed/.exec(n.message || '');
+    if (!m) continue;
+    const e = byUser.get(m[1]) || { username: m[1], tasks: new Set(), flagged: false };
+    e.tasks.add(n.task_id || n.message); if (n.type === 'admin_late_flag') e.flagged = true;
+    byUser.set(m[1], e);
+  }
+  const nameOf = u => ((userDirectory || []).find(x => x.username === u) || {}).name || u;
+  return [...byUser.values()].map(e => ({ ...e, name: nameOf(e.username), count: e.tasks.size })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
 function renderNotificationsView() {
   const all = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   const unread = all.filter(n => !n.read);
-  const filter = ui.notifFilter || 'all';
-  const list = filter === 'unread' ? unread : filter === 'seen' ? all.filter(n => n.read) : all;
+  // Status: New (not yet seen) or Seen. A notification marked seen leaves New and shows only under Seen.
+  const filter = ui.notifFilter === 'seen' ? 'seen' : 'unread';
+  const byStatus = filter === 'seen' ? all.filter(n => n.read) : unread;
+  const countIn = (list, key) => key === 'all' ? list.length : list.filter(n => notifCat(n) === key).length;
+  // Show a category tab when it has anything; Reminders and Warnings are always there.
+  const cats = NOTIF_CATS.filter(c => c.key === 'all' || c.key === 'reminder' || c.key === 'warning' || all.some(n => notifCat(n) === c.key));
+  const cat = cats.some(c => c.key === ui.notifCat) ? ui.notifCat : 'all';
+  const catInfo = NOTIF_CATS.find(c => c.key === cat);
+  const list = cat === 'all' ? byStatus : byStatus.filter(n => notifCat(n) === cat);
   const groups = [];
   for (const n of list) { const k = istDayKey(n.created_at); const g = groups[groups.length - 1]; if (g && g.key === k) g.items.push(n); else groups.push({ key: k, items: [n] }); }
-  const chip = (key, label, count) => `<button class="owner-chip notif-filter ${filter === key ? 'active' : ''}" data-notif-filter="${key}">${label}${count != null ? ` <span class="muted small">${count}</span>` : ''}</button>`;
+  const newWarn = countIn(unread, 'warning'), newRem = countIn(unread, 'reminder');
+  const statusChip = (key, label, count) => `<button class="notif-status ${filter === key ? 'active' : ''}" data-notif-filter="${key}">${label}<span class="notif-status-count">${count}</span></button>`;
+  const catTab = c => { const n = countIn(byStatus, c.key); return `<button class="notif-cat cat-${c.key} ${cat === c.key ? 'active' : ''}" data-notif-cat="${c.key}">${icon(c.icon, 15)}<span>${c.label}</span>${n ? `<span class="notif-cat-count">${n}</span>` : ''}</button>`; };
+  const behind = cat === 'warning' ? notifBehindPeople(list) : [];
+  const markLabel = cat === 'all' ? 'Mark all as seen' : `Mark these ${list.length} as seen`;
   return `
-  <div class="card">
-    <div class="flex-between" style="flex-wrap:wrap;gap:10px;">
+  <div class="card notif-head">
+    <div class="flex-between" style="flex-wrap:wrap;gap:10px;align-items:flex-start;">
       <div>
         <div class="card-title" style="margin:0;">Notifications</div>
-        <div class="small muted">Tap the round button ◯ to mark a notification as seen — it turns into ✓ with the date and time. Tap the notification itself to open what it is about.</div>
+        <div class="small muted">${unread.length ? `${unread.length} new` : 'All caught up'}${newWarn ? ` · <b class="txt-warn">${newWarn} warning${newWarn > 1 ? 's' : ''}</b>` : ''}${newRem ? ` · <b class="txt-rem">${newRem} reminder${newRem > 1 ? 's' : ''}</b>` : ''}</div>
       </div>
-      ${unread.length ? `<button class="btn btn-sm" data-act="notif-mark-all">✓ Mark all as seen</button>` : ''}
+      <div class="notif-status-row">${statusChip('unread', 'New', unread.length)}${statusChip('seen', 'Seen', all.length - unread.length)}</div>
     </div>
-    <div class="notif-filters">${chip('all', 'All', all.length)}${chip('unread', 'New', unread.length)}${chip('seen', 'Seen', all.length - unread.length)}</div>
+    ${filter === 'unread' && (newWarn || newRem) ? `<div class="notif-alert-tiles">
+      ${newWarn ? `<button class="notif-tile tile-warn" data-notif-cat="warning">${icon('alertTriangle', 20)}<span><b>${newWarn}</b> warning${newWarn > 1 ? 's' : ''}<small>Overdue or not completed</small></span></button>` : ''}
+      ${newRem ? `<button class="notif-tile tile-rem" data-notif-cat="reminder">${icon('clock', 20)}<span><b>${newRem}</b> reminder${newRem > 1 ? 's' : ''}<small>Tasks to complete</small></span></button>` : ''}
+    </div>` : ''}
+    <div class="notif-cats" role="tablist">${cats.map(catTab).join('')}</div>
   </div>
   <div class="card notif-page">
-    ${list.length === 0 ? `<div class="empty">${filter === 'unread' ? 'Nothing new — you have seen everything. ✓' : 'Nothing to show — all quiet.'}</div>` : groups.map(g => `
+    <div class="notif-cat-hint">
+      <span class="small muted">${esc(catInfo.hint)} Tap ◯ to mark seen.</span>
+      ${filter === 'unread' && list.length ? `<button class="btn btn-sm" data-act="notif-mark-all" data-notif-mark-cat="${cat}">✓ ${markLabel}</button>` : ''}
+    </div>
+    ${behind.length ? `<div class="notif-behind">
+      <div class="notif-behind-title">${icon('users', 15)} People who have not completed their part</div>
+      <div class="notif-behind-list">${behind.map(p => `<span class="notif-person ${p.flagged ? 'flagged' : ''}"><b>${esc(p.name)}</b> · ${p.count} task${p.count > 1 ? 's' : ''}${p.flagged ? ' · flagged' : ''}</span>`).join('')}</div>
+    </div>` : ''}
+    ${list.length === 0 ? `<div class="notif-empty">${icon(catInfo.icon, 28)}<div>${filter === 'unread' ? (cat === 'all' ? 'Nothing new — you have seen everything.' : `No new ${catInfo.label.toLowerCase()}.`) : (cat === 'all' ? 'Nothing seen yet.' : `No seen ${catInfo.label.toLowerCase()} yet.`)}</div></div>` : groups.map(g => `
       <div class="notif-day">${esc(notifDayLabel(g.key))}</div>
       ${g.items.map(n => {
         const target = notifTarget(n);
+        const c = notifCat(n);
+        const cInfo = NOTIF_CATS.find(x => x.key === c);
         return `
-        <div class="notif-item ${n.read ? 'seen' : 'unread'}" id="notif-${n.id}" data-notif-id="${n.id}">
-          <div class="notif-icon">${icon(NOTIF_TYPE_ICON[n.type] || 'alertTriangle', 16)}</div>
+        <div class="notif-item cat-${c} ${n.read ? 'seen' : 'unread'}" id="notif-${n.id}" data-notif-id="${n.id}">
+          <div class="notif-icon">${icon(NOTIF_TYPE_ICON[n.type] || cInfo.icon, 18)}</div>
           <div class="notif-body" ${target} style="flex:1;min-width:0;${target ? 'cursor:pointer;' : ''}" ${target ? `data-mark-notif-read="${n.id}"` : ''}>
-            <div class="small" style="font-weight:700;">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')} ${n.read ? '' : '<span class="notif-new">● New</span>'}</div>
-            <div class="small" style="margin-top:2px;">${esc(n.message)}</div>
-            <div class="muted small" style="margin-top:4px;">${fmtTime(n.created_at)}${target ? ' · <span class="notif-open">Open ›</span>' : ''}</div>
+            <div class="notif-title-row"><span class="notif-title">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')}</span>${cat === 'all' ? `<span class="notif-pill">${esc(cInfo.label)}</span>` : ''}</div>
+            <div class="notif-msg">${esc(n.message)}</div>
+            <div class="notif-meta"><span title="${esc(fmtTime(n.created_at))}">${esc(notifAgo(n.created_at))}</span>${target ? ' · <span class="notif-open">Open ›</span>' : ''}</div>
             ${n.read ? `<div class="notif-seen">✓ ${esc(seenTimeText(n))}</div>` : ''}
           </div>
           <button type="button" class="notif-seen-btn ${n.read ? 'done' : ''}" data-notif-seen="${n.id}" ${n.read ? 'disabled' : ''} title="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}" aria-label="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}">${n.read ? '✓' : ''}</button>
@@ -780,9 +848,17 @@ function renderNotificationsView() {
   </div>`;
 }
 // A notification is marked seen when the person taps its round Seen button (or opens it).
-function markNotifSeen(id) {
+function markNotifSeen(id, animated) {
   const n = myNotifications.find(x => x.id === id);
-  if (!n || n.read) return;
+  if (!n || n.read || (n.__leaving && !animated)) return;
+  // On the New tab the item slides away first, then moves to the Seen tab.
+  const el = document.getElementById(`notif-${id}`);
+  if (!animated && el && ui.notifFilter !== 'seen') {
+    n.__leaving = true; el.classList.add('leaving');
+    setTimeout(() => markNotifSeen(id, true), 320);
+    return;
+  }
+  n.__leaving = false;
   n.read = 1; n.read_at = new Date().toISOString();
   unreadNotifCount = myNotifications.filter(x => !x.read).length;
   render();
@@ -792,12 +868,21 @@ function markNotifSeen(id) {
 }
 function bindNotificationsView() {
   document.querySelectorAll('[data-notif-filter]').forEach(b => b.onclick = () => { ui.notifFilter = b.dataset.notifFilter; render(); window.scrollTo(0, 0); });
+  document.querySelectorAll('[data-notif-cat]').forEach(b => b.onclick = () => { ui.notifCat = b.dataset.notifCat; render(); });
+  const activeCat = document.querySelector('.notif-cat.active');
+  if (activeCat && activeCat.parentElement) { const row = activeCat.parentElement; const l = activeCat.offsetLeft - row.offsetLeft; if (l < row.scrollLeft || l + activeCat.offsetWidth > row.scrollLeft + row.clientWidth) row.scrollLeft = Math.max(0, l - 16); }
   const all = document.querySelector('[data-act="notif-mark-all"]');
   if (all) all.onclick = async () => {
+    const cat = all.dataset.notifMarkCat || 'all';
     const now = new Date().toISOString();
-    myNotifications.forEach(n => { if (!n.read) { n.read = 1; n.read_at = now; } });
-    unreadNotifCount = 0; render();
-    try { await api('/api/notifications/read-all', { method: 'POST' }); } catch (e) { /* refresh corrects it */ }
+    const targets = myNotifications.filter(n => !n.read && (cat === 'all' || notifCat(n) === cat));
+    if (!targets.length) return;
+    targets.forEach(n => { n.read = 1; n.read_at = now; });
+    unreadNotifCount = myNotifications.filter(x => !x.read).length; render();
+    try {
+      if (cat === 'all') await api('/api/notifications/read-all', { method: 'POST' });
+      else await api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids: targets.map(n => n.id) }) });
+    } catch (e) { /* refresh corrects it */ }
     refreshData();
   };
   document.querySelectorAll('[data-notif-seen]').forEach(b => b.onclick = (e) => { e.stopPropagation(); markNotifSeen(Number(b.dataset.notifSeen)); });
@@ -2210,7 +2295,7 @@ function renderTaskItem(t) {
     })()}
     ${t.status === 'open' && canCommentHere ? `
     <div class="row" style="margin-top:10px;">
-      ${canApproveHere || session.role === 'director' ? `<button class="btn btn-sm btn-primary" data-act="nudge-task" data-task-id="${t.id}" title="Remind everyone whose part is still open (at most once every few hours per person)">📣 Follow up</button>` : ''}
+      <button class="btn btn-sm btn-primary" data-act="nudge-task" data-task-id="${t.id}" title="Notify everyone involved in this task to look into it (at most once every few hours per person)">📣 Follow up</button>
       <button class="btn btn-sm" data-act="toggle-followup-form" data-task-id="${t.id}" title="Add people who should be kept informed — they are not assigned work">👀 Keep someone informed</button>
       <button class="btn btn-sm" data-act="toggle-subtask-form" data-task-id="${t.id}">➕ Add Subtask</button>
       ${iAmTagged && !isCreator && !myPendingClosure(t.id) ? `<button class="btn btn-sm" data-act="toggle-closure-form" data-task-id="${t.id}" title="Ask ${esc(t.created_by || 'the creator')} to close this task">🔒 Ask to close</button>` : ''}
@@ -5779,12 +5864,20 @@ function morphChildren(fromParent, toParent) {
   // that node might be holding.
   const fromKeyed = {};
   Array.from(fromParent.childNodes).forEach(c => { if (c.nodeType === 1 && c.id) fromKeyed[c.id] = c; });
+  // Ids the new markup still needs: a node holding one of these is never overwritten by a
+  // different element (that used to swallow unkeyed siblings such as a day heading).
+  const wantedKeys = new Set();
+  toChildren.forEach(c => { if (c.nodeType === 1 && c.id && fromKeyed[c.id]) wantedKeys.add(c.id); });
   let cursor = fromParent.firstChild;
   for (let i = 0; i < toChildren.length; i++) {
     const toChild = toChildren[i];
     const toKey = toChild.nodeType === 1 ? toChild.id : null;
     let matched = (toKey && fromKeyed[toKey]) ? fromKeyed[toKey] : null;
     if (matched && matched !== cursor) fromParent.insertBefore(matched, cursor);
+    if (!matched && cursor && cursor.nodeType === 1 && cursor.id && cursor.id !== toKey && wantedKeys.has(cursor.id)) {
+      fromParent.insertBefore(toChild.cloneNode(true), cursor);
+      continue;
+    }
     const working = matched || cursor;
     if (!working) { fromParent.appendChild(toChild.cloneNode(true)); continue; }
     if (working.nodeType !== toChild.nodeType || working.nodeName !== toChild.nodeName) {

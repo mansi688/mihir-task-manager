@@ -4,6 +4,50 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Reminder times 9 AM / 3 PM / 6 PM; Follow up for everyone
+### Changed
+- **All automatic reminders and warnings now go out only at 9:00 AM, 3:00 PM and 6:00 PM (IST)**: the daily
+  "still open" nudge, 3-hourly nudges, due in X hours, due today, the 3-day countdown, overdue, the 48-hour
+  "not completed" warning and the 60-hour flag. Anything that becomes due between slots waits for the next slot.
+  A slot is still honoured up to 2 hours late if the server was asleep at that minute (Render free plan).
+  The Monday weekly warning summary stays at 9:00 AM. Admin's "send reminders now" still sends immediately.
+- Routine-nudge spacing lowered from 3 h to 2 h so the 3 PM → 6 PM slots are not skipped.
+- **Follow up** (📣) is now available to everyone involved in a task — creator, any assignee at any level, anyone
+  kept informed — plus Admin/Director. It notifies everyone else involved: people whose part is open get "your
+  part is still open", everyone else gets "<name> asked everyone on <task> to look into it". Each person still
+  gets at most one follow-up per task every 5 hours, whoever presses it. Recorded in the task history.
+### Environment
+- New default `REMINDER_WINDOWS=09:00,15:00,18:00`. If Render has `REMINDER_WINDOWS` set (old value
+  10:00,14:00,18:00), delete it or change it to `09:00,15:00,18:00`. `REMINDER_WINDOWS=none` = send any time.
+- `AUTO_REMINDER_MIN_GAP_HOURS` default 3 → 2. No database changes.
+### Accounts (live database, not code)
+- 21 Equinox, Bavdhan employees from the All Employees sheet added with their designations and temporary
+  passwords (first name + 4 digits, must change on first login). New team: Quality Department. Audit log #1841.
+
+## [Unreleased] — Notifications: category tabs and clearer cards
+### Added
+- Category tabs on the Notifications page, each with its count: **All**, **Reminders** (alerts to complete a task —
+  still-open nudges, due in X hours, due today, 3-day countdown), **Warnings** (overdue tasks; people who have not
+  completed their part — 48-hour warnings, 60-hour flags, weekly summary), **Task updates**, **Approvals** (approvals
+  and closure requests), **Messages** (chat mentions, announcements), **Location** and **Other**. Tabs with nothing
+  in them stay hidden, except Reminders and Warnings. New/Seen still applies inside every tab.
+- Warnings tab: a "People who have not completed their part" panel listing each person with their number of
+  incomplete tasks, marked "flagged" after 60 hours.
+- Big red/amber tiles at the top for new warnings and reminders; "Mark these N as seen" marks only the open tab.
+### Changed
+- Cards are colour-coded by category (red warnings, amber reminders, blue tasks, violet approvals, teal messages,
+  green location), with plain titles ("Due soon", "Overdue", "Person flagged") and "20 min ago" times. Fourteen
+  notification types that used to show as just "Alert" now have proper names and icons.
+### Fixed
+- The page redraw could drop an untagged element (such as a day heading) when it lined up with a card that has an id
+  (seen as the missing "Today" heading after switching tab). Front-end only; no database or environment changes.
+
+## [Unreleased] — Notifications: New and Seen tabs
+### Changed
+- The Notifications page has two tabs: **New** (opens first; only notifications not yet seen) and **Seen**. The "All"
+  tab is gone. Tapping the round Seen button slides the notification out of New; it then appears only under Seen,
+  with the date and time it was seen. "Mark all as seen" empties New. Front-end only.
+
 ## [Unreleased] — Task Closure page (closure requests)
 ### Added
 - **Task Closure** page (Tasks → Task Closure, with a count of requests waiting for you). People tagged on a task can

@@ -2528,36 +2528,46 @@ app.delete('/api/tasks/:id/assignees/:username', auth(ALL_ROLES), async (req, re
   res.json({ ok: true });
 });
 
-// "Follow up" (Phase 2): nudges everyone whose part is still open — never people already approved
-// or still on hold — once per FOLLOW_UP_COOLDOWN_HOURS (default 5) per person, records who was
-// notified in the task history, and never changes the task itself (no close/reopen/reassign/deadline).
+// "Follow up": anyone involved in the task (its creator, anyone assigned at any level, anyone tagged to be
+// kept informed — and Admin/Director) can ask everyone else involved to look into it. People whose part
+// is still open are told so; everyone else is asked to look into the task. Each person gets at most one
+// follow-up per task every FOLLOW_UP_COOLDOWN_HOURS (default 5), whoever presses it. It is recorded in the
+// task history and never changes the task itself (no close/reopen/reassign/deadline).
 app.post('/api/tasks/:id/nudge', auth(ALL_ROLES), async (req, res) => {
   const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (task.status !== 'open') return res.status(400).json({ error: 'Only open tasks can be followed up.' });
-  if (!(req.user.role === 'admin' || req.user.role === 'director' || task.created_by_username === req.user.username)) {
-    return res.status(403).json({ error: 'Only whoever created this task (or Admin) can follow it up.' });
+  if (!(req.user.role === 'director' || await isInvolvedInTask(req.user, task))) {
+    return res.status(403).json({ error: 'Only people involved in this task can follow it up.' });
   }
-  const open = (await db.listAssignees(task.id)).filter(a => a.is_released && !(a.decision === 'approve' && a.completed_at));
-  if (!open.length) return res.status(400).json({ error: 'Nobody has an open part on this task right now.' });
+  const assignees = await db.listAssignees(task.id);
+  const openPart = new Set(assignees.filter(a => a.is_released && !(a.decision === 'approve' && a.completed_at)).map(a => a.username));
+  const involved = new Set([task.created_by_username, ...assignees.map(a => a.username), ...(await db.listFollowups(task.id)).map(f => f.username)].filter(Boolean));
+  involved.delete(req.user.username);
+  const users = new Map((await db.listUsers()).map(u => [u.username, u]));
+  const recipients = [...involved].filter(u => users.has(u));
+  if (!recipients.length) return res.status(400).json({ error: 'There is nobody else on this task to follow up.' });
+  const from = await displayName(req.user.username);
   const cooldownMs = FOLLOW_UP_COOLDOWN_HOURS * 3600000;
   const now = Date.now();
   const last = await db.lastReminderSentMap(['follow_up'], new Date(now - cooldownMs).toISOString());
   const bucket = Math.floor(now / cooldownMs);
   const sent = [], skipped = [];
-  for (const a of open) {
-    const prev = last.get(`${a.username}|${task.id}`);
-    if (prev) { skipped.push({ username: a.username, nextAt: new Date(prev + cooldownMs).toISOString() }); continue; }
-    const deliveryId = await db.claimDelivery({ key: `followup:${task.id}:${a.username}:${bucket}`, recipient: a.username, taskId: task.id, type: 'follow_up' });
-    if (!deliveryId) { skipped.push({ username: a.username, nextAt: new Date(now + cooldownMs).toISOString() }); continue; }
+  for (const username of recipients) {
+    const prev = last.get(`${username}|${task.id}`);
+    if (prev) { skipped.push({ username, nextAt: new Date(prev + cooldownMs).toISOString() }); continue; }
+    const deliveryId = await db.claimDelivery({ key: `followup:${task.id}:${username}:${bucket}`, recipient: username, taskId: task.id, type: 'follow_up' });
+    if (!deliveryId) { skipped.push({ username, nextAt: new Date(now + cooldownMs).toISOString() }); continue; }
+    const message = openPart.has(username)
+      ? `Follow-up: Your assigned part of "${task.title}" is still open. Please complete it as soon as possible. — ${from}`
+      : `Follow-up: ${from} asked everyone on "${task.title}" to look into it.`;
     try {
-      const notificationId = await db.createNotification({ username: a.username, type: 'follow_up',
-        message: `Follow-up: Your assigned part of "${task.title}" is still open. Please complete it as soon as possible.`, task_id: task.id });
+      const notificationId = await db.createNotification({ username, type: 'follow_up', message, task_id: task.id });
       await db.finishDelivery(deliveryId, { status: 'sent', notificationId });
-      sent.push(a.username);
+      sent.push(username);
     } catch (e) {
       await db.finishDelivery(deliveryId, { status: 'failed', reason: e.message.slice(0, 300) });
-      log('ERROR', 'follow-up delivery failed', { requestId: req.id, taskId: task.id, recipient: a.username, error: e.message });
+      log('ERROR', 'follow-up delivery failed', { requestId: req.id, taskId: task.id, recipient: username, error: e.message });
     }
   }
   if (!sent.length) {
@@ -2989,9 +2999,13 @@ app.post('/api/notifications/read-all', auth(ALL_ROLES), async (req, res) => {
      4. NEVER TWICE — each message has an idempotency key claimed in notification_deliveries before it
         is sent: restarts, catch-up after the server slept, or two instances can't duplicate it.
    All times are Asia/Kolkata (process TZ). State lives in the database, never in memory. */
-const REMINDER_WINDOWS = String(process.env.REMINDER_WINDOWS || '10:00,14:00,18:00').split(',').map(s => s.trim()).filter(s => /^\d{1,2}:\d{2}$/.test(s));
+// Every automatic reminder and warning goes out only in these daily slots (IST): 9 AM, 3 PM, 6 PM.
+// A slot still counts for REMINDER_CATCHUP_HOURS after it starts (the free server may be asleep at the
+// exact minute). REMINDER_WINDOWS=none turns slots off (everything sends as soon as it is due).
+const REMINDER_WINDOWS = String(process.env.REMINDER_WINDOWS || '09:00,15:00,18:00').split(',').map(s => s.trim()).filter(s => /^\d{1,2}:\d{2}$/.test(s));
 const REMINDER_CATCHUP_HOURS = Number(process.env.REMINDER_CATCHUP_HOURS) || 2;
-const AUTO_REMINDER_MIN_GAP_HOURS = process.env.AUTO_REMINDER_MIN_GAP_HOURS !== undefined ? Number(process.env.AUTO_REMINDER_MIN_GAP_HOURS) : 3;
+// Slots are 3 hours apart (15:00 → 18:00), so the routine-nudge gap must be shorter than that.
+const AUTO_REMINDER_MIN_GAP_HOURS = process.env.AUTO_REMINDER_MIN_GAP_HOURS !== undefined ? Number(process.env.AUTO_REMINDER_MIN_GAP_HOURS) : 2;
 const FOLLOW_UP_COOLDOWN_HOURS = Number(process.env.FOLLOW_UP_COOLDOWN_HOURS) || 5;
 const REMINDER_INTERVAL_HOURS = 24;
 const REMINDER_TYPES = ['task_reminder', 'task_reminder_recurring', 'deadline_window', 'deadline_soon', 'deadline_due_today', 'deadline_passed', 'task_overdue_days', 'task_warning_urgent', 'task_warning_creator', 'task_flagged', 'admin_late_flag', 'follow_up'];
@@ -3021,7 +3035,12 @@ function activeReminderWindow(now) {
   return best;
 }
 
-async function runReminderEngine(now = new Date()) {
+async function runReminderEngine(now = new Date(), opts = {}) {
+  // Outside the 9 AM / 3 PM / 6 PM slots nothing is sent; anything due waits for the next slot
+  // (nothing is marked, so it is picked up then). Admin's "send now" (opts.force) skips this.
+  if (REMINDER_WINDOWS.length && !opts.force && !activeReminderWindow(now)) {
+    return { remindersSent: 0, escalationsSent: 0, deadlineRemindersSent: 0, combined: 0, suppressed: 0, duplicates: 0, failed: 0, outsideSlot: true };
+  }
   const out = []; // { to, taskId, rank, routine, type, message, key, cat, mark }
   const add = (item) => out.push(item);
   const blocked = await db.listBlockedTaskIds();
@@ -3178,8 +3197,11 @@ async function sendWeeklyWarningDigestToAdmin() {
 app.post('/api/tasks/send-reminders-now', auth(['admin']), async (req, res) => {
   // Optional ?at=<ISO time> (Admin) runs the engine as if it were that moment — used to verify windows.
   const at = str((req.body || {}).at || req.query.at);
-  const now = at && !isNaN(new Date(at)) ? new Date(at) : new Date();
-  res.json({ ok: true, ...(await runReminderEngine(now)) });
+  // With ?at= it behaves exactly like the scheduled run at that moment (slots apply); without it, Admin
+  // is asking to send right now, so the 9 AM / 3 PM / 6 PM slots are skipped.
+  const valid = at && !isNaN(new Date(at));
+  const now = valid ? new Date(at) : new Date();
+  res.json({ ok: true, ...(await runReminderEngine(now, { force: !valid })) });
 });
 // Admin: background jobs (queued / running / completed / failed / retrying / dead-letter) and retry.
 app.get('/api/admin/jobs', auth(['admin']), async (req, res) => {

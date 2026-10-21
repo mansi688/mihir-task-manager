@@ -6,7 +6,7 @@ All under the existing `/api`, Bearer token unless noted. Existing endpoints are
 | GET /readiness, /ready | public | DB round-trip, schema version, timezone |
 | GET /api/audit-log?format=page&actor&action&q&from&to&before_id | Admin | paged audit log (plain list without `format=page`) |
 | GET /api/tasks/:id/events?limit&cursor&order&type&actor&source&q | can view task | task history |
-| POST /api/tasks/:id/nudge | creator/Admin/Director | Follow up (5 h gap per person) |
+| POST /api/tasks/:id/nudge | anyone involved in the task, Admin, Director | Follow up — notifies everyone else involved (5 h gap per person) |
 | POST /api/tasks/send-reminders-now {at?} | Admin | run reminder engine (optionally "as of" a time) |
 | GET /api/notifications/deliveries?status | Admin | delivery log |
 | GET /api/admin/jobs?status · POST /api/admin/jobs/:id/retry · POST /api/admin/jobs/run-now | Admin | jobs |

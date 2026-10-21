@@ -629,6 +629,7 @@ html[data-theme="dark"] .glass-btn:hover{background:rgba(255,255,255,0.14);}
 .notif-seen-btn{flex-shrink:0;width:38px;height:38px;border-radius:50%;border:2.5px solid var(--steel);background:transparent;color:#fff;font-size:18px;font-weight:800;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:background .2s ease,transform .15s ease,border-color .2s ease;-webkit-tap-highlight-color:transparent;}
 .notif-seen-btn:hover{background:rgba(30,127,140,0.12);transform:scale(1.06);}
 .notif-seen-btn:active{transform:scale(0.94);}
+.notif-page .notif-item.leaving{opacity:0;transform:translateX(40px);transition:opacity .3s ease,transform .3s ease;}
 .notif-seen-btn.done{background:var(--success);border-color:var(--success);cursor:default;transform:none;}
 .notif-open{color:var(--steel);font-weight:600;}
 /* Approvals page */
@@ -1172,3 +1173,50 @@ html[data-theme="dark"] .ht-pill.ht-bad{color:#f87171;}
   .loc-map{height:60vh;min-height:300px;}
   .loc-pill-sub{display:none;}
 }
+
+/* ---------- Notifications: category tabs and colour-coded cards ---------- */
+:root{--nc-warning:#D93C3C;--nc-reminder:#C27A0E;--nc-task:#2D5FA8;--nc-approval:#6A4FC2;--nc-message:#1E7F8C;--nc-location:#2F9E5B;--nc-other:#666F80;--nc-all:#1E7F8C;}
+html[data-theme="dark"]{--nc-warning:#F06A6E;--nc-reminder:#F0A93B;--nc-task:#6FA2E3;--nc-approval:#A58CF0;--nc-message:#3EB9C4;--nc-location:#5CC27F;--nc-other:#8B94A6;--nc-all:#3EB9C4;}
+.cat-all{--nc:var(--nc-all);}.cat-warning{--nc:var(--nc-warning);}.cat-reminder{--nc:var(--nc-reminder);}.cat-task{--nc:var(--nc-task);}.cat-approval{--nc:var(--nc-approval);}.cat-message{--nc:var(--nc-message);}.cat-location{--nc:var(--nc-location);}.cat-other{--nc:var(--nc-other);}
+.txt-warn{color:var(--nc-warning);} .txt-rem{color:var(--nc-reminder);}
+.notif-status-row{display:flex;background:var(--panel-2);border-radius:999px;padding:3px;gap:2px;}
+.notif-status{border:0;background:transparent;color:var(--muted);font:inherit;font-weight:700;font-size:13.5px;padding:7px 16px;border-radius:999px;cursor:pointer;display:flex;align-items:center;gap:7px;}
+.notif-status.active{background:var(--panel);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12);}
+.notif-status-count{font-size:12px;min-width:20px;padding:1px 6px;border-radius:999px;background:var(--panel-3);color:var(--muted);text-align:center;}
+.notif-status.active .notif-status-count{background:var(--steel);color:#fff;}
+.notif-alert-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:14px;}
+.notif-tile{display:flex;align-items:center;gap:12px;text-align:left;padding:12px 14px;border-radius:14px;border:1px solid color-mix(in srgb,var(--nc) 35%,transparent);background:color-mix(in srgb,var(--nc) 10%,var(--panel));color:var(--ink);font:inherit;cursor:pointer;}
+.notif-tile svg{color:var(--nc);flex-shrink:0;}
+.notif-tile b{font-size:20px;color:var(--nc);margin-right:4px;}
+.notif-tile small{display:block;color:var(--muted);font-size:12px;margin-top:1px;}
+.tile-warn{--nc:var(--nc-warning);} .tile-rem{--nc:var(--nc-reminder);}
+.notif-cats{display:flex;gap:8px;margin-top:14px;overflow-x:auto;padding-bottom:4px;scrollbar-width:thin;-webkit-overflow-scrolling:touch;}
+.notif-cat{flex-shrink:0;display:flex;align-items:center;gap:7px;padding:8px 14px;border-radius:999px;border:1.5px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;font-size:13.5px;font-weight:600;cursor:pointer;white-space:nowrap;}
+.notif-cat svg{color:var(--nc);}
+.notif-cat:hover{border-color:var(--nc);}
+.notif-cat.active{background:var(--nc);border-color:var(--nc);color:#fff;}
+.notif-cat.active svg{color:#fff;}
+.notif-cat-count{font-size:11.5px;font-weight:800;min-width:20px;padding:1px 6px;border-radius:999px;background:color-mix(in srgb,var(--nc) 16%,transparent);color:var(--nc);text-align:center;}
+.notif-cat.active .notif-cat-count{background:rgba(255,255,255,.25);color:#fff;}
+.notif-cat-hint{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:4px 4px 8px;}
+.notif-behind{margin:6px 0 4px;padding:12px;border-radius:14px;border:1px solid color-mix(in srgb,var(--nc-warning) 30%,transparent);background:color-mix(in srgb,var(--nc-warning) 6%,var(--panel));}
+.notif-behind-title{display:flex;align-items:center;gap:6px;font-weight:700;font-size:13.5px;color:var(--nc-warning);margin-bottom:8px;}
+.notif-behind-list{display:flex;flex-wrap:wrap;gap:6px;}
+.notif-person{font-size:13px;padding:5px 11px;border-radius:999px;background:var(--panel);border:1px solid var(--line);}
+.notif-person.flagged{border-color:var(--nc-warning);color:var(--nc-warning);}
+.notif-empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:36px 10px;color:var(--muted);text-align:center;}
+.notif-empty svg{opacity:.5;}
+.notif-page .notif-item{gap:12px;margin:6px 0;border:1px solid var(--line-soft);border-left:4px solid var(--nc);border-bottom:1px solid var(--line-soft);padding:12px 12px;}
+.notif-page .notif-item .notif-icon{width:38px;height:38px;border-radius:12px;background:color-mix(in srgb,var(--nc) 14%,transparent);color:var(--nc);}
+.notif-page .notif-item.unread{background:color-mix(in srgb,var(--nc) 6%,var(--panel));box-shadow:none;}
+.notif-page .notif-item.unread .notif-icon{background:var(--nc);color:#fff;}
+.notif-page .notif-item.seen{opacity:.88;}
+.notif-title-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.notif-title{font-weight:800;font-size:14px;color:var(--ink);}
+.notif-item.unread .notif-title{color:var(--nc);}
+.notif-pill{font-size:11px;font-weight:700;padding:1px 8px;border-radius:999px;background:color-mix(in srgb,var(--nc) 13%,transparent);color:var(--nc);}
+.notif-msg{font-size:14px;line-height:1.45;margin-top:3px;color:var(--ink);}
+.notif-meta{font-size:12px;color:var(--muted);margin-top:5px;}
+.notif-page .notif-seen-btn{border-color:var(--nc);}
+.notif-page .notif-seen-btn.done{background:var(--success);border-color:var(--success);}
+@media (max-width:600px){.notif-head .notif-status-row{width:100%;}.notif-status{flex:1;justify-content:center;}.notif-msg{font-size:13.5px;}}
