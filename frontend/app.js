@@ -786,9 +786,14 @@ function notifBehindPeople(list) {
 function renderNotificationsView() {
   const all = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   const unread = all.filter(n => !n.read);
+  // Seen tab: most recently seen first, so whatever you just ticked is always at the top.
+  const seenAt = n => new Date(n.read_at || n.created_at);
+  const seenList = all.filter(n => n.read).sort((a, b) => seenAt(b) - seenAt(a));
+  // The server holds every unseen notification; the page loads up to 500 of them.
+  const totalNew = Math.max(unreadNotifCount || 0, unread.length);
   // Status: New (not yet seen) or Seen. A notification marked seen leaves New and shows only under Seen.
   const filter = ui.notifFilter === 'seen' ? 'seen' : 'unread';
-  const byStatus = filter === 'seen' ? all.filter(n => n.read) : unread;
+  const byStatus = filter === 'seen' ? seenList : unread;
   const countIn = (list, key) => key === 'all' ? list.length : list.filter(n => notifCat(n) === key).length;
   // Show a category tab when it has anything; Reminders and Warnings are always there.
   const cats = NOTIF_CATS.filter(c => c.key === 'all' || c.key === 'reminder' || c.key === 'warning' || all.some(n => notifCat(n) === c.key));
@@ -796,9 +801,10 @@ function renderNotificationsView() {
   const catInfo = NOTIF_CATS.find(c => c.key === cat);
   const list = cat === 'all' ? byStatus : byStatus.filter(n => notifCat(n) === cat);
   const groups = [];
-  for (const n of list) { const k = istDayKey(n.created_at); const g = groups[groups.length - 1]; if (g && g.key === k) g.items.push(n); else groups.push({ key: k, items: [n] }); }
+  const dayOf = n => filter === 'seen' ? istDayKey(n.read_at || n.created_at) : istDayKey(n.created_at);
+  for (const n of list) { const k = dayOf(n); const g = groups[groups.length - 1]; if (g && g.key === k) g.items.push(n); else groups.push({ key: k, items: [n] }); }
   const newWarn = countIn(unread, 'warning'), newRem = countIn(unread, 'reminder');
-  const statusChip = (key, label, count) => `<button class="notif-status ${filter === key ? 'active' : ''}" data-notif-filter="${key}">${label}<span class="notif-status-count">${count}</span></button>`;
+  const statusChip = (key, label, count) => `<button class="notif-status ${filter === key ? 'active' : ''}" data-notif-filter="${key}">${label}${count != null ? `<span class="notif-status-count">${count}</span>` : ''}</button>`;
   const catTab = c => { const n = countIn(byStatus, c.key); return `<button class="notif-cat cat-${c.key} ${cat === c.key ? 'active' : ''}" data-notif-cat="${c.key}">${icon(c.icon, 15)}<span>${c.label}</span>${n ? `<span class="notif-cat-count">${n}</span>` : ''}</button>`; };
   const behind = cat === 'warning' ? notifBehindPeople(list) : [];
   const markLabel = cat === 'all' ? 'Mark all as seen' : `Mark these ${list.length} as seen`;
@@ -807,9 +813,9 @@ function renderNotificationsView() {
     <div class="flex-between" style="flex-wrap:wrap;gap:10px;align-items:flex-start;">
       <div>
         <div class="card-title" style="margin:0;">Notifications</div>
-        <div class="small muted">${unread.length ? `${unread.length} new` : 'All caught up'}${newWarn ? ` · <b class="txt-warn">${newWarn} warning${newWarn > 1 ? 's' : ''}</b>` : ''}${newRem ? ` · <b class="txt-rem">${newRem} reminder${newRem > 1 ? 's' : ''}</b>` : ''}</div>
+        <div class="small muted">${totalNew ? `${totalNew} new` : 'All caught up'}${newWarn ? ` · <b class="txt-warn">${newWarn} warning${newWarn > 1 ? 's' : ''}</b>` : ''}${newRem ? ` · <b class="txt-rem">${newRem} reminder${newRem > 1 ? 's' : ''}</b>` : ''}</div>
       </div>
-      <div class="notif-status-row">${statusChip('unread', 'New', unread.length)}${statusChip('seen', 'Seen', all.length - unread.length)}</div>
+      <div class="notif-status-row">${statusChip('unread', 'New', totalNew)}${statusChip('seen', 'Seen', null)}</div>
     </div>
     ${filter === 'unread' && (newWarn || newRem) ? `<div class="notif-alert-tiles">
       ${newWarn ? `<button class="notif-tile tile-warn" data-notif-cat="warning">${icon('alertTriangle', 20)}<span><b>${newWarn}</b> warning${newWarn > 1 ? 's' : ''}<small>Overdue or not completed</small></span></button>` : ''}
@@ -822,12 +828,16 @@ function renderNotificationsView() {
       <span class="small muted">${esc(catInfo.hint)} Tap ◯ to mark seen.</span>
       ${filter === 'unread' && list.length ? `<button class="btn btn-sm" data-act="notif-mark-all" data-notif-mark-cat="${cat}">✓ ${markLabel}</button>` : ''}
     </div>
+    ${ui.notifUndo && filter === 'unread' ? `<div class="notif-undo" role="status">
+      <span>✓ ${ui.notifUndo.ids.length > 1 ? `${ui.notifUndo.ids.length} notifications` : `"${esc(ui.notifUndo.label)}"`} moved to the <b>Seen</b> tab.</span>
+      <span class="notif-undo-actions"><button class="btn btn-sm" data-act="notif-view-seen">View in Seen</button><button class="btn btn-sm" data-act="notif-undo">Undo</button></span>
+    </div>` : ''}
     ${behind.length ? `<div class="notif-behind">
       <div class="notif-behind-title">${icon('users', 15)} People who have not completed their part</div>
       <div class="notif-behind-list">${behind.map(p => `<span class="notif-person ${p.flagged ? 'flagged' : ''}"><b>${esc(p.name)}</b> · ${p.count} task${p.count > 1 ? 's' : ''}${p.flagged ? ' · flagged' : ''}</span>`).join('')}</div>
     </div>` : ''}
     ${list.length === 0 ? `<div class="notif-empty">${icon(catInfo.icon, 28)}<div>${filter === 'unread' ? (cat === 'all' ? 'Nothing new — you have seen everything.' : `No new ${catInfo.label.toLowerCase()}.`) : (cat === 'all' ? 'Nothing seen yet.' : `No seen ${catInfo.label.toLowerCase()} yet.`)}</div></div>` : groups.map(g => `
-      <div class="notif-day">${esc(notifDayLabel(g.key))}</div>
+      <div class="notif-day">${filter === 'seen' ? 'Seen ' : ''}${esc(notifDayLabel(g.key))}</div>
       ${g.items.map(n => {
         const target = notifTarget(n);
         const c = notifCat(n);
@@ -844,7 +854,8 @@ function renderNotificationsView() {
           <button type="button" class="notif-seen-btn ${n.read ? 'done' : ''}" data-notif-seen="${n.id}" ${n.read ? 'disabled' : ''} title="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}" aria-label="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}">${n.read ? '✓' : ''}</button>
         </div>`;
       }).join('')}`).join('')}
-    ${myNotifications.length >= 100 ? '<div class="small muted" style="margin-top:10px;">Showing your latest 100 notifications.</div>' : ''}
+    ${filter === 'unread' && totalNew > unread.length ? `<div class="small muted" style="margin-top:10px;">Showing the newest ${unread.length} of your ${totalNew} new notifications — mark some as seen to see the rest.</div>` : ''}
+    ${filter === 'seen' && list.length ? '<div class="small muted" style="margin-top:10px;">Showing the 100 notifications you saw most recently.</div>' : ''}
   </div>`;
 }
 // A notification is marked seen when the person taps its round Seen button (or opens it).
@@ -860,11 +871,29 @@ function markNotifSeen(id, animated) {
   }
   n.__leaving = false;
   n.read = 1; n.read_at = new Date().toISOString();
-  unreadNotifCount = myNotifications.filter(x => !x.read).length;
+  unreadNotifCount = Math.max(0, (unreadNotifCount || 0) - 1);
+  showNotifUndo([id], NOTIF_TYPE_LABEL[n.type] || 'Notification');
   render();
   api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids: [id] }) })
     .then(r => { if (r && typeof r.unread === 'number') { unreadNotifCount = r.unread; render(); } })
-    .catch(() => { n.read = 0; n.read_at = null; unreadNotifCount += 1; setBanner('Could not mark it as seen — check your connection and try again.'); render(); });
+    .catch(() => { n.read = 0; n.read_at = null; unreadNotifCount += 1; ui.notifUndo = null; setBanner('Could not mark it as seen — check your connection and try again.'); render(); });
+}
+// After marking seen: a short "moved to Seen — View / Undo" bar, so nothing seems to vanish.
+let notifUndoTimer = null;
+function showNotifUndo(ids, label) {
+  ui.notifUndo = { ids, label };
+  clearTimeout(notifUndoTimer);
+  notifUndoTimer = setTimeout(() => { if (ui.notifUndo && ui.notifUndo.ids === ids) { ui.notifUndo = null; if (ui.adminTab === 'notifications') render(); } }, 10000);
+}
+async function undoNotifSeen() {
+  const u = ui.notifUndo; if (!u) return;
+  ui.notifUndo = null;
+  myNotifications.forEach(n => { if (u.ids.includes(n.id) && n.read) { n.read = 0; n.read_at = null; unreadNotifCount += 1; } });
+  render();
+  try {
+    const r = await api('/api/notifications/unread', { method: 'POST', body: JSON.stringify({ ids: u.ids }) });
+    if (r && typeof r.unread === 'number') { unreadNotifCount = r.unread; render(); }
+  } catch (e) { setBanner('Could not undo — check your connection.'); refreshData(); }
 }
 function bindNotificationsView() {
   document.querySelectorAll('[data-notif-filter]').forEach(b => b.onclick = () => { ui.notifFilter = b.dataset.notifFilter; render(); window.scrollTo(0, 0); });
@@ -878,7 +907,9 @@ function bindNotificationsView() {
     const targets = myNotifications.filter(n => !n.read && (cat === 'all' || notifCat(n) === cat));
     if (!targets.length) return;
     targets.forEach(n => { n.read = 1; n.read_at = now; });
-    unreadNotifCount = myNotifications.filter(x => !x.read).length; render();
+    unreadNotifCount = cat === 'all' ? 0 : Math.max(0, (unreadNotifCount || 0) - targets.length);
+    if (cat !== 'all') showNotifUndo(targets.map(n => n.id), ''); else ui.notifUndo = null;
+    render();
     try {
       if (cat === 'all') await api('/api/notifications/read-all', { method: 'POST' });
       else await api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids: targets.map(n => n.id) }) });
@@ -886,6 +917,8 @@ function bindNotificationsView() {
     refreshData();
   };
   document.querySelectorAll('[data-notif-seen]').forEach(b => b.onclick = (e) => { e.stopPropagation(); markNotifSeen(Number(b.dataset.notifSeen)); });
+  const undo = document.querySelector('[data-act="notif-undo"]'); if (undo) undo.onclick = () => undoNotifSeen();
+  const view = document.querySelector('[data-act="notif-view-seen"]'); if (view) view.onclick = () => { ui.notifUndo = null; ui.notifFilter = 'seen'; render(); window.scrollTo(0, 0); };
 }
 function renderTopbarSlim() {
   const title = PAGE_TITLES[ui.adminTab] || 'Task Manager';

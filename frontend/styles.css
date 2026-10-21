@@ -1220,3 +1220,5 @@ html[data-theme="dark"]{--nc-warning:#F06A6E;--nc-reminder:#F0A93B;--nc-task:#6F
 .notif-page .notif-seen-btn{border-color:var(--nc);}
 .notif-page .notif-seen-btn.done{background:var(--success);border-color:var(--success);}
 @media (max-width:600px){.notif-head .notif-status-row{width:100%;}.notif-status{flex:1;justify-content:center;}.notif-msg{font-size:13.5px;}}
+.notif-undo{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:4px 0 10px;padding:10px 14px;border-radius:12px;background:color-mix(in srgb,var(--success) 12%,var(--panel));border:1px solid color-mix(in srgb,var(--success) 35%,transparent);font-size:14px;animation:pageIn .2s ease;}
+.notif-undo-actions{display:flex;gap:6px;}

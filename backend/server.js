@@ -2979,6 +2979,13 @@ app.post('/api/notifications/read', auth(ALL_ROLES), async (req, res) => {
   await db.markNotificationsRead(ids, req.user.username);
   res.json({ ok: true, unread: await db.countUnreadNotifications(req.user.username) });
 });
+// Undo for "mark as seen": puts the notifications back under New.
+app.post('/api/notifications/unread', auth(ALL_ROLES), async (req, res) => {
+  const ids = Array.isArray((req.body || {}).ids) ? req.body.ids : [];
+  if (!ids.length) return res.status(400).json({ error: 'Nothing to undo.' });
+  await db.markNotificationsUnread(ids, req.user.username);
+  res.json({ ok: true, unread: await db.countUnreadNotifications(req.user.username) });
+});
 app.post('/api/notifications/read-all', auth(ALL_ROLES), async (req, res) => {
   await db.markAllNotificationsRead(req.user.username);
   res.json({ ok: true });

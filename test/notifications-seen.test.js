@@ -37,3 +37,31 @@ test('notifications are marked seen in batches, with the time they were seen', a
   const done = await list(ravi);
   assert.equal(done.unread, 0); assert.ok(done.items.every(n => n.read && n.read_at));
 });
+
+test('every unseen notification is listed (not just the latest 100), seen ones newest-seen first, and Undo works', async (t) => {
+  const { baseUrl, stop, getRawClient } = await startTestServer();
+  t.after(stop);
+  const admin = await login(baseUrl, 'admin', 'admin123');
+  const ravi = await createMember(baseUrl, admin, 'ravi2', 'Ravi Two', 'Site');
+  const db = await getRawClient();
+  t.after(() => db.end());
+  const old = d => new Date(Date.now() - d * 3600000).toISOString();
+  for (let i = 1; i <= 150; i++) await db.query("INSERT INTO notifications(username,type,message,read,created_at) VALUES('ravi2','task_reminder',$1,0,$2)", [`unseen ${i}`, old(i)]);
+  for (let i = 1; i <= 120; i++) await db.query("INSERT INTO notifications(username,type,message,read,read_at,created_at) VALUES('ravi2','task_reply',$1,1,$2,$3)", [`seen ${i}`, old(i), old(200 + i)]);
+  const list = async () => (await api(baseUrl, '/api/notifications', { token: ravi })).data;
+  let l = await list();
+  assert.equal(l.unread, 150);
+  assert.equal(l.items.filter(n => !n.read).length, 150, 'all 150 unseen are on the page, so New matches the badge');
+  assert.equal(l.items.filter(n => n.read).length, 100, 'latest 100 seen');
+  // an OLD notification marked seen now shows among the seen ones (newest seen first)
+  const oldest = l.items.filter(n => !n.read).sort((a, b) => a.created_at.localeCompare(b.created_at))[0];
+  await api(baseUrl, '/api/notifications/read', { method: 'POST', token: ravi, body: { ids: [oldest.id] } });
+  l = await list();
+  assert.equal(l.items.filter(n => n.read)[0].id, oldest.id, 'just seen → first in Seen');
+  // Undo puts it back under New
+  const u = await api(baseUrl, '/api/notifications/unread', { method: 'POST', token: ravi, body: { ids: [oldest.id] } });
+  assert.equal(u.status, 200); assert.equal(u.data.unread, 150);
+  const back = (await list()).items.find(n => n.id === oldest.id);
+  assert.equal(back.read, 0); assert.equal(back.read_at, null);
+  assert.equal((await api(baseUrl, '/api/notifications/unread', { method: 'POST', token: ravi, body: {} })).status, 400);
+});

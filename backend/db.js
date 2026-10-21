@@ -1774,7 +1774,19 @@ module.exports = {
   async listUnreadNotificationsAfter(username, afterId, limit) {
     return all('SELECT id, message, task_id, created_at FROM notifications WHERE username=? AND id > ? AND read=0 ORDER BY id ASC LIMIT ?', [username, afterId, limit]);
   },
-  async listNotifications(username) { return all('SELECT * FROM notifications WHERE username=? ORDER BY created_at DESC LIMIT 100', [username]); },
+  // Every unseen notification (up to 500, so the page always matches the unread count) plus the 100
+  // most recently seen ones (newest seen first) for the Seen tab.
+  async listNotifications(username) {
+    return all(`(SELECT * FROM notifications WHERE username=? AND read=0 ORDER BY created_at DESC LIMIT 500)
+                UNION ALL
+                (SELECT * FROM notifications WHERE username=? AND read<>0 ORDER BY COALESCE(read_at, created_at) DESC LIMIT 100)`, [username, username]);
+  },
+  async markNotificationsUnread(ids, username) {
+    const clean = (ids || []).map(Number).filter(n => Number.isInteger(n) && n > 0).slice(0, 200);
+    if (!clean.length) return 0;
+    await run(`UPDATE notifications SET read=0, read_at=NULL WHERE username=? AND id IN (${clean.map(() => '?').join(',')})`, [username, ...clean]);
+    return clean.length;
+  },
   async markNotificationRead(id, username) { await run('UPDATE notifications SET read=1, read_at=COALESCE(read_at, ?) WHERE id=? AND username=?', [new Date().toISOString(), id, username]); },
   async markNotificationsRead(ids, username) {
     const clean = (ids || []).map(Number).filter(n => Number.isInteger(n) && n > 0).slice(0, 200);

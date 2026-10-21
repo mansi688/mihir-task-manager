@@ -4,6 +4,17 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Notifications: counts match the badge; "moved to Seen" with Undo
+### Fixed
+- The New count on the Notifications page now matches the menu badge. The page used to load only the latest
+  100 notifications, so with 338 unseen it showed "New 72" and older unseen ones never appeared. It now loads
+  every unseen notification (up to 500; a note appears beyond that) plus the 100 most recently seen.
+- Ticking a notification no longer seems to make it vanish: a green bar says it moved to the **Seen** tab, with
+  **View in Seen** and **Undo** (10 seconds). The Seen tab lists the most recently seen first, grouped by the
+  day you saw it ("Seen Today"), so whatever you just ticked is always at the top.
+### Added
+- `POST /api/notifications/unread {ids}` — puts notifications back under New (used by Undo). No database changes.
+
 ## [Unreleased] — Reminder times 9 AM / 3 PM / 6 PM; Follow up for everyone
 ### Changed
 - **All automatic reminders and warnings now go out only at 9:00 AM, 3:00 PM and 6:00 PM (IST)**: the daily
