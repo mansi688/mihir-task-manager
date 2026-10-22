@@ -10,8 +10,10 @@ previous deploy → Rollback (all migrations are additive).
   shows "Welcome — choose your language" (English / हिंदी / मराठी), the explanatory video in that language, then 5
   simple questions in the same language (4 of 5 passes; wrong answers show the correct answer and why, with **Try
   the questions again** / **Watch the video again**, and after two tries **Continue anyway** — the score is
-  kept). The questions unlock only after about 90% of the video has actually been played (jumping ahead does
-  not count).
+  kept). The questions can be opened any time — watching the video first is suggested, not required.
+- **Different questions for each person:** a bank of 15 questions per language (same questions in all three);
+  each person gets 5 of them, picked from their username, with the answers in a shuffled order — people sitting
+  together get different questions. Every new try picks a fresh set; reloading mid-quiz keeps the same set.
 - **How "first time" is known:** a flag on the account on the server (`needs_guide`) — set for the 76 employee
   accounts created on 10 and 21 Oct and for every account created from now on, cleared for good when the person
   finishes or skips the guide. So it never comes back for that person, on any phone, even after clearing the
