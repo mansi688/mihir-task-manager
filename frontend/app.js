@@ -46,7 +46,7 @@ let hrTotalTasksCompleted = 0;
 let reportsTaskList = []; // admin-only
 let currentTaskReport = null;
 let myNotifications = [];
-let closureData = { toDecide: [], mine: [] }; // closure requests (Task Closure page)
+let closureData = { toDecide: [], mine: [], keptOpen: [] }; // closure requests (Task Closure page)
 let unreadNotifCount = 0;
 let theme = safeStorage.getItem('ks_theme') || 'light';
 document.documentElement.setAttribute('data-theme', theme);
@@ -1670,7 +1670,7 @@ function applyData(key, v) {
       safeStorage.setItem('ls_session', JSON.stringify(session));
       break;
     case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; break;
-    case 'closureData': closureData = v || { toDecide: [], mine: [] }; break;
+    case 'closureData': closureData = v || { toDecide: [], mine: [], keptOpen: [] }; break;
     case 'myApprovalRequests': myApprovalRequests = v; break;
     case 'announcementsResp': announcements = v.items || []; canPostAnnouncements = !!v.canPost; break;
     case 'allApprovalRequests': allApprovalRequests = v; break;
@@ -2088,7 +2088,7 @@ function renderTaskItem(t) {
   if (t.status !== 'open') {
     const isCancelled = t.status === 'cancelled';
     return `
-    <details class="card task-row" id="task-card-${esc(t.id)}">
+    <details class="card task-row" data-priority="${esc(t.priority || 'medium')}" id="task-card-${esc(t.id)}">
       <summary class="task-row-summary">
         <span class="task-row-chevron" aria-hidden="true"></span>
         <span class="task-row-text">
@@ -2136,7 +2136,7 @@ function renderTaskItem(t) {
   const taggedSummary = assignees.length === 0 ? '<span class="row-flag row-flag-warn">Not tagged yet</span>'
     : `<span>${assignees.length} tagged${assignees.length > 1 ? ` · ${doneCount}/${assignees.length} approved` : ''}</span>`;
   return `
-  <details class="card task-row" id="task-card-${esc(t.id)}">
+  <details class="card task-row" data-priority="${esc(t.priority || 'medium')}" id="task-card-${esc(t.id)}">
     <summary class="task-row-summary">
       <span class="task-row-chevron" aria-hidden="true"></span>
       <span class="task-row-text">
@@ -2147,6 +2147,7 @@ function renderTaskItem(t) {
           ${t.deadline ? `<span>Due ${esc(fmtDate(t.deadline))}</span>` : ''}
           ${overdue ? '<span class="row-flag row-flag-bad">Overdue</span>' : ''}
           ${t.blocked ? '<span class="row-flag row-flag-warn">Blocked</span>' : ''}
+          ${t.closureKeptOpen ? `<span class="row-flag row-flag-kept" title="Closing was asked for and declined — the task stays open">🔓 Kept open</span>` : ''}
           ${myTurn ? '<span class="row-flag row-flag-me">Your turn</span>' : ''}
           ${pendingApproval.length && canApproveHere ? `<span class="row-flag row-flag-me">${pendingApproval.length} to approve</span>` : ''}
           ${taggedSummary}
@@ -2333,6 +2334,7 @@ function renderTaskItem(t) {
       <button class="btn btn-sm" data-act="toggle-subtask-form" data-task-id="${t.id}">➕ Add Subtask</button>
       ${iAmTagged && !isCreator && !myPendingClosure(t.id) ? `<button class="btn btn-sm" data-act="toggle-closure-form" data-task-id="${t.id}" title="Ask ${esc(t.created_by || 'the creator')} to close this task">🔒 Ask to close</button>` : ''}
     </div>
+    ${closureKeptOpenNoticeHTML(t)}
     ${closureRequestBlockHTML(t, iAmTagged && !isCreator)}
     <div id="followup-form-box-${t.id}">${ui.followupFormTaskId === t.id ? followupFormHTML(t.id) : ''}</div>
     <div id="subtask-form-box-${t.id}">${ui.subtaskFormTaskId === t.id ? subtaskFormHTML(t.id) : ''}</div>
@@ -3470,6 +3472,16 @@ function bindApprovalsHint() {
 // closes — or declines with a reason. Requests are made from inside a task or from this page.
 function myPendingClosure(taskId) { return (closureData.mine || []).find(r => r.task_id === taskId && r.status === 'pending'); }
 const CLOSURE_STATUS = { pending: ['Waiting for decision', 'po_pending'], approved: ['Approved — task closed', 'received'], declined: ['Declined — task stays open', 'flag'], cancelled: ['Withdrawn', 'created'], closed: ['Task closed', 'received'] };
+// Shown to everyone on the task: the last request to close it was answered "Keep open".
+function closureKeptOpenNoticeHTML(t) {
+  const k = t.closureKeptOpen;
+  if (!k || t.status !== 'open') return '';
+  return `<div class="kept-notice">
+    <div class="kept-notice-title">🔓 Closure request declined — this task stays open</div>
+    <div class="small"><b>${esc(personName(k.requested_by))}</b> asked to close it ${fmtTime(k.asked_at)}: <span class="muted">"${esc(k.reason)}"</span></div>
+    <div class="small" style="margin-top:3px;"><b>${esc(personName(k.decided_by))}</b> kept it open ${fmtTime(k.decided_at)}${k.decision_note ? `: "${esc(k.decision_note)}"` : ''}</div>
+  </div>`;
+}
 function closureRequestBlockHTML(t, canAsk) {
   const pending = myPendingClosure(t.id);
   if (pending) return `<div class="notice" style="margin-top:10px;">🔒 You asked to close this task ${fmtTime(pending.created_at)} — waiting for ${esc(t.created_by || 'the creator')}. <span class="muted">"${esc(pending.reason)}"</span> <button class="btn btn-sm" style="margin-left:6px;" data-closure-cancel="${pending.id}">Withdraw</button></div>`;
@@ -3503,6 +3515,7 @@ function bindClosureForms() {
 function renderClosureView() {
   const toDecide = closureData.toDecide || [];
   const mine = closureData.mine || [];
+  const keptOpen = closureData.keptOpen || [];
   const scopeAll = session.role === 'admin' && ui.closureScope === 'all';
   // open tasks I'm tagged on (not my own) with no pending request — for the "ask to close" picker
   const askable = (myTasks || []).filter(t => t.status === 'open' && t.created_by_username !== session.username && (t.assignees || []).some(a => a.username === session.username) && !myPendingClosure(t.id))
@@ -3533,6 +3546,19 @@ function renderClosureView() {
             <button class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button>
           </div>
         </div>
+      </div>`).join('')}
+  </div>
+
+  <div class="card" id="closure-kept">
+    <div class="card-title">Kept open ${keptOpen.length ? `<span class="muted small">(${keptOpen.length})</span>` : ''}</div>
+    <div class="small muted" style="margin:-4px 0 8px;">Requests ${scopeAll ? 'that were' : 'you'} answered with "Keep open" — the task stayed open and the person was told why.</div>
+    ${keptOpen.length === 0 ? '<div class="empty">Nothing here yet. When you tap Keep open on a request, it moves here.</div>' : keptOpen.map(r => `
+      <div class="appr-item kept-item ${ui.closureJustKept === r.id ? 'just-kept' : ''}" id="closure-kept-${r.id}">
+        <div class="flex-between" style="gap:8px;align-items:flex-start;">${head(r)}<span class="badge ${r.task_status === 'open' ? 'po_pending' : 'received'}">${r.task_status === 'open' ? 'Still open' : 'Closed later'}</span></div>
+        <div class="appr-who"><b>${esc(personName(r.requested_by))}</b> <span class="muted small">asked ${fmtTime(r.created_at)}</span></div>
+        <div class="doc-note" style="margin:6px 0;">${esc(r.reason)}</div>
+        <div class="small"><b>Kept open</b> ${fmtTime(r.decided_at)}${r.decided_by ? ` by ${esc(personName(r.decided_by))}` : ''}${r.decision_note ? ` — "${esc(r.decision_note)}"` : ''}</div>
+        <div style="margin-top:8px;"><button class="btn btn-sm btn-primary" data-goto-task="${esc(r.task_id)}">Open task ›</button></div>
       </div>`).join('')}
   </div>
 
@@ -3582,7 +3608,14 @@ function bindClosureView() {
     const id = b.dataset.closureDecline; const note = ((document.getElementById(`closure-note-${id}`) || {}).value || '').trim();
     if (note.length < 5) { alert('Write a short reason (at least 5 characters) so they know why the task stays open.'); return; }
     if (b.disabled) return; b.disabled = true;
-    try { await api(`/api/closure-requests/${id}/decline`, { method: 'POST', body: JSON.stringify({ note }) }); setBanner('Kept open — they have been told why.', 'ok'); await refreshData(); }
+    try {
+      await api(`/api/closure-requests/${id}/decline`, { method: 'POST', body: JSON.stringify({ note }) });
+      setBanner('Kept open — they have been told why. It is now under "Kept open" below.', 'ok');
+      ui.closureJustKept = Number(id);
+      await refreshData();
+      requestAnimationFrame(() => { const el = document.getElementById(`closure-kept-${id}`); if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' }); });
+      setTimeout(() => { if (ui.closureJustKept === Number(id)) { ui.closureJustKept = null; if (ui.adminTab === 'closure') render(); } }, 6000);
+    }
     catch (e) { b.disabled = false; setBanner(e.message); render(); }
   });
 }

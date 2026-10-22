@@ -2820,8 +2820,8 @@ app.post('/api/tasks/:id/closure-requests', auth(ALL_ROLES), async (req, res) =>
 });
 app.get('/api/closure-requests', auth(ALL_ROLES), async (req, res) => {
   const all = req.user.role === 'admin' && req.query.scope === 'all';
-  const [toDecide, mine] = await Promise.all([db.listClosureRequestsToDecide(req.user.username, all), db.listMyClosureRequests(req.user.username)]);
-  res.json({ toDecide, mine });
+  const [toDecide, mine, keptOpen] = await Promise.all([db.listClosureRequestsToDecide(req.user.username, all), db.listMyClosureRequests(req.user.username), db.listClosureRequestsKeptOpen(req.user.username, all)]);
+  res.json({ toDecide, mine, keptOpen });
 });
 async function loadRequestForDecision(req, res) {
   const r = await db.getClosureRequest(Number(req.params.id));
@@ -2854,6 +2854,14 @@ app.post('/api/closure-requests/:id/decline', auth(ALL_ROLES), async (req, res) 
   if (!done) return res.status(400).json({ error: 'This request has already been answered.' });
   const requester = await db.getUser(x.r.requested_by);
   await db.createNotification({ username: x.r.requested_by, type: 'closure_declined', message: `${req.user.name} kept "${x.task.title}" open: ${note.slice(0, 200)}`, task_id: x.task.id });
+  // Everyone else on the task (assignees at every level, people kept informed) is told too, so nobody
+  // treats the task as finished.
+  const others = new Set([...(await db.listAssignees(x.task.id)).map(a => a.username), ...(await db.listFollowups(x.task.id)).map(f => f.username)]);
+  others.delete(x.r.requested_by); others.delete(req.user.username);
+  const askedBy = requester ? requester.name : x.r.requested_by;
+  for (const u of others) {
+    await db.createNotification({ username: u, type: 'closure_declined', message: `${askedBy} asked to close "${x.task.title}", but ${req.user.name} kept it open: ${note.slice(0, 200)}`, task_id: x.task.id });
+  }
   await taskEvent(req, x.task.id, 'CLOSURE_DECLINED', `Declined ${requester ? requester.name : x.r.requested_by}'s request to close: ${note}`);
   await auditFromReq(req, 'closure_declined', `Kept "${x.task.title}" (${x.task.id}) open — declined ${x.r.requested_by}'s closure request: ${note.slice(0, 300)}`);
   res.json({ ok: true });

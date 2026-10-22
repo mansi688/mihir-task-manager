@@ -1222,3 +1222,70 @@ html[data-theme="dark"]{--nc-warning:#F06A6E;--nc-reminder:#F0A93B;--nc-task:#6F
 @media (max-width:600px){.notif-head .notif-status-row{width:100%;}.notif-status{flex:1;justify-content:center;}.notif-msg{font-size:13.5px;}}
 .notif-undo{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:4px 0 10px;padding:10px 14px;border-radius:12px;background:color-mix(in srgb,var(--success) 12%,var(--panel));border:1px solid color-mix(in srgb,var(--success) 35%,transparent);font-size:14px;animation:pageIn .2s ease;}
 .notif-undo-actions{display:flex;gap:6px;}
+/* Task Closure: requests answered with "Keep open" */
+.kept-item{border-left:4px solid var(--amber);padding:12px 14px !important;margin:10px 0;border-radius:12px;background:var(--panel);}
+.kept-item.just-kept{background:color-mix(in srgb,var(--success) 12%,var(--panel));box-shadow:0 0 0 2px color-mix(in srgb,var(--success) 45%,transparent);transition:background .6s ease,box-shadow .6s ease;}
+.row-flag-kept{background:rgba(194,122,14,0.16);color:#9a5b00;}
+html[data-theme="dark"] .row-flag-kept{color:#F0A93B;}
+.kept-notice{margin-top:10px;padding:10px 14px;border-radius:12px;border:1px solid rgba(194,122,14,.35);border-left:4px solid #C27A0E;background:rgba(194,122,14,.08);}
+.kept-notice-title{font-weight:800;color:#9a5b00;margin-bottom:4px;}
+html[data-theme="dark"] .kept-notice-title{color:#F0A93B;}
+
+/* ==================== Colour pass — professional palette ====================
+   Built on the brand: navy #1F3A5F, blue #2D5FA8, teal #1E7F8C, with amber #D9901A as the single accent.
+   Colour follows meaning (sections, priority, status), never decoration. */
+:root{--c-navy:#1F3A5F;--c-blue:#2D5FA8;--c-teal:#1E7F8C;--c-amber:#D9901A;--c-slate:#5B6B82;--c-red:#C0392B;--c-green:#2E8B57;
+  --c-tint:rgba(45,95,168,.10);}
+html[data-theme="dark"]{--c-navy:#8FB3E8;--c-blue:#5B93D9;--c-teal:#3EB9C4;--c-amber:#F0A93B;--c-slate:#94A3B8;--c-red:#E5676B;--c-green:#4CAF6D;
+  --c-tint:rgba(91,147,217,.16);}
+
+/* Menu: one colour per section of the menu, used on the icon and the active pill. */
+.nav-link{--nav:var(--c-blue);}
+.nav-link[data-tab="tasks"],.nav-link[data-tab="approvals"],.nav-link[data-tab="closure"],.nav-link[data-tab="alltasks"],.nav-link[data-tab="calendar"]{--nav:var(--c-navy);}
+.nav-link[data-tab="chat"],.nav-link[data-tab="announcements"],.nav-link[data-tab="meetings"],.nav-link[data-tab="suggestions"]{--nav:var(--c-teal);}
+.nav-link[data-tab="locations"],.nav-link[data-tab="mytracking"]{--nav:var(--c-green);}
+.nav-link[data-tab="auditlog"],.nav-link[data-tab="system"],.nav-link[data-tab="exports"],.nav-link[data-tab="accounts"]{--nav:var(--c-slate);}
+.nav-link svg{color:var(--nav);opacity:.9;}
+.nav-link:hover{background:color-mix(in srgb,var(--nav) 8%,transparent);}
+.nav-link.active{color:var(--nav);background:color-mix(in srgb,var(--nav) 12%,transparent);}
+.nav-link.active svg{opacity:1;}
+.nav-link.active::before{background:var(--c-amber);}
+.nav-group-label{color:var(--muted);opacity:.9;letter-spacing:.3px;}
+
+/* Page header: a thin navy-to-amber rule. */
+.topbar-slim{position:relative;}
+.topbar-slim::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,var(--c-navy),var(--c-blue) 60%,var(--c-amber));opacity:.7;}
+
+/* Section titles: a small amber marker. */
+.card-title{color:var(--ink);display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.card-title::before{content:'';width:3px;height:14px;border-radius:2px;background:var(--c-amber);flex-shrink:0;}
+
+/* Primary buttons: brand blue. */
+.btn-primary{background:linear-gradient(180deg,color-mix(in srgb,var(--c-blue) 92%,#fff),var(--c-blue));border-color:var(--c-blue);color:#fff;}
+.btn-primary:hover{filter:brightness(1.06);box-shadow:0 4px 14px color-mix(in srgb,var(--c-blue) 30%,transparent);}
+
+/* Task rows: a quiet stripe in the priority colour. */
+details.task-row{border-left:4px solid var(--prio,var(--c-slate));}
+details.task-row[data-priority="high"]{--prio:var(--c-red);}
+details.task-row[data-priority="medium"]{--prio:var(--c-amber);}
+details.task-row[data-priority="low"]{--prio:var(--c-green);}
+details.task-row[open]{background:linear-gradient(90deg,color-mix(in srgb,var(--prio) 5%,var(--panel)),var(--panel) 35%);}
+.task-row-summary:hover{background:color-mix(in srgb,var(--prio,var(--c-blue)) 5%,transparent);}
+.badge.priority-high{background:color-mix(in srgb,var(--c-red) 14%,transparent);color:var(--c-red);}
+.badge.priority-medium{background:color-mix(in srgb,var(--c-amber) 18%,transparent);color:color-mix(in srgb,var(--c-amber) 75%,var(--ink));}
+.badge.priority-low{background:color-mix(in srgb,var(--c-green) 14%,transparent);color:var(--c-green);}
+.row-flag-me{background:var(--c-tint);color:var(--c-blue);}
+
+/* Summary boxes: brand tints, red only when something needs attention. */
+.appr-sum{border-left:3px solid var(--sum);background:color-mix(in srgb,var(--sum) 7%,var(--panel));}
+.appr-sum b{color:var(--sum);}
+.appr-sum{--sum:var(--c-blue);}
+.appr-sum:nth-child(2){--sum:var(--c-teal);}
+.appr-sum:nth-child(3){--sum:var(--c-navy);}
+.appr-sum:nth-child(4){--sum:var(--c-slate);}
+.appr-sum.hot{--sum:var(--c-red);}
+
+/* Active filter chip: navy-to-blue. */
+.owner-chip.active{background:linear-gradient(135deg,var(--c-navy),var(--c-blue));border-color:transparent;box-shadow:none;}
+.owner-chip.active, .owner-chip.active *{color:#fff !important;}
+html[data-theme="dark"] .owner-chip.active{background:linear-gradient(135deg,#24456F,#2D5FA8);}

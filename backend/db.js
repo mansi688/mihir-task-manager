@@ -768,6 +768,12 @@ module.exports = {
       FROM task_closure_requests r JOIN tasks t ON t.id = r.task_id
       WHERE r.status='pending' AND t.status='open' ${everyTask ? '' : 'AND t.created_by_username=?'} ORDER BY r.created_at`, everyTask ? [] : [username]);
   },
+  // Requests the task creator (or Admin) answered with "Keep open" — shown on the Task Closure page.
+  async listClosureRequestsKeptOpen(username, everyTask) {
+    return all(`SELECT r.*, t.title AS task_title, t.status AS task_status, t.project AS task_project, t.deadline AS task_deadline, t.created_by_username AS task_creator, t.created_by AS task_creator_name
+      FROM task_closure_requests r JOIN tasks t ON t.id = r.task_id
+      WHERE r.status='declined' ${everyTask ? '' : 'AND (t.created_by_username=? OR r.decided_by=?)'} ORDER BY r.decided_at DESC LIMIT 50`, everyTask ? [] : [username, username]);
+  },
   async listMyClosureRequests(username) {
     return all(`SELECT r.*, t.title AS task_title, t.status AS task_status, t.project AS task_project, t.created_by_username AS task_creator, t.created_by AS task_creator_name
       FROM task_closure_requests r JOIN tasks t ON t.id = r.task_id WHERE r.requested_by=? ORDER BY r.created_at DESC LIMIT 50`, [username]);
@@ -956,6 +962,14 @@ module.exports = {
   // Same result shape as calling getTaskFullLight() once per task, but in a fixed 7 queries no
   // matter how many tasks — the per-task version cost ~9 queries EACH, which at a few thousand
   // tasks (a full imported schedule) meant tens of thousands of queries on every 8-second refresh.
+  // For each task: its most recent closure request, if that request was answered "Keep open" — so everyone
+  // on the task sees on the task itself that closing was asked for and declined, and why.
+  async closureKeptOpenMap(ids) {
+    if (!ids.length) return new Map();
+    const rows = await all(`SELECT DISTINCT ON (task_id) task_id, status, requested_by, reason, decided_by, decision_note, decided_at, created_at
+      FROM task_closure_requests WHERE task_id = ANY(?::text[]) ORDER BY task_id, created_at DESC`, [ids]);
+    return new Map(rows.filter(r => r.status === 'declined').map(r => [r.task_id, { requested_by: r.requested_by, reason: r.reason, decided_by: r.decided_by, decision_note: r.decision_note, decided_at: r.decided_at, asked_at: r.created_at }]));
+  },
   async listTasksFullLight(scope, username) {
     const cols = await taskListColumns();
     const tasks = scope === 'user'
@@ -981,6 +995,7 @@ module.exports = {
     }
     const depIds = Array.from(new Set(tasks.map(t => t.depends_on_task_id).filter(Boolean)));
     const depStatus = new Map((depIds.length ? await all('SELECT id, status FROM tasks WHERE id = ANY(?::text[])', [depIds]) : []).map(d => [d.id, d.status]));
+    const keptOpen = await module.exports.closureKeptOpenMap(ids);
     return tasks.map(t => {
       const subtasks = subsByParent.get(t.id) || [];
       return {
@@ -994,6 +1009,7 @@ module.exports = {
         subtasks,
         subtaskCount: subtasks.length,
         openSubtaskCount: subtasks.filter(x => x.status === 'open').length,
+        closureKeptOpen: keptOpen.get(t.id) || null,
       };
     });
   },
@@ -1350,6 +1366,7 @@ module.exports = {
       checklist: await all('SELECT * FROM task_checklist_items WHERE task_id=? ORDER BY sort_order, id', [id]),
       replies: await all('SELECT * FROM task_replies WHERE task_id=? ORDER BY created_at', [id]),
       subtasks: await all('SELECT id,title,status,priority,deadline FROM tasks WHERE parent_task_id=? ORDER BY created_at ASC', [id]),
+      closureKeptOpen: (await module.exports.closureKeptOpenMap([id])).get(id) || null,
     };
   },
   async getTaskFullLight(id) {
@@ -1377,6 +1394,7 @@ module.exports = {
       checklist: await all('SELECT * FROM task_checklist_items WHERE task_id=? ORDER BY sort_order, id', [id]),
       replies,
       subtasks: await all('SELECT id,title,status,priority,deadline FROM tasks WHERE parent_task_id=? ORDER BY created_at ASC', [id]),
+      closureKeptOpen: (await module.exports.closureKeptOpenMap([id])).get(id) || null,
       subtaskCount: Number(subtaskCountRow.c),
       openSubtaskCount: Number(openSubtaskCountRow.c),
     };

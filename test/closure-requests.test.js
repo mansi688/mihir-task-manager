@@ -45,6 +45,17 @@ test('closure requests: tagged people ask, the creator decides', async (t) => {
     assert.equal((await task(t1)).status, 'open');
     const n = await notes(ravi, 'closure_declined'); assert.equal(n.length, 1); assert.match(n[0].message, /kept "Pour slab — Tower B" open: Curing/);
     assert.equal((await G(ravi, '/api/closure-requests')).data.mine[0].status, 'declined');
+    const kept = (await G(priya, '/api/closure-requests')).data.keptOpen;
+    assert.equal(kept.length, 1, 'creator sees it under Kept open');
+    assert.equal(kept[0].id, reqId); assert.equal(kept[0].task_status, 'open'); assert.match(kept[0].decision_note, /Curing/);
+    assert.equal((await G(ravi, '/api/closure-requests')).data.keptOpen.length, 0, 'the requester does not see it in the creator section');
+    const ashaNote = await notes(asha, 'closure_declined');
+    assert.equal(ashaNote.length, 1, 'everyone else on the task is told too');
+    assert.match(ashaNote[0].message, /asked to close "Pour slab — Tower B", but Priya Creator kept it open: Curing/);
+    for (const tok of [ravi, asha]) {
+      const t = (await G(tok, '/api/tasks/mine')).data.find(x => x.title === 'Pour slab — Tower B');
+      assert.ok(t.closureKeptOpen, 'the task shows it was kept open'); assert.equal(t.closureKeptOpen.requested_by, 'ravi'); assert.match(t.closureKeptOpen.decision_note, /Curing/);
+    }
     assert.equal((await P(priya, `/api/closure-requests/${reqId}/approve`, {})).status, 400, 'already answered');
   });
 

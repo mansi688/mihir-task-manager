@@ -4,6 +4,31 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Keep open reaches everyone on the task; more colourful app
+### Changed
+- **Keep open** on a closure request now notifies everyone on the task — every assignee at every level and
+  everyone kept informed — not only the person who asked: "<name> asked to close <task>, but <creator> kept it
+  open: <note>". (Shows under Approvals in Notifications.)
+- The task itself shows it, for everyone on it: a **🔓 Kept open** label on the task row in My Tasks, and inside
+  the task an amber box "Closure request declined — this task stays open" with who asked, their reason, who kept
+  it open and their note. It disappears once someone asks again or the task closes.
+  Task lists (`/api/tasks/mine`, all tasks, single task) include `closureKeptOpen`. No database changes.
+- **Professional colour palette** (light and dark), built on the brand colours — navy, blue, teal, with amber as
+  the one accent: menu icons coloured by menu section with an amber marker on the active page; a thin
+  navy-to-amber rule under the page header; small amber markers on section titles; brand-blue primary buttons;
+  task rows carry a quiet stripe in their priority colour (red high, amber medium, green low) with soft priority
+  badges; tinted summary boxes (red only when something needs attention); navy-to-blue active filter chip.
+  CSS only, plus a `data-priority` attribute on task rows.
+
+## [Unreleased] — Task Closure: "Kept open" section
+### Added
+- Task Closure page: a **Kept open** section, below "Requests waiting for your decision", listing every request
+  you answered with **Keep open** — the task, who asked and why, when you kept it open and your note, whether the
+  task is still open or was closed later, and an **Open task ›** button that opens the task on My Tasks. After you
+  tap Keep open, the request moves there, is highlighted for a few seconds and scrolled into view. Admin's "All
+  tasks" view shows every kept-open request. `GET /api/closure-requests` now also returns `keptOpen`.
+  No database changes.
+
 ## [Unreleased] — Notifications: counts match the badge; "moved to Seen" with Undo
 ### Fixed
 - The New count on the Notifications page now matches the menu badge. The page used to load only the latest
