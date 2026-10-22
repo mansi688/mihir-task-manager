@@ -706,6 +706,7 @@ function renderSidebar() {
     <div class="sidebar-quote">"${esc(currentQuote())}"</div>
     <div class="sidebar-footer">
       <div class="sidebar-footer-row">${themeToggleHTML()}</div>
+      <button class="nav-link" data-act="open-guide-replay" type="button"><span style="width:17px;text-align:center;">📺</span><span>App guide</span></button>
       <button class="nav-link" data-act="logout">${icon('logout')}<span>Log out</span></button>
     </div>
   </aside>`;
@@ -966,6 +967,7 @@ function renderLoginPage() {
         <button class="btn btn-primary btn-block" style="margin-top:18px;" data-act="login">Log in</button>
         ${ui.loginErr ? `<div class="err">${esc(ui.loginErr)}</div>` : ''}
         <p class="hint"><a href="#" data-act="toggle-forgot-password">Forgot password?</a></p>
+        <button type="button" class="guide-open-link" data-act="open-guide">📺 Watch the app guide · <span>English · हिंदी · मराठी</span></button>
         ${ui.showForgotPassword ? `
         <div class="notice" style="margin-top:4px;">
           ${ui.forgotPasswordStage === 'otp-sent' ? `
@@ -1018,9 +1020,10 @@ function bindLogin() {
     try {
       const data = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
       token = data.token;
-      session = { username: data.user.username, role: data.user.role, name: data.user.name, mustChangePassword: data.user.mustChangePassword };
+      session = { username: data.user.username, role: data.user.role, name: data.user.name, mustChangePassword: data.user.mustChangePassword, needsGuide: !!data.user.needsGuide };
       safeStorage.setItem('ls_token', token); safeStorage.setItem('ls_session', JSON.stringify(session));
       ui.loginErr = ''; ui.adminTab = 'today'; safeStorage.setItem('ls_last_tab', 'today');
+      if (typeof guideAfterLogin === 'function') await guideAfterLogin(!!data.user.needsGuide);
       await afterLogin();
     } catch (e) { ui.loginErr = e.message; render(); }
   };
@@ -1028,6 +1031,8 @@ function bindLogin() {
   if (loginBtn) loginBtn.onclick = submit;
   onEnter(document.getElementById('lg-user'), submit);
   onEnter(document.getElementById('lg-pass'), submit);
+  const guideLink = document.querySelector('[data-act="open-guide"]');
+  if (guideLink) guideLink.onclick = (e) => { e.preventDefault(); if (typeof openGuide !== 'function') return; openGuide('pre'); render(); window.scrollTo(0, 0); };
   const forgotLink = document.querySelector('[data-act="toggle-forgot-password"]');
   if (forgotLink) forgotLink.onclick = (e) => { e.preventDefault(); ui.showForgotPassword = !ui.showForgotPassword; ui.forgotPasswordStage = 'request'; ui.forgotPasswordErr = ''; render(); };
   const requestOtp = async () => {
@@ -1666,7 +1671,9 @@ function applyData(key, v) {
     case 'phasesList': phasesList = v; break;
     case 'openTaskTitles': openTaskTitles = v; break;
     case 'me':
-      session = { ...session, email: v.email, phone: v.phone, team: v.team, designation: v.designation, isTeamLead: !!v.isTeamLead };
+      session = { ...session, email: v.email, phone: v.phone, team: v.team, designation: v.designation, isTeamLead: !!v.isTeamLead,
+        // (a reply that left the server before the guide was saved must not reopen it)
+        needsGuide: typeof v.needsGuide === 'boolean' ? (v.needsGuide && Date.now() - (typeof guideCompletedAt === 'number' ? guideCompletedAt : 0) > 120000) : !!session.needsGuide };
       safeStorage.setItem('ls_session', JSON.stringify(session));
       break;
     case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; break;
@@ -4084,10 +4091,11 @@ function bindChatPrivate(info) {
   if (nameEl) nameEl.oninput = () => { f.name = nameEl.value; };
   const search = document.getElementById('chat-priv-search');
   // Filter in place (no re-render) so typing never loses focus.
-  if (search) search.oninput = () => {
-    const q = search.value.trim().toLowerCase();
+  const applyPrivSearch = () => {
+    const q = (f.search || '').trim().toLowerCase();
     document.querySelectorAll('[data-priv-search]').forEach(el => { el.style.display = !q || el.dataset.privSearch.includes(q) ? '' : 'none'; });
   };
+  if (search) { search.oninput = () => { f.search = search.value; applyPrivSearch(); }; applyPrivSearch(); }
   document.querySelectorAll('[data-priv-pick]').forEach(cb => cb.onchange = () => {
     const u = cb.dataset.privPick;
     f.picked = cb.checked ? Array.from(new Set([...f.picked, u])) : f.picked.filter(x => x !== u);
@@ -4544,7 +4552,7 @@ function renderTodayFeed() {
           <div class="task-progress-fill" style="width:${taskPct}%;"></div>
           <div class="task-progress-pct-label">${taskPct}%</div>
         </div>
-        <div class="task-progress-detail" id="task-progress-detail-${t.id}" style="display:none;">
+        <div class="task-progress-detail" id="task-progress-detail-${t.id}" style="display:${(ui.openProgress || []).includes(t.id) ? 'block' : 'none'};">
           <div class="small" style="margin-bottom:4px;"><b style="color:var(--success);">✓ Completed:</b> ${approved.length === 0 ? 'no one yet' : approved.map(a => esc(a.username)).join(', ')}</div>
           <div class="small"><b style="color:var(--muted);">○ Remaining:</b> ${remaining.length === 0 ? 'no one — fully approved' : remaining.map(a => esc(a.username) + (a.is_released ? '' : ' (on hold)')).join(', ')}</div>
         </div>
@@ -4654,8 +4662,10 @@ function bindTodayFeed() {
   const moreBtn = document.querySelector('[data-act="today-card-more"]');
   if (moreBtn) moreBtn.onclick = () => { ui.todayCardShown = (ui.todayCardShown || OPEN_PAGE_SIZE) + OPEN_PAGE_SIZE; render(); };
   document.querySelectorAll('[data-toggle-task-progress]').forEach(track => track.onclick = () => {
-    const detail = document.getElementById(`task-progress-detail-${track.dataset.toggleTaskProgress}`);
-    if (detail) detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
+    const id = track.dataset.toggleTaskProgress;
+    const open = new Set(ui.openProgress || []);
+    if (open.has(id)) open.delete(id); else open.add(id);
+    ui.openProgress = [...open]; render();
   });
 }
 
@@ -5797,6 +5807,10 @@ function renderAccountsView() {
         <td><input type="checkbox" data-team-lead-for="${esc(u.username)}" ${u.is_team_lead ? 'checked' : ''}></td>
         <td style="white-space:nowrap;">
           <button class="btn btn-sm" data-reset-password-for="${esc(u.username)}">Reset Password</button>
+          ${u.guide_done_at && u.guide_score == null ? `<span class="badge flag" title="Skipped the welcome guide ${esc(fmtTime(u.guide_done_at))}">Guide skipped</span>`
+            : u.guide_done_at ? `<span class="badge received" title="Welcome guide finished ${esc(fmtTime(u.guide_done_at))}">Guide ✓ ${esc(({ en: 'EN', hi: 'HI', mr: 'MR' })[u.guide_lang] || '')} ${u.guide_score != null ? `${u.guide_score}/${u.guide_total}` : ''}</span>`
+            : u.needs_guide ? '<span class="badge po_pending" title="Will see the welcome guide on their next login">Guide pending</span>' : ''}
+          ${u.guide_done_at || !u.needs_guide ? `<button class="btn btn-sm" data-guide-again="${esc(u.username)}" title="Show them the welcome guide (video + questions) again on their next visit">Guide again</button>` : ''}
           ${u.username === session.username ? '' : `<button class="btn btn-sm btn-danger" data-remove-user="${esc(u.username)}">Remove</button>`}
         </td>
       </tr>
@@ -5808,12 +5822,13 @@ function renderAccountsView() {
         </select>
         <button class="btn btn-sm" data-save-director-visibility="${esc(u.username)}" style="margin-left:6px;">Save</button>
       </td></tr>` : ''}
-      <tr id="reset-pw-row-${esc(u.username)}" style="display:none;"><td colspan="7">
+      ${ui.resetPwFor === u.username ? `<tr id="reset-pw-row-${esc(u.username)}" class="reset-pw-row"><td colspan="7">
         <div class="row" style="align-items:flex-end;">
           <div class="col"><label>New password for ${esc(u.name)}</label>${passwordFieldHTML(`reset-pw-input-${u.username}`, 'their new password')}</div>
-          <div class="col" style="flex:0;"><button class="btn btn-primary btn-sm" data-do-reset-password="${esc(u.username)}">Set</button></div>
+          <div class="col" style="flex:0;white-space:nowrap;display:flex;gap:6px;"><button class="btn btn-primary btn-sm" data-do-reset-password="${esc(u.username)}">Set</button><button class="btn btn-sm" data-reset-password-for="${esc(u.username)}">Cancel</button></div>
         </div>
-      </td></tr>
+        ${ui.resetPwErr ? `<div class="err">${esc(ui.resetPwErr)}</div>` : ''}
+      </td></tr>` : ''}
     `).join('')}
     </table>
   </div>`;
@@ -5978,7 +5993,16 @@ function render() {
 }
 function renderInner() {
   const app = document.getElementById('app');
-  if (!session || !token) { morphHTML(app, renderLoginPage()); bindLogin(); return; }
+  if (!session || !token) {
+    // Before login: the welcome guide (language → video → questions) comes first on a new device.
+    if (typeof guideShouldOpenBeforeLogin === 'function' && guideShouldOpenBeforeLogin()) { morphHTML(app, renderGuide()); bindGuide(); return; }
+    morphHTML(app, renderLoginPage()); bindLogin(); return;
+  }
+  // New accounts must finish the welcome guide once before using the app (also opened from the menu).
+  if (typeof renderGuide === 'function') {
+    if (guideRequiredNow() && !(ui.guide && ui.guide.open)) openGuide('post');
+    if (ui.guide && ui.guide.open) { morphHTML(app, renderGuide()); bindGuide(); return; }
+  }
   // Changed from a hard block to a dismissible reminder, at explicit request: forcing this
   // screen every single time became a genuine dead end on a hosting tier where the database can
   // reset and wipe out an already-set password — the person would be stuck re-doing this
@@ -6095,6 +6119,7 @@ function bindGlobal() {
     render();
   });
   const logoutBtn = document.querySelector('[data-act="logout"]'); if (logoutBtn) logoutBtn.onclick = () => logout();
+  const guideReplay = document.querySelector('[data-act="open-guide-replay"]'); if (guideReplay) guideReplay.onclick = () => { if (typeof openGuide !== 'function') return; ui.sidebarOpen = false; openGuide('replay'); render(); window.scrollTo(0, 0); };
   const reopenPwChange = document.querySelector('[data-act="reopen-password-change"]'); if (reopenPwChange) reopenPwChange.onclick = () => { ui.showPasswordChangeModal = true; safeStorage.removeItem('ls_pw_reminder_dismissed'); render(); };
   document.querySelectorAll('[data-mark-notif-read]').forEach(el => el.onclick = async () => {
     const id = Number(el.dataset.markNotifRead);
@@ -6591,17 +6616,34 @@ function bindAccounts() {
       await refreshData();
     } catch (e) { setBanner(e.message); render(); }
   });
+  document.querySelectorAll('[data-guide-again]').forEach(btn => btn.onclick = async () => {
+    const u = btn.dataset.guideAgain;
+    if (btn.disabled) return; btn.disabled = true;
+    try { await api(`/api/users/${encodeURIComponent(u)}/guide-again`, { method: 'POST' }); setBanner(`${personName(u)} will see the welcome guide on their next visit.`, 'ok'); await refreshData(); }
+    catch (e) { btn.disabled = false; setBanner(e.message); render(); }
+  });
+  // The Reset Password box is part of the page state, so a background refresh can never close it.
+  const clearResetInput = (u) => { const el = document.getElementById(`reset-pw-input-${u}`); if (el) el.value = ''; };
   document.querySelectorAll('[data-reset-password-for]').forEach(btn => btn.onclick = () => {
-    const row = document.getElementById(`reset-pw-row-${btn.dataset.resetPasswordFor}`);
-    row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
-    bindPasswordToggles();
+    const u = btn.dataset.resetPasswordFor;
+    if (ui.resetPwFor && ui.resetPwFor !== u) clearResetInput(ui.resetPwFor);
+    if (ui.resetPwFor === u) clearResetInput(u);
+    ui.resetPwFor = ui.resetPwFor === u ? null : u; ui.resetPwErr = '';
+    render();
+    const el = ui.resetPwFor && document.getElementById(`reset-pw-input-${ui.resetPwFor}`); if (el) el.focus();
   });
   document.querySelectorAll('[data-do-reset-password]').forEach(btn => btn.onclick = async () => {
     const username = btn.dataset.doResetPassword;
-    const newPassword = document.getElementById(`reset-pw-input-${username}`).value;
-    if (newPassword.length < 6) { alert('Password must be at least 6 characters.'); return; }
-    try { await api(`/api/users/${username}/reset-password`, { method: 'POST', body: JSON.stringify({ newPassword }) }); setBanner('Password reset.', 'ok'); await refreshData(); }
-    catch (e) { setBanner(e.message); render(); }
+    const input = document.getElementById(`reset-pw-input-${username}`);
+    const newPassword = input ? input.value : '';
+    if (newPassword.length < 6) { ui.resetPwErr = 'The new password must be at least 6 characters.'; render(); return; }
+    if (btn.disabled) return; btn.disabled = true; btn.textContent = 'Setting…';
+    try {
+      await api(`/api/users/${username}/reset-password`, { method: 'POST', body: JSON.stringify({ newPassword }) });
+      clearResetInput(username); ui.resetPwFor = null; ui.resetPwErr = '';
+      setBanner(`Password reset for ${personName(username)}. Tell them the new password in person — they will set their own when they log in.`, 'ok');
+      await refreshData();
+    } catch (e) { ui.resetPwErr = e.message; btn.disabled = false; btn.textContent = 'Set'; render(); }
   });
 }
 
@@ -6617,12 +6659,18 @@ if (session && token) {
 // for a moment. If the person currently has focus in a text field WITH something typed into it,
 // skip this cycle's refresh entirely rather than rebuild the page out from under them — the next
 // 30s tick will simply try again, so nothing is lost, just delayed until they're not mid-type.
+// Background refresh never redraws the page while someone is in a text or password box — even an
+// empty one they just tapped (that used to close the Reset Password box before the first keystroke) —
+// nor in the few seconds after they leave it or press a key.
+let lastFieldActivityAt = 0;
+['keydown', 'input', 'focusout', 'pointerdown'].forEach(ev => document.addEventListener(ev, () => { lastFieldActivityAt = Date.now(); }, true));
 function userIsActivelyTyping() {
   const active = document.activeElement;
-  if (!active) return false;
-  const tag = (active.tagName || '').toLowerCase();
-  const isTextField = (tag === 'textarea') || (tag === 'input' && !['checkbox', 'file', 'radio', 'button', 'submit'].includes(active.type));
-  return isTextField && !!active.value;
+  const tag = active ? (active.tagName || '').toLowerCase() : '';
+  const isTextField = tag === 'textarea' || tag === 'select' || (tag === 'input' && !['checkbox', 'file', 'radio', 'button', 'submit', 'range', 'color'].includes(active.type))
+    || (active && active.isContentEditable);
+  if (isTextField) return true;
+  return Date.now() - lastFieldActivityAt < 3000;
 }
 // Reduced from 30s to 8s — the previous interval made updates from other people (or another of
 // your own tabs/devices) feel stale and out of sync; this app has no push/WebSocket channel, so

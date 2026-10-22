@@ -270,6 +270,8 @@ app.use((req, res, next) => {
 app.use(express.static(path.join(__dirname, '..', 'frontend'), {
   setHeaders(res, filePath) {
     if (/\.(html|js|css|json)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+    // Guide videos never change in place (a new video gets a new name), so phones download them once.
+    else if (/\.mp4$/i.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=604800');
   },
 }));
 // General-purpose IP-based rate limiter — a simple in-memory sliding window. HONEST LIMITATION,
@@ -866,7 +868,7 @@ app.post('/api/auth/login', loginRateLimiter, async (req, res) => {
     await auditFromReq(req, 'login', `Logged in.`, { username: user.username, name: user.name });
   }
   const token = sign({ username: user.username, role: user.role, name: user.name, tv: user.token_version || 0, sid });
-  res.json({ token, user: { username: user.username, role: user.role, name: user.name, mustChangePassword: !!user.must_change_password } });
+  res.json({ token, user: { username: user.username, role: user.role, name: user.name, mustChangePassword: !!user.must_change_password, needsGuide: !!user.needs_guide && !user.guide_done_at } });
 });
 // Invalidates every existing login token for this account (all devices/browsers) by bumping
 // token_version — the same mechanism change-password already relies on. This session's own new
@@ -988,7 +990,35 @@ app.post('/api/push/unsubscribe', auth(ALL_ROLES), async (req, res) => {
 });
 app.get('/api/auth/me', auth(ALL_ROLES), async (req, res) => {
   const user = await db.getUserFresh(req.user.username);
-  res.json({ username: user.username, role: user.role, name: user.name, email: user.email, phone: user.phone, team: user.team, designation: user.designation, isTeamLead: !!user.is_team_lead });
+  res.json({ username: user.username, role: user.role, name: user.name, email: user.email, phone: user.phone, team: user.team, designation: user.designation, isTeamLead: !!user.is_team_lead,
+    needsGuide: !!user.needs_guide && !user.guide_done_at });
+});
+// Welcome guide finished (language → video → questions). Score is kept so Admin can see who may need help.
+const GUIDE_LANGS = ['en', 'hi', 'mr'];
+app.post('/api/auth/guide-complete', auth(ALL_ROLES), async (req, res) => {
+  const b = req.body || {};
+  const lang = GUIDE_LANGS.includes(b.lang) ? b.lang : null;
+  // Skipped: counts as done (it never comes back), recorded without a score so Admin can see who skipped.
+  if (b.skipped === true) {
+    await db.completeGuide(req.user.username, { lang, score: null, total: null, attempts: 0 });
+    await auditFromReq(req, 'guide_skipped', `Skipped the welcome guide${lang ? ` (${({ en: 'English', hi: 'Hindi', mr: 'Marathi' })[lang]})` : ''}.`);
+    return res.json({ ok: true, skipped: true });
+  }
+  const total = Number.isInteger(b.total) && b.total > 0 && b.total <= 20 ? b.total : null;
+  const score = Number.isInteger(b.score) && total !== null && b.score >= 0 && b.score <= total ? b.score : null;
+  const attempts = Number.isInteger(b.attempts) && b.attempts > 0 && b.attempts <= 50 ? b.attempts : 1;
+  if (!lang || total === null || score === null) return res.status(400).json({ error: 'Language and score are required.' });
+  await db.completeGuide(req.user.username, { lang, score, total, attempts });
+  await auditFromReq(req, 'guide_completed', `Finished the welcome guide in ${({ en: 'English', hi: 'Hindi', mr: 'Marathi' })[lang]} — ${score}/${total} correct${attempts > 1 ? ` (${attempts} tries)` : ''}.`);
+  res.json({ ok: true });
+});
+// Admin: make someone see the welcome guide again on their next visit.
+app.post('/api/users/:username/guide-again', auth(['admin']), async (req, res) => {
+  const u = await db.getUserFresh(req.params.username);
+  if (!u) return res.status(404).json({ error: 'User not found.' });
+  await db.requireGuideAgain(u.username);
+  await auditFromReq(req, 'guide_reset', `Asked ${u.name} (${u.username}) to watch the welcome guide again.`);
+  res.json({ ok: true });
 });
 
 /* ============ USERS (Admin manages accounts) ============ */

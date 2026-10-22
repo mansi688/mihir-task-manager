@@ -4,6 +4,40 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Welcome guide (language → video → questions → login); stability fixes
+### Added
+- **Welcome guide for first-time logins.** The first time a new account logs in, before anything else, the app
+  shows "Welcome — choose your language" (English / हिंदी / मराठी), the explanatory video in that language, then 5
+  simple questions in the same language (4 of 5 passes; wrong answers show the correct answer and why, with **Try
+  the questions again** / **Watch the video again**, and after two tries **Continue anyway** — the score is
+  kept). The questions unlock only after about 90% of the video has actually been played (jumping ahead does
+  not count).
+- **How "first time" is known:** a flag on the account on the server (`needs_guide`) — set for the 76 employee
+  accounts created on 10 and 21 Oct and for every account created from now on, cleared for good when the person
+  finishes or skips the guide. So it never comes back for that person, on any phone, even after clearing the
+  browser. Existing employees never see it automatically. (Before login we cannot know who is using the phone, so
+  it does not open by itself on the login screen.)
+- **Skip video** button (with a "Skip the guide?" confirmation): opened from the login screen it goes back to the
+  login box; on a first login it counts as done and is recorded as skipped.
+- Anyone can watch it any time: **📺 Watch the app guide** on the login screen and **App guide** in the menu.
+  A guide finished from the login screen counts for the very next login on that phone only.
+- Accounts page: each person shows **Guide ✓ HI 4/5**, **Guide skipped** or **Guide pending**, and **Guide again** asks someone to
+  repeat it. Finishing, skipping and Admin's "guide again" are in the Audit Log.
+- Videos are served from `frontend/guide/` (720p web copies, 10–14 MB each, cached by phones for a week; a new
+  video must get a new file name — bump `GUIDE_VIDEO_VERSION` in `guide.js`).
+### Fixed
+- **Reset Password box closed by itself.** On Accounts, the new-password box was shown by changing the page
+  directly, so the 5-second background refresh hid it again — often before the first key press. It is now part of
+  the page state: it stays open until **Set** or **Cancel**, keeps what was typed, and shows errors inline.
+- **Background refresh never interrupts typing**: it now pauses whenever the cursor is in any text, password or
+  dropdown field — even an empty one — and for 3 seconds after leaving it or tapping anything.
+- Today page progress details and the private-chat people search no longer reset on a background refresh.
+- The app keeps working even if `guide.js` fails to load.
+### Database (additive, applied automatically on start)
+- `users`: `needs_guide`, `guide_done_at`, `guide_lang`, `guide_score`, `guide_total`, `guide_attempts`.
+  Already added to the live database, with `needs_guide=1` for the 76 new employee accounts (audit log entry).
+- New endpoints: `POST /api/auth/guide-complete`, `POST /api/users/:username/guide-again` (Admin).
+
 ## [Unreleased] — Keep open reaches everyone on the task; more colourful app
 ### Changed
 - **Keep open** on a closure request now notifies everyone on the task — every assignee at every level and

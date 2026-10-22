@@ -345,6 +345,13 @@ async function init() {
   await ensureColumn('users', 'designation', 'TEXT');
   await ensureColumn('users', 'failed_login_count', 'INTEGER DEFAULT 0');
   await ensureColumn('users', 'locked_until', 'TEXT');
+  // Welcome guide (language → video → questions): new accounts must finish it once.
+  await ensureColumn('users', 'needs_guide', 'INTEGER DEFAULT 0');
+  await ensureColumn('users', 'guide_done_at', 'TEXT');
+  await ensureColumn('users', 'guide_lang', 'TEXT');
+  await ensureColumn('users', 'guide_score', 'INTEGER');
+  await ensureColumn('users', 'guide_total', 'INTEGER');
+  await ensureColumn('users', 'guide_attempts', 'INTEGER');
   await ensureColumn('task_assignees', 'submitted_at', 'TEXT');
   await ensureColumn('task_assignees', 'submission_note', 'TEXT');
   await ensureColumn('task_assignees', 'escalation_baseline_at', 'TEXT');
@@ -527,19 +534,25 @@ module.exports = {
   async bumpTokenVersion(username) { await run('UPDATE users SET token_version=COALESCE(token_version,0)+1 WHERE username=?', [username]); },
   // Uncached read for security decisions (login, reset codes, password changes) — these must see
   // the database exactly as it is, even if something changed it outside the app.
+  async completeGuide(username, { lang, score, total, attempts }) {
+    await run('UPDATE users SET needs_guide=0, guide_done_at=?, guide_lang=?, guide_score=?, guide_total=?, guide_attempts=? WHERE username=?',
+      [new Date().toISOString(), lang, score, total, attempts, username]);
+  },
+  async requireGuideAgain(username) { await run('UPDATE users SET needs_guide=1, guide_done_at=NULL WHERE username=?', [username]); },
   async getUserFresh(username) { return get('SELECT * FROM users WHERE username=?', [username]); },
   async listUsers() {
     if (userListCache && Date.now() - userListCache.at < USER_CACHE_TTL_MS) return userListCache.rows.map(r => ({ ...r }));
     const version = usersVersion;
-    const rows = await all('SELECT username,role,name,email,phone,team,designation,is_team_lead,visible_departments,must_change_password,created_at FROM users ORDER BY name');
+    const rows = await all('SELECT username,role,name,email,phone,team,designation,is_team_lead,visible_departments,must_change_password,created_at,needs_guide,guide_done_at,guide_lang,guide_score,guide_total FROM users ORDER BY name');
     if (version === usersVersion) userListCache = { at: Date.now(), rows };
     return rows.map(r => ({ ...r }));
   },
   async updateOwnPhone(username, phone) { await run('UPDATE users SET phone=? WHERE username=?', [phone || null, username]); },
   async setVisibleDepartments(username, departmentsCsv) { await run('UPDATE users SET visible_departments=? WHERE username=?', [departmentsCsv || null, username]); },
   async createUser({ username, password_hash, role, name, team, designation, must_change_password }) {
-    await run(`INSERT INTO users(username,password_hash,role,name,team,designation,must_change_password,created_at)
-                VALUES(?,?,?,?,?,?,?,?)`,
+    // Every account created from now on sees the welcome guide once, on its first login.
+    await run(`INSERT INTO users(username,password_hash,role,name,team,designation,must_change_password,created_at,needs_guide)
+                VALUES(?,?,?,?,?,?,?,?,1)`,
       [username, password_hash, role, name, team || null, designation || null, must_change_password ? 1 : 0, new Date().toISOString()]);
     if (team) await module.exports.addTeam(team);
   },
