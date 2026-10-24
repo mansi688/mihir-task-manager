@@ -1426,3 +1426,46 @@ html[data-theme="dark"] .cat-delivery{--nc:#F0A93B;}
 .dlv-late{color:var(--c-red,#C0392B);font-weight:800;}
 .dlv-fu-note{margin-top:8px;font-size:13px;padding:7px 12px;border-radius:10px;background:color-mix(in srgb,var(--c-blue,#2D5FA8) 8%,var(--panel));border:1px solid color-mix(in srgb,var(--c-blue,#2D5FA8) 25%,transparent);}
 .dlv-fu.done{color:var(--muted);background:var(--panel-2);}
+
+/* ---- Deliveries: in-card tabs, documents, budget & payments ---- */
+.dlv-ctabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:10px;}
+.dlv-ctab,.dlv-subtab{font:inherit;font-size:13px;font-weight:700;padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
+.dlv-ctab.active,.dlv-subtab.active{background:var(--c-blue,#2D5FA8);border-color:var(--c-blue,#2D5FA8);color:#fff;}
+.dlv-ctab-count{font-size:11px;font-weight:800;padding:1px 7px;border-radius:999px;background:color-mix(in srgb,var(--ink) 10%,transparent);}
+.dlv-ctab-count.warn{background:color-mix(in srgb,var(--c-amber) 22%,transparent);color:color-mix(in srgb,var(--c-amber) 70%,var(--ink));}
+.dlv-ctab-count.ok{background:color-mix(in srgb,var(--c-teal) 18%,transparent);color:var(--c-teal);}
+.dlv-ctab.active .dlv-ctab-count,.dlv-subtab.active .dlv-ctab-count{background:rgba(255,255,255,0.25);color:#fff;}
+.dlv-subtabs{display:flex;gap:6px;flex-wrap:wrap;}
+.dlv-doc{padding:9px 12px;border:1px solid var(--line);border-left:3px solid var(--line);border-radius:10px;margin-top:6px;background:var(--panel);}
+.dlv-doc.have{border-left-color:var(--c-teal);}
+.dlv-doc.missing{border-left-color:var(--c-amber);background:color-mix(in srgb,var(--c-amber) 5%,var(--panel));}
+.dlv-doc-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.dlv-doc-head .btn{margin-left:auto;}
+.dlv-doc-state{width:20px;text-align:center;font-weight:800;}
+.dlv-doc.have .dlv-doc-state{color:var(--c-teal);}
+.dlv-req{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.03em;padding:1px 7px;border-radius:999px;background:color-mix(in srgb,var(--ink) 8%,transparent);color:var(--muted,#667);}
+.dlv-req.need{background:color-mix(in srgb,var(--c-amber) 20%,transparent);color:color-mix(in srgb,var(--c-amber) 70%,var(--ink));}
+.dlv-doc-file{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 0 28px;}
+.dlv-x{font:inherit;font-size:12px;border:1px solid var(--line);background:var(--panel);color:var(--muted,#667);border-radius:999px;padding:2px 8px;cursor:pointer;}
+.dlv-x:hover,.dlv-x.armed{border-color:var(--danger);color:var(--danger);}
+.dlv-thumb-file{display:flex;align-items:center;justify-content:center;width:100%;height:100%;font-size:11px;padding:4px;text-align:center;word-break:break-all;}
+.dlv-reqgroups{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;}
+.dlv-reqgroup{border:1px solid var(--line);border-radius:10px;padding:8px 12px;}
+.dlv-reqdoc{display:flex;gap:8px;align-items:center;font-size:13px;margin-top:6px;font-weight:500;}
+.dlv-reqdoc input{width:auto;margin:0;}
+.dlv-money-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;}
+.dlv-tile{border:1px solid var(--line);border-radius:12px;padding:10px 12px;background:var(--panel);display:flex;flex-direction:column;gap:2px;}
+.dlv-tile span{font-size:11.5px;color:var(--muted,#667);font-weight:700;text-transform:uppercase;letter-spacing:.03em;}
+.dlv-tile b{font-size:18px;font-family:var(--mono);}
+.dlv-tile.good b{color:var(--c-teal);}
+.dlv-tile.bad{border-color:color-mix(in srgb,var(--danger) 40%,transparent);background:color-mix(in srgb,var(--danger) 5%,var(--panel));}
+.dlv-tile.bad b{color:var(--danger);}
+.dlv-bar{height:8px;border-radius:999px;background:color-mix(in srgb,var(--ink) 8%,transparent);margin-top:10px;overflow:hidden;}
+.dlv-bar-fill{height:100%;background:var(--c-teal);border-radius:999px;}
+.dlv-bar-fill.near{background:var(--c-amber);}
+.dlv-bar-fill.over{background:var(--danger);}
+.dlv-over{color:var(--danger);font-weight:700;}
+.dlv-file.dlv-over{border-color:color-mix(in srgb,var(--danger) 40%,transparent);}
+.dlv-nobill{font-size:12px;color:color-mix(in srgb,var(--c-amber) 70%,var(--ink));}
+.dlv-pays tr.dlv-total td{border-top:2px solid var(--line);font-weight:700;}
+.dlv-flag-docs{background:color-mix(in srgb,var(--c-amber) 18%,transparent);color:color-mix(in srgb,var(--c-amber) 70%,var(--ink));}

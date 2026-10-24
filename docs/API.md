@@ -23,7 +23,11 @@ All under the existing `/api`, Bearer token unless noted. Existing endpoints are
 | GET /api/tasks/watching | everyone | Tasks you are only "kept informed" on |
 | GET /api/deliveries | everyone (Admin/Purchase/Director see all) | Deliveries you are on, with file list |
 | POST /api/deliveries | Admin, Purchase Department | Add a delivery (optionally from a task) |
-| POST /api/deliveries/:id/update | Admin, Purchase Department | Edit details, re-tag site team, add files |
+| POST /api/deliveries/:id/update | Admin, Purchase Department | Edit details, re-tag site team, add files; `budget_amount`, `budget_note`, `required_docs[]` (after unloading only these three) |
 | POST /api/deliveries/:id/status | Admin, Purchase Department | `dispatched` or `cancelled` (with reason) |
 | POST /api/deliveries/:id/proof | tagged site team, Admin, Purchase | `delivered` then `unloaded`, photos required |
 | GET /api/deliveries/:id/files/:fileId | people on the delivery | Attachment / proof photo |
+| POST /api/deliveries/:id/documents | to-site types: Admin/Purchase; from-site types: tagged site team or Admin/Purchase | `{type, note, attachments}` — type from `docTypes` in GET /api/deliveries |
+| POST /api/deliveries/:id/files/:fileId/delete | uploader or Admin/Purchase | Remove a document or attachment (not proof photos or bills) |
+| POST /api/deliveries/:id/payments | tagged site team, Admin/Purchase | `{amount, purpose, mode, paid_to, paid_at, note, attachments}` — bill photo required unless `no_bill_reason` (≥5 chars). Returns `{paid, balance, overBudget}` |
+| POST /api/deliveries/:id/payments/:pid/delete | payer within 48 h, or Admin/Purchase | Removes the payment and its bill |

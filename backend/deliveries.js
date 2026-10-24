@@ -6,6 +6,26 @@
 // its time. Only Admin and the Purchase Department create or edit deliveries; anyone can be tagged, and
 // everyone tagged is added to "Keep informed" on the linked task so they can open it.
 const STATUSES = ['scheduled', 'dispatched', 'delivered', 'unloaded', 'cancelled'];
+// Documents for a delivery, in two groups. Which ones are required is set per delivery (default: the
+// delivery challan going to site, and the signed challan coming back); the rest are optional.
+const DOC_TYPES = [
+  { key: 'challan', label: 'Delivery challan', dir: 'to_site' },
+  { key: 'po', label: 'Purchase order', dir: 'to_site' },
+  { key: 'invoice', label: 'Vendor invoice / bill', dir: 'to_site' },
+  { key: 'eway', label: 'E-way bill', dir: 'to_site' },
+  { key: 'transport_booking', label: 'Porter / transport booking', dir: 'to_site' },
+  { key: 'other_to_site', label: 'Other document', dir: 'to_site' },
+  { key: 'signed_challan', label: 'Signed / stamped challan', dir: 'from_site' },
+  { key: 'grn', label: 'Material inward / GRN', dir: 'from_site' },
+  { key: 'received_invoice', label: 'Invoice received with material', dir: 'from_site' },
+  { key: 'weighbridge', label: 'Weighbridge slip', dir: 'from_site' },
+  { key: 'damage_report', label: 'Shortage / damage report', dir: 'from_site' },
+  { key: 'other_from_site', label: 'Other document', dir: 'from_site' },
+];
+const DOC = Object.fromEntries(DOC_TYPES.map(d => [d.key, d]));
+const DEFAULT_REQUIRED = ['challan', 'signed_challan'];
+const PAY_PURPOSES = ['Porter / transport fare', 'Unloading labour', 'Loading labour', 'Toll / parking', 'Other'];
+const PAY_MODES = ['Cash', 'UPI', 'Bank transfer', 'Other'];
 const TEXT_FIELDS = { title: 200, quantity: 120, description: 2000, vendor: 160, project: 160, site_location: 200, transport: 60,
   porter_order_id: 80, delivery_ref: 80, driver_name: 120, driver_phone: 30, vehicle_no: 30 };
 
@@ -42,6 +62,17 @@ function mountDeliveries(app, deps) {
       out[k] = v || null;
     }
     if ('expected_at' in body) { const w = cleanWhen(body.expected_at); if (!w) errors.push('Pick the delivery date (time is optional).'); out.expected_at = w; }
+    if ('budget_amount' in body) {
+      const raw = body.budget_amount;
+      if (raw === null || raw === '' || raw === undefined) out.budget_amount = null;
+      else { const n = Math.round(Number(raw) * 100) / 100; if (!isFinite(n) || n < 0 || n > 10000000) errors.push('Enter the budget as an amount in rupees.'); else out.budget_amount = n; }
+    }
+    if ('budget_note' in body) { const v = str(body.budget_note).trim(); if (v.length > 300) errors.push('Budget note is too long'); out.budget_note = v || null; }
+    if ('required_docs' in body) {
+      const list = Array.isArray(body.required_docs) ? body.required_docs.map(x => str(x)) : [];
+      if (list.some(k => !DOC[k])) errors.push('Unknown document type.');
+      out.required_docs = Array.from(new Set(list.filter(k => DOC[k]))).join(',');
+    }
     if (!partial) {
       if (!out.title) errors.push('Write what is being delivered.');
       if (!out.expected_at) errors.push('Pick the delivery date (time is optional).');
@@ -67,7 +98,8 @@ function mountDeliveries(app, deps) {
   app.get('/api/deliveries', auth(ALL_ROLES), async (req, res) => {
     const manage = await canManage(req.user);
     const everything = manage || req.user.role === 'director';
-    res.json({ canManage: manage, items: await db.listDeliveriesFor(req.user.username, everything) });
+    res.json({ canManage: manage, docTypes: DOC_TYPES, defaultRequired: DEFAULT_REQUIRED, payPurposes: PAY_PURPOSES, payModes: PAY_MODES,
+      items: await db.listDeliveriesFor(req.user.username, everything) });
   });
 
   app.post('/api/deliveries', auth(ALL_ROLES), async (req, res) => {
@@ -83,6 +115,11 @@ function mountDeliveries(app, deps) {
     }
     const up = collectUploads(b, MAX_FILE_CHARS); if (up.error) return res.status(400).json({ error: up.error });
     const d = await db.createDelivery({ ...out, receivers: rec.names, task_id: task ? task.id : null, created_by: req.user.username, created_by_name: req.user.name }, up.files);
+    const extra = {};
+    if ('budget_amount' in out) extra.budget_amount = out.budget_amount;
+    if ('budget_note' in out) extra.budget_note = out.budget_note;
+    extra.required_docs = 'required_docs' in out ? out.required_docs : DEFAULT_REQUIRED.join(',');
+    await db.updateDelivery(d.id, extra);
     // The task's own work is finished — only delivery is pending — so the task is closed here and from
     // now on only the delivery (the site team) is tracked. Nobody on the task is marked late for the wait.
     let closedTask = false, keptOpenWhy = null;
@@ -111,9 +148,15 @@ function mountDeliveries(app, deps) {
   app.post('/api/deliveries/:id/update', auth(ALL_ROLES), async (req, res) => {
     const d = await db.getDelivery(req.params.id); if (!d) return res.status(404).json({ error: 'Delivery not found.' });
     if (!(await canManage(req.user))) return res.status(403).json({ error: 'Only Admin, the Purchase Department and people given delivery access can edit deliveries.' });
-    if (['unloaded', 'cancelled'].includes(d.status)) return res.status(400).json({ error: 'This delivery is finished and can no longer be edited.' });
+    if (d.status === 'cancelled') return res.status(400).json({ error: 'This delivery was cancelled and can no longer be edited.' });
     const b = req.body || {};
     const { out, error } = readFields(b, { partial: true }); if (error) return res.status(400).json({ error });
+    // After unloading only the budget and the document list can still change (bills and papers come later).
+    if (d.status === 'unloaded') {
+      const allowed = ['budget_amount', 'budget_note', 'required_docs'];
+      if (Object.keys(out).some(k => !allowed.includes(k)) || (Array.isArray(b.attachments) && b.attachments.length) || 'receivers' in b)
+        return res.status(400).json({ error: 'This delivery is finished — only its budget and documents list can still be changed.' });
+    }
     let added = [];
     if ('receivers' in b) {
       const rec = await readReceivers(b.receivers); if (rec.error) return res.status(400).json({ error: rec.error });
@@ -132,6 +175,12 @@ function mountDeliveries(app, deps) {
     if (driverAdded) {
       const who = [nd.driver_name, nd.driver_phone, nd.vehicle_no].filter(Boolean).join(' · ');
       await notifyMany(receiversOf(nd).filter(u => !added.includes(u)), req.user.username, 'delivery_update', `Delivery ${label(nd)}: driver details — ${who}.`, nd.task_id);
+    }
+    const oldBudget = d.budget_amount == null ? null : Number(d.budget_amount);
+    if ('budget_amount' in out && out.budget_amount !== oldBudget && out.budget_amount != null) {
+      const paid = await db.deliveryPaidTotal(d.id);
+      await notifyMany(receiversOf(nd).filter(u => !added.includes(u)), req.user.username, 'delivery_update',
+        `Delivery ${label(nd)}: budget for porter / transport ${oldBudget == null ? 'set to' : 'changed to'} ₹${Number(out.budget_amount).toLocaleString('en-IN')}${paid ? ` (₹${paid.toLocaleString('en-IN')} paid so far)` : ''}. Record every payment with the bill.`, nd.task_id);
     }
     res.json({ ok: true });
   });
@@ -183,6 +232,85 @@ function mountDeliveries(app, deps) {
     await notifyMany(tell, req.user.username, stage === 'delivered' ? 'delivery_delivered' : 'delivery_unloaded',
       `${stage === 'delivered' ? 'Delivered' : 'Unloaded'}: ${label(d)} — ${req.user.name} uploaded ${photos.length} photo${photos.length > 1 ? 's' : ''} at ${time}${note ? `: ${note.slice(0, 120)}` : ''}.${stage === 'unloaded' && t && t.status === 'open' ? ' The task can now be closed.' : ''}`, d.task_id);
     if (d.task_id) await taskEvent(req, d.task_id, stage === 'delivered' ? 'DELIVERY_DELIVERED' : 'DELIVERY_UNLOADED', `Delivery ${d.ref}: ${stage === 'delivered' ? 'delivered' : 'unloaded'} — ${photos.length} photo proof${note ? ` · ${note}` : ''}`, { meta: { delivery: d.ref } });
+    res.json({ ok: true });
+  });
+
+  // ---- Documents: "Sent to site" by the purchase side, "From site" by the site team (or the purchase side).
+  const requiredOf = (d) => String(d.required_docs == null ? DEFAULT_REQUIRED.join(',') : d.required_docs).split(',').filter(Boolean);
+  app.post('/api/deliveries/:id/documents', auth(ALL_ROLES), async (req, res) => {
+    const d = await db.getDelivery(req.params.id); if (!d) return res.status(404).json({ error: 'Delivery not found.' });
+    const b = req.body || {};
+    const type = DOC[str(b.type)]; if (!type) return res.status(400).json({ error: 'Pick which document this is.' });
+    const manage = await canManage(req.user);
+    if (type.dir === 'to_site' && !manage) return res.status(403).json({ error: 'Documents for site are sent by the purchase team.' });
+    if (type.dir === 'from_site' && !(manage || receiversOf(d).includes(req.user.username))) return res.status(403).json({ error: 'Only the site team on this delivery (or the purchase team) can upload documents from site.' });
+    if (d.status === 'cancelled') return res.status(400).json({ error: 'This delivery was cancelled.' });
+    const up = collectUploads(b, MAX_FILE_CHARS); if (up.error) return res.status(400).json({ error: up.error });
+    if (!up.files.length) return res.status(400).json({ error: 'Attach the document (photo or PDF).' });
+    const note = str(b.note).trim().slice(0, 500) || null;
+    const before = await db.deliveryDocTypesPresent(d.id);
+    await db.addDeliveryDocument(d.id, type.key, up.files, note, req.user.username);
+    const after = new Set([...before, type.key]);
+    const t = d.task_id ? await db.getTask(d.task_id) : null;
+    if (type.dir === 'to_site') {
+      await notifyMany(receiversOf(d), req.user.username, 'delivery_document', `${type.label} sent to site for ${label(d)} — open the delivery to view or print it.`, d.task_id);
+    } else {
+      const office = new Set([d.created_by, t && t.created_by_username].filter(Boolean));
+      const req2 = requiredOf(d).filter(k => DOC[k] && DOC[k].dir === 'from_site');
+      const allIn = req2.length && req2.every(k => after.has(k)) && !req2.every(k => before.includes(k));
+      await notifyMany([...office], req.user.username, 'delivery_document', `${type.label} received from site for ${label(d)} — uploaded by ${req.user.name}.${allIn ? ' All required documents from site are in.' : ''}`, d.task_id);
+    }
+    if (d.task_id) await taskEvent(req, d.task_id, 'DELIVERY_UPDATED', `Delivery ${d.ref}: ${type.label} uploaded (${type.dir === 'to_site' ? 'sent to site' : 'from site'})`, { meta: { delivery: d.ref, doc: type.key } });
+    res.json({ ok: true });
+  });
+  // Remove a document or attachment uploaded by mistake (whoever uploaded it, or the purchase team).
+  // Photo proof of delivery / unloading and payment bills cannot be removed this way.
+  app.post('/api/deliveries/:id/files/:fileId/delete', auth(ALL_ROLES), async (req, res) => {
+    const d = await db.getDelivery(req.params.id); if (!d) return res.status(404).json({ error: 'Delivery not found.' });
+    const f = await db.getDeliveryFile(req.params.fileId);
+    if (!f || f.delivery_id !== d.id) return res.status(404).json({ error: 'File not found.' });
+    if (!['document', 'attachment'].includes(f.kind)) return res.status(400).json({ error: 'Photo proof and payment bills cannot be removed.' });
+    if (!(f.uploaded_by === req.user.username || await canManage(req.user))) return res.status(403).json({ error: 'Only whoever uploaded it (or the purchase team) can remove it.' });
+    await db.deleteDeliveryFile(f.id);
+    await auditFromReq(req, 'delivery_file_removed', `Removed "${f.name}" from delivery ${label(d)}.`);
+    res.json({ ok: true });
+  });
+
+  // ---- Budget & payments: the site team records what it paid (with the bill); paid and balance are worked out.
+  app.post('/api/deliveries/:id/payments', auth(ALL_ROLES), async (req, res) => {
+    const d = await db.getDelivery(req.params.id); if (!d) return res.status(404).json({ error: 'Delivery not found.' });
+    const manage = await canManage(req.user);
+    if (!(manage || receiversOf(d).includes(req.user.username))) return res.status(403).json({ error: 'Only the site team on this delivery (or the purchase team) can record payments.' });
+    if (d.status === 'cancelled') return res.status(400).json({ error: 'This delivery was cancelled.' });
+    const b = req.body || {};
+    const amount = Math.round(Number(b.amount) * 100) / 100;
+    if (!isFinite(amount) || amount <= 0 || amount > 1000000) return res.status(400).json({ error: 'Enter the amount paid in rupees.' });
+    const purpose = PAY_PURPOSES.includes(str(b.purpose)) ? str(b.purpose) : null;
+    if (!purpose) return res.status(400).json({ error: 'Pick what the payment was for.' });
+    const mode = PAY_MODES.includes(str(b.mode)) ? str(b.mode) : null;
+    const paidAt = cleanWhen(b.paid_at) || new Date().toISOString().slice(0, 16);
+    const up = collectUploads(b, MAX_FILE_CHARS); if (up.error) return res.status(400).json({ error: up.error });
+    const noBill = str(b.no_bill_reason).trim();
+    if (!up.files.length && noBill.length < 5) return res.status(400).json({ error: 'Attach a photo of the bill / receipt, or write why there is no bill.' });
+    const p = await db.addDeliveryPayment(d.id, { amount, purpose, mode, paid_at: paidAt, paid_to: str(b.paid_to).trim().slice(0, 120) || null,
+      note: str(b.note).trim().slice(0, 500) || null, no_bill_reason: up.files.length ? null : noBill.slice(0, 300), paid_by: req.user.username, paid_by_name: req.user.name }, up.files);
+    const paid = await db.deliveryPaidTotal(d.id);
+    const budget = d.budget_amount == null ? null : Number(d.budget_amount);
+    const inr = (n) => '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+    const over = budget != null && paid > budget;
+    await notifyMany([d.created_by], req.user.username, 'delivery_payment',
+      `${req.user.name} paid ${inr(amount)} (${purpose}) for ${label(d)}${up.files.length ? '' : ' — no bill'}. Paid so far ${inr(paid)}${budget != null ? ` of ${inr(budget)} budget — ${over ? `over budget by ${inr(paid - budget)}` : `${inr(budget - paid)} left`}` : ''}.`, d.task_id);
+    await auditFromReq(req, 'delivery_payment', `Recorded ${inr(amount)} (${purpose}) on delivery ${label(d)}.`);
+    res.json({ ok: true, id: p.id, paid, balance: budget == null ? null : Math.round((budget - paid) * 100) / 100, overBudget: over });
+  });
+  app.post('/api/deliveries/:id/payments/:pid/delete', auth(ALL_ROLES), async (req, res) => {
+    const d = await db.getDelivery(req.params.id); if (!d) return res.status(404).json({ error: 'Delivery not found.' });
+    const p = await db.getDeliveryPayment(req.params.pid);
+    if (!p || p.delivery_id !== d.id) return res.status(404).json({ error: 'Payment not found.' });
+    const own = p.paid_by === req.user.username && Date.now() - new Date(p.created_at).getTime() < 48 * 3600000;
+    if (!(own || await canManage(req.user))) return res.status(403).json({ error: 'Only whoever recorded it (within 48 hours) or the purchase team can remove a payment.' });
+    await db.deleteDeliveryPayment(p.id);
+    await auditFromReq(req, 'delivery_payment_removed', `Removed payment of ₹${Number(p.amount)} (${p.purpose}) from delivery ${label(d)}.`);
     res.json({ ok: true });
   });
 
@@ -240,4 +368,4 @@ function mountDeliveries(app, deps) {
     res.json({ data: f.data, name: f.name });
   });
 }
-module.exports = { mountDeliveries, STATUSES };
+module.exports = { mountDeliveries, STATUSES, DOC_TYPES, DEFAULT_REQUIRED };

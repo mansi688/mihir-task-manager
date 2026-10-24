@@ -3200,7 +3200,12 @@ async function runDeliveryReminders(now, win) {
     const due = String(d.expected_at || '').slice(0, 10);
     if (!due) continue;
     let message = null;
-    if (d.status === 'delivered') message = `Unloading pending: "${d.title}" (${d.ref}) — upload the unloading photos once it is unloaded.`;
+    const required = String(d.required_docs == null ? 'challan,signed_challan' : d.required_docs).split(',').filter(Boolean);
+    const missing = required.filter(k => DELIVERY_DOC[k] && DELIVERY_DOC[k].dir === 'from_site' && !(d.docs_present || []).includes(k));
+    if (d.status === 'unloaded') {
+      if (!missing.length) continue;
+      message = `Documents pending: "${d.title}" (${d.ref}) — upload ${missing.map(k => DELIVERY_DOC[k].label.toLowerCase()).join(', ')} for head office.`;
+    } else if (d.status === 'delivered') message = `Unloading pending: "${d.title}" (${d.ref}) — upload the unloading photos once it is unloaded.`;
     else if (due < today) message = `Late delivery: "${d.title}" (${d.ref}) was due ${fmtDue(d.expected_at)} — upload the delivery photos when it arrives, or tell the purchase team.`;
     else if (due === today) message = `Delivery due today: "${d.title}" (${d.ref})${String(d.expected_at).includes('T') ? ` at ${String(d.expected_at).slice(11, 16)}` : ''} — upload the delivery photos when it arrives.`;
     if (!message) continue;
@@ -3733,7 +3738,8 @@ app.post('/api/meetings/:id/retry', auth(ALL_ROLES), async (req, res) => {
 
 /* ============ DELIVERIES ============
    backend/deliveries.js — material to be delivered and unloaded on site, with photo proof. */
-const { mountDeliveries } = require('./deliveries');
+const { mountDeliveries, DOC_TYPES: DELIVERY_DOC_TYPES } = require('./deliveries');
+const DELIVERY_DOC = Object.fromEntries(DELIVERY_DOC_TYPES.map(d => [d.key, d]));
 mountDeliveries(app, { db, auth, ALL_ROLES, auditFromReq, taskEvent, collectUploads, MAX_FILE_CHARS, displayName, str, releaseDependentsOf });
 
 /* ============ EMPLOYEE LOCATION TRACKING ============

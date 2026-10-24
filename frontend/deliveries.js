@@ -20,8 +20,31 @@ const DLV_TABS = [
   { key: 'delivered', label: 'Unloading pending', match: d => d.status === 'delivered' },
   { key: 'done', label: 'Unloaded', match: d => d.status === 'unloaded' },
   { key: 'cancelled', label: 'Cancelled', match: d => d.status === 'cancelled' },
+  { key: 'docs', label: 'Documents pending', match: d => dlvMissingDocs(d).length > 0 },
 ];
 const DLV_TRANSPORT = ['Porter', 'Vendor vehicle', 'Own vehicle', 'Courier', 'Other'];
+// Fallbacks — the server sends the same lists with the deliveries.
+const DLV_DOC_TYPES_FALLBACK = [
+  { key: 'challan', label: 'Delivery challan', dir: 'to_site' }, { key: 'po', label: 'Purchase order', dir: 'to_site' },
+  { key: 'invoice', label: 'Vendor invoice / bill', dir: 'to_site' }, { key: 'eway', label: 'E-way bill', dir: 'to_site' },
+  { key: 'transport_booking', label: 'Porter / transport booking', dir: 'to_site' }, { key: 'other_to_site', label: 'Other document', dir: 'to_site' },
+  { key: 'signed_challan', label: 'Signed / stamped challan', dir: 'from_site' }, { key: 'grn', label: 'Material inward / GRN', dir: 'from_site' },
+  { key: 'received_invoice', label: 'Invoice received with material', dir: 'from_site' }, { key: 'weighbridge', label: 'Weighbridge slip', dir: 'from_site' },
+  { key: 'damage_report', label: 'Shortage / damage report', dir: 'from_site' }, { key: 'other_from_site', label: 'Other document', dir: 'from_site' },
+];
+function dlvDocTypes() { return deliveriesData.docTypes && deliveriesData.docTypes.length ? deliveriesData.docTypes : DLV_DOC_TYPES_FALLBACK; }
+function dlvDoc(k) { return dlvDocTypes().find(t => t.key === k); }
+function dlvDefaultRequired() { return deliveriesData.defaultRequired || ['challan', 'signed_challan']; }
+function dlvPayPurposes() { return deliveriesData.payPurposes || ['Porter / transport fare', 'Unloading labour', 'Loading labour', 'Toll / parking', 'Other']; }
+function dlvPayModes() { return deliveriesData.payModes || ['Cash', 'UPI', 'Bank transfer', 'Other']; }
+function dlvInr(n) { return n == null ? '—' : '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
+// Required documents not uploaded yet, by direction.
+function dlvDocsPresent(d) { return new Set((d.files || []).filter(f => f.kind === 'document').map(f => f.doc_type)); }
+function dlvMissingDocs(d, dir) {
+  if (d.status === 'cancelled') return [];
+  const have = dlvDocsPresent(d);
+  return (d.required_docs || []).filter(k => dlvDoc(k) && (!dir || dlvDoc(k).dir === dir) && !have.has(k));
+}
 
 function dlvEsc(s) { return typeof esc === 'function' ? esc(s) : String(s == null ? '' : s); }
 function dlvWhen(w) {
@@ -81,6 +104,7 @@ function deliveryFormHTML() {
     ${f.task_id ? `<div class="notice" style="margin-top:10px;">From task <b>${dlvEsc(f.task_title || '')}</b> <span class="mono small">${dlvEsc(f.task_id)}</span> — only the title is copied.
       <b>The task will be closed</b> (its work is done) and from now on only this delivery is tracked — the site team you tag, not the people who did the task. The site team can still open the task.</div>
       ${(f.pendingParts || []).length ? `<div class="notice dlv-warn" style="margin-top:8px;">⚠ Still waiting for approval on the task: <b>${f.pendingParts.map(u => dlvEsc(personName(u))).join(', ')}</b>. Closing the task means their part will not count as approved work — approve them on the task first if they should get credit.</div>` : ''}` : ''}
+    ${f.limited ? `<div class="notice" style="margin-top:10px;">This delivery is already unloaded — only its budget and the documents list can still be changed.</div>` : `
     <div class="dlv-section">What and when</div>
     <div class="row">${field('dlv-title', 'What is being delivered *', f.title, 'e.g. Tiles — 400 boxes')}${field('dlv-quantity', 'Quantity', f.quantity, 'e.g. 400 boxes / 50 bags')}</div>
     <div class="row">
@@ -107,12 +131,27 @@ function deliveryFormHTML() {
     <div class="row">${field('dlv-driver', 'Delivery person / driver name', f.driver_name, 'e.g. Ramesh')}${field('dlv-phone', 'Driver phone number', f.driver_phone, 'e.g. 98765 43210', 'inputmode="tel"')}</div>
     <div class="row"><div class="col"><label for="dlv-desc">Notes</label><textarea id="dlv-desc" placeholder="Anything the site team should know — unloading help needed, call before arrival…">${dlvEsc(f.description || '')}</textarea></div></div>
     <div class="row"><div class="col"><label>Attachments <span class="muted small">(challan, invoice, Porter screenshot…)</span></label><input type="file" id="dlv-files" multiple>
-      ${(f.files || []).length ? `<div class="small muted" style="margin-top:4px;">${f.files.map(x => dlvEsc(x.name)).join(', ')}</div>` : ''}</div></div>
+      ${(f.files || []).length ? `<div class="small muted" style="margin-top:4px;">${f.files.map(x => dlvEsc(x.name)).join(', ')}</div>` : ''}</div></div>`}
+    ${dlvBudgetDocsFormHTML(f)}
     ${ui.deliveryErr ? `<div class="err">${dlvEsc(ui.deliveryErr)}</div>` : ''}
     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn btn-primary" data-dlv-act="save-form" ${ui.deliverySaving ? 'disabled' : ''}>${ui.deliverySaving ? 'Saving…' : (f.mode === 'edit' ? 'Save changes' : '🚚 Add to deliveries')}</button>
     </div>
   </div>`;
+}
+
+function dlvBudgetDocsFormHTML(f) {
+  const req = new Set(f.required_docs || dlvDefaultRequired());
+  const group = (dir, title) => `<div class="dlv-reqgroup"><div class="small"><b>${title}</b></div>${dlvDocTypes().filter(t => t.dir === dir).map(t => `
+    <label class="dlv-reqdoc"><input type="checkbox" data-dlv-reqdoc="${t.key}" ${req.has(t.key) ? 'checked' : ''}> ${dlvEsc(t.label)}</label>`).join('')}</div>`;
+  return `
+    <div class="dlv-section">Budget <span class="muted small">— porter / transport money the site team may spend. They record every payment with the bill; paid and balance are worked out.</span></div>
+    <div class="row">
+      <div class="col"><label for="dlv-budget">Budget (₹)</label><input type="number" id="dlv-budget" min="0" step="1" inputmode="decimal" value="${dlvEsc(f.budget_amount == null ? '' : f.budget_amount)}" placeholder="e.g. 2500 — leave empty if none"></div>
+      <div class="col"><label for="dlv-budget-note">Budget note <span class="muted small">(optional)</span></label><input type="text" id="dlv-budget-note" value="${dlvEsc(f.budget_note || '')}" placeholder="e.g. Porter fare + 2 labourers for unloading"></div>
+    </div>
+    <div class="dlv-section">Documents <span class="muted small">— tick the ones that must be there. Unticked ones are optional: they can still be uploaded.</span></div>
+    <div class="dlv-reqgroups">${group('to_site', '📤 Sent to site (by purchase)')}${group('from_site', '📥 From site to head office')}</div>`;
 }
 
 function deliveryProofHTML(d) {
@@ -163,11 +202,15 @@ function deliveryCardHTML(d) {
           ${d.driver_name ? `<span>🧑‍✈️ ${dlvEsc(d.driver_name)}</span>` : ''}
           ${overdue ? '<span class="row-flag row-flag-bad">Late</span>' : ''}
           ${dlvMine(d) && ['scheduled', 'dispatched', 'delivered'].includes(d.status) ? '<span class="row-flag row-flag-me">Your proof needed</span>' : ''}
+          ${dlvMissingDocs(d).length ? `<span class="row-flag dlv-flag-docs">📄 ${dlvMissingDocs(d).length} document${dlvMissingDocs(d).length > 1 ? 's' : ''} pending</span>` : ''}
+          ${d.budget_amount != null ? `<span class="${d.balance < 0 ? 'dlv-over' : ''}">💰 ${dlvInr(d.paid)} / ${dlvInr(d.budget_amount)}</span>` : (d.paid ? `<span>💰 ${dlvInr(d.paid)} paid</span>` : '')}
         </span>
       </span>
       <span class="badge dlv-badge">${dlvEsc(st.label)}</span>
     </summary>
     <div class="task-row-body">
+      ${dlvCardTabsHTML(d)}
+      ${dlvCardTab(d) === 'docs' ? dlvDocsHTML(d) : dlvCardTab(d) === 'money' ? dlvMoneyHTML(d) : `
       <div class="dlv-grid">
         ${row('Delivery date', dlvEsc(dlvWhen(d.expected_at)))}
         ${row('Vendor', dlvEsc(d.vendor || ''))}
@@ -201,8 +244,10 @@ function deliveryCardHTML(d) {
         ${manage && ['scheduled', 'dispatched', 'delivered'].includes(d.status) ? `<button class="btn btn-sm dlv-fu ${d.last_followup_at ? 'done' : ''}" data-dlv-followup="${d.id}" title="Remind the site team to update this delivery">📣 ${d.last_followup_at ? 'Follow up again' : 'Follow up'}</button>` : ''}
         ${manage && d.status === 'scheduled' ? `<button class="btn btn-sm" data-dlv-dispatch="${d.id}">🚚 Mark on the way</button>` : ''}
         ${manage && !['unloaded', 'cancelled'].includes(d.status) ? `<button class="btn btn-sm" data-dlv-edit="${d.id}">✏️ Edit details</button><button class="btn btn-sm btn-danger" data-dlv-cancel="${d.id}">Cancel</button>` : ''}
+        ${manage && d.status === 'unloaded' ? `<button class="btn btn-sm" data-dlv-edit="${d.id}">✏️ Edit budget / documents list</button>` : ''}
         ${manage && ui.deliveryDelete !== d.id ? `<button class="btn btn-sm btn-danger" data-dlv-delete="${d.id}">🗑 Delete</button>` : ''}
       </div>
+      `}
       ${ui.deliveryDelete === d.id ? `<div class="dlv-proof dlv-delete-box">
         <div><b>Delete ${dlvEsc(d.ref)}?</b> The delivery, its photos and attachments are removed for everyone. This cannot be undone.</div>
         ${d.task_id && d.closed_task && d.task_status === 'closed' ? `<label class="small" style="display:flex;gap:8px;align-items:center;margin-top:8px;"><input type="checkbox" id="dlv-delete-reopen" checked> Re-open task ${dlvEsc(d.task_id)} (it was closed when it was added to Deliveries)</label>` : ''}
@@ -210,6 +255,159 @@ function deliveryCardHTML(d) {
       </div>` : ''}
     </div>
   </details>`;
+}
+
+// ---- In-card tabs: Details · Documents · Budget & payments
+function dlvCardTab(d) { const t = (ui.dlvCardTab || {})[d.id]; return ['details', 'docs', 'money'].includes(t) ? t : 'details'; }
+function dlvCardTabsHTML(d) {
+  const tab = dlvCardTab(d);
+  const req = (d.required_docs || []).filter(k => dlvDoc(k));
+  const have = dlvDocsPresent(d);
+  const docCount = `${req.filter(k => have.has(k)).length}/${req.length}`;
+  const b = (k, label, extra = '') => `<button type="button" class="dlv-ctab${tab === k ? ' active' : ''}" data-dlv-ctab="${d.id}:${k}">${label}${extra}</button>`;
+  return `<div class="dlv-ctabs" role="tablist">
+    ${b('details', '🚚 Details')}
+    ${b('docs', '📄 Documents', ` <span class="dlv-ctab-count ${dlvMissingDocs(d).length ? 'warn' : 'ok'}">${docCount}</span>`)}
+    ${b('money', '💰 Budget & payments', (d.payments || []).length ? ` <span class="dlv-ctab-count ${d.balance != null && d.balance < 0 ? 'warn' : ''}">${dlvInr(d.paid)}</span>` : '')}
+  </div>`;
+}
+function dlvCanUploadDir(d, dir) { return d.status !== 'cancelled' && (dlvCanManage() || (dir === 'from_site' && dlvMine(d))); }
+function dlvDocsHTML(d) {
+  const docs = (d.files || []).filter(f => f.kind === 'document');
+  const req = new Set(d.required_docs || []);
+  const sub = ['to_site', 'from_site'].includes((ui.dlvDocDir || {})[d.id]) ? ui.dlvDocDir[d.id] : (dlvMine(d) && !dlvCanManage() ? 'from_site' : 'to_site');
+  const types = dlvDocTypes().filter(t => t.dir === sub);
+  const shown = types.filter(t => req.has(t.key) || docs.some(f => f.doc_type === t.key));
+  const canUp = dlvCanUploadDir(d, sub);
+  const canDel = f => f.uploaded_by === session.username || dlvCanManage();
+  const form = ui.dlvDoc && ui.dlvDoc.id === d.id && ui.dlvDoc.dir === sub ? ui.dlvDoc : null;
+  const missingIn = dir => dlvMissingDocs(d, dir).length;
+  const item = t => {
+    const fs = docs.filter(f => f.doc_type === t.key);
+    return `<div class="dlv-doc ${fs.length ? 'have' : (req.has(t.key) ? 'missing' : '')}">
+      <div class="dlv-doc-head"><span class="dlv-doc-state">${fs.length ? '✓' : (req.has(t.key) ? '⏳' : '·')}</span>
+        <b>${dlvEsc(t.label)}</b> <span class="dlv-req ${req.has(t.key) ? 'need' : ''}">${req.has(t.key) ? 'Required' : 'Optional'}</span>
+        ${!fs.length && req.has(t.key) ? `<span class="small muted">— not uploaded yet</span>` : ''}
+        ${!fs.length && canUp && !form ? `<button type="button" class="btn btn-sm" data-dlv-doc-new="${d.id}:${sub}:${t.key}">⬆ Upload</button>` : ''}</div>
+      ${fs.map(f => `<div class="dlv-doc-file">${`<button type="button" class="dlv-file" data-dlv-file="${d.id}:${f.id}" title="${dlvEsc(f.name)}">📎 ${dlvEsc(f.name)}</button>`}
+        <span class="small muted">${dlvEsc(personName(f.uploaded_by))} · ${dlvEsc(dlvTime(f.created_at))}</span>
+        ${f.note ? `<span class="small">"${dlvEsc(f.note)}"</span>` : ''}
+        ${canDel(f) ? `<button type="button" class="dlv-x" data-dlv-file-del="${d.id}:${f.id}" title="Remove this file" aria-label="Remove">✕</button>` : ''}</div>`).join('')}
+    </div>`;
+  };
+  return `<div class="dlv-docs">
+    <div class="dlv-subtabs">
+      <button type="button" class="dlv-subtab${sub === 'to_site' ? ' active' : ''}" data-dlv-docdir="${d.id}:to_site">📤 Sent to site ${missingIn('to_site') ? `<span class="dlv-ctab-count warn">${missingIn('to_site')} pending</span>` : ''}</button>
+      <button type="button" class="dlv-subtab${sub === 'from_site' ? ' active' : ''}" data-dlv-docdir="${d.id}:from_site">📥 From site to head office ${missingIn('from_site') ? `<span class="dlv-ctab-count warn">${missingIn('from_site')} pending</span>` : ''}</button>
+    </div>
+    <div class="small muted" style="margin:6px 0 8px;">${sub === 'to_site' ? 'Papers the purchase team sends with the material — the site team can open, download and print them.' : 'Papers the site team sends back to head office after receiving the material. Take a clear photo or attach the PDF.'}</div>
+    ${shown.length ? shown.map(item).join('') : '<div class="empty" style="padding:10px;">No documents needed here. Optional ones can still be uploaded.</div>'}
+    ${form ? dlvDocFormHTML(d, form, types) : (canUp ? `<button type="button" class="btn btn-sm" style="margin-top:8px;" data-dlv-doc-new="${d.id}:${sub}:">+ Upload ${shown.length ? 'another' : 'a'} document</button>` : (sub === 'to_site' ? '' : '<div class="small muted" style="margin-top:6px;">Only the site team tagged on this delivery uploads these.</div>'))}
+  </div>`;
+}
+function dlvDocFormHTML(d, f, types) {
+  const req = new Set(d.required_docs || []);
+  return `<div class="dlv-proof">
+    <label for="dlv-doc-type">Which document?</label>
+    <select id="dlv-doc-type">${types.map(t => `<option value="${t.key}" ${f.type === t.key ? 'selected' : ''}>${dlvEsc(t.label)}${req.has(t.key) ? ' (required)' : ' (optional)'}</option>`).join('')}</select>
+    <label class="btn dlv-camera" style="margin-top:8px;">📷 Photo / 📎 file<input type="file" id="dlv-doc-files" accept="image/*,application/pdf,.pdf,.doc,.docx,.xls,.xlsx" multiple hidden></label>
+    <div class="dlv-thumbs">${(f.files || []).map((x, i) => `<div class="dlv-thumb">${/^data:image\//.test(x.data) ? `<img src="${x.data}" alt="">` : `<span class="dlv-thumb-file">📎 ${dlvEsc(x.name)}</span>`}<button type="button" data-dlv-doc-remove="${i}" aria-label="Remove">✕</button></div>`).join('')}</div>
+    ${f.busy ? '<div class="small muted">Preparing…</div>' : ''}
+    <label for="dlv-doc-note">Note <span class="muted small">(optional)</span></label>
+    <input type="text" id="dlv-doc-note" value="${dlvEsc(f.note || '')}" placeholder="e.g. challan no. 2291, signed by store keeper">
+    ${f.err ? `<div class="err">${dlvEsc(f.err)}</div>` : ''}
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-primary btn-sm" data-dlv-doc-send="${d.id}" ${f.saving || f.busy ? 'disabled' : ''}>${f.saving ? 'Uploading…' : (f.dir === 'to_site' ? '📤 Send to site' : '📥 Send to head office')}</button>
+      <button class="btn btn-sm" data-dlv-act="doc-cancel">Cancel</button>
+    </div>
+  </div>`;
+}
+function dlvMoneyHTML(d) {
+  const manage = dlvCanManage();
+  const canPay = d.status !== 'cancelled' && (manage || dlvMine(d));
+  const pays = d.payments || [];
+  const budget = d.budget_amount;
+  const pct = budget ? Math.min(100, Math.round(d.paid / budget * 100)) : 0;
+  const form = ui.dlvPay && ui.dlvPay.id === d.id ? ui.dlvPay : null;
+  const canDel = p => manage || (p.paid_by === session.username && Date.now() - new Date(p.created_at).getTime() < 48 * 3600000);
+  return `<div class="dlv-money">
+    <div class="dlv-money-tiles">
+      <div class="dlv-tile"><span>Budget</span><b>${budget == null ? 'Not set' : dlvInr(budget)}</b></div>
+      <div class="dlv-tile"><span>Paid</span><b>${dlvInr(d.paid || 0)}</b></div>
+      <div class="dlv-tile ${d.balance != null && d.balance < 0 ? 'bad' : 'good'}"><span>${d.balance != null && d.balance < 0 ? 'Over budget' : 'Balance'}</span><b>${d.balance == null ? '—' : dlvInr(Math.abs(d.balance))}</b></div>
+    </div>
+    ${budget ? `<div class="dlv-bar"><div class="dlv-bar-fill ${d.balance < 0 ? 'over' : pct >= 80 ? 'near' : ''}" style="width:${pct}%"></div></div>` : ''}
+    ${d.budget_note ? `<div class="small muted" style="margin-top:4px;">${dlvEsc(d.budget_note)}</div>` : ''}
+    ${budget == null && manage ? `<div class="small muted" style="margin-top:4px;">No budget set — tap “Edit” on the Details tab to add one.</div>` : ''}
+    <div class="dlv-section" style="margin-top:12px;">Payments ${pays.length ? `<span class="muted small">(${pays.length})</span>` : ''}</div>
+    ${pays.length ? `<div class="dlv-perf-wrap"><table class="dlv-perf dlv-pays"><thead><tr><th>Date</th><th>For</th><th>Paid to</th><th>Mode</th><th>By</th><th style="text-align:right;">Amount</th><th>Bill</th><th></th></tr></thead><tbody>
+      ${pays.map(p => `<tr><td>${dlvEsc(dlvWhen(p.paid_at))}</td><td>${dlvEsc(p.purpose)}${p.note ? `<div class="small muted">${dlvEsc(p.note)}</div>` : ''}</td><td>${dlvEsc(p.paid_to || '—')}</td><td>${dlvEsc(p.mode || '—')}</td>
+        <td>${dlvEsc(p.paid_by_name || personName(p.paid_by))}</td><td style="text-align:right;"><b>${dlvInr(p.amount)}</b></td>
+        <td>${(p.bills || []).length ? p.bills.map((f, i) => `<button type="button" class="dlv-file" data-dlv-file="${d.id}:${f.id}">🧾 ${p.bills.length > 1 ? i + 1 : 'Bill'}</button>`).join(' ') : `<span class="dlv-nobill" title="${dlvEsc(p.no_bill_reason || '')}">No bill${p.no_bill_reason ? ` — ${dlvEsc(p.no_bill_reason)}` : ''}</span>`}</td>
+        <td>${canDel(p) ? `<button type="button" class="dlv-x" data-dlv-pay-del="${d.id}:${p.id}" title="Remove this payment" aria-label="Remove">✕</button>` : ''}</td></tr>`).join('')}
+      <tr class="dlv-total"><td colspan="5">Total paid</td><td style="text-align:right;"><b>${dlvInr(d.paid)}</b></td><td colspan="2"></td></tr>
+    </tbody></table></div>` : '<div class="empty" style="padding:10px;">No payments recorded yet.</div>'}
+    ${form ? dlvPayFormHTML(d, form) : (canPay ? `<button type="button" class="btn btn-primary btn-sm" style="margin-top:8px;" data-dlv-pay-new="${d.id}">+ Record a payment</button>` : '')}
+  </div>`;
+}
+function dlvPayFormHTML(d, f) {
+  return `<div class="dlv-proof">
+    <div class="dlv-proof-title">💰 Record a payment for ${dlvEsc(d.ref)}</div>
+    <div class="row">
+      <div class="col"><label for="dlv-pay-amount">Amount paid (₹) *</label><input type="number" id="dlv-pay-amount" min="1" step="1" inputmode="decimal" value="${dlvEsc(f.amount || '')}" placeholder="e.g. 850"></div>
+      <div class="col"><label for="dlv-pay-purpose">For *</label><select id="dlv-pay-purpose">${dlvPayPurposes().map(x => `<option ${f.purpose === x ? 'selected' : ''}>${dlvEsc(x)}</option>`).join('')}</select></div>
+    </div>
+    <div class="row">
+      <div class="col"><label for="dlv-pay-to">Paid to</label><input type="text" id="dlv-pay-to" value="${dlvEsc(f.paid_to || '')}" placeholder="e.g. Porter driver Ramesh / 2 labourers"></div>
+      <div class="col"><label for="dlv-pay-mode">Mode</label><select id="dlv-pay-mode">${dlvPayModes().map(x => `<option ${f.mode === x ? 'selected' : ''}>${dlvEsc(x)}</option>`).join('')}</select></div>
+      <div class="col"><label for="dlv-pay-date">Date</label><input type="date" id="dlv-pay-date" value="${dlvEsc(f.date || '')}"></div>
+    </div>
+    <label class="btn dlv-camera" style="margin-top:8px;">📷 Photo of the bill / receipt<input type="file" id="dlv-pay-files" accept="image/*,application/pdf,.pdf" multiple hidden></label>
+    <div class="dlv-thumbs">${(f.files || []).map((x, i) => `<div class="dlv-thumb">${/^data:image\//.test(x.data) ? `<img src="${x.data}" alt="">` : `<span class="dlv-thumb-file">📎 ${dlvEsc(x.name)}</span>`}<button type="button" data-dlv-pay-remove="${i}" aria-label="Remove">✕</button></div>`).join('')}</div>
+    ${f.busy ? '<div class="small muted">Preparing photo…</div>' : ''}
+    ${(f.files || []).length ? '' : `<label for="dlv-pay-nobill">No bill? Say why <span class="muted small">(only if there is no bill)</span></label><input type="text" id="dlv-pay-nobill" value="${dlvEsc(f.no_bill_reason || '')}" placeholder="e.g. labourers paid cash, no receipt">`}
+    <label for="dlv-pay-note">Note <span class="muted small">(optional)</span></label><input type="text" id="dlv-pay-note" value="${dlvEsc(f.note || '')}">
+    ${d.budget_amount != null && Number(f.amount) > 0 && d.paid + Number(f.amount) > d.budget_amount ? `<div class="notice dlv-warn" style="margin-top:8px;">⚠ This goes over the budget by ${dlvInr(d.paid + Number(f.amount) - d.budget_amount)}. The purchase team will be told.</div>` : ''}
+    ${f.err ? `<div class="err">${dlvEsc(f.err)}</div>` : ''}
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-primary btn-sm" data-dlv-pay-send="${d.id}" ${f.saving || f.busy ? 'disabled' : ''}>${f.saving ? 'Saving…' : '✓ Save payment'}</button>
+      <button class="btn btn-sm" data-dlv-act="pay-cancel">Cancel</button>
+    </div>
+  </div>`;
+}
+// ---- Page summary: budget, paid, balance across deliveries, and paid per person
+function deliveryBudgetHTML() {
+  const items = (deliveriesData.items || []).filter(d => d.status !== 'cancelled' && (dlvCanManage() || dlvMine(d)));
+  const withMoney = items.filter(d => d.budget_amount != null || (d.payments || []).length);
+  if (!withMoney.length) return '';
+  const budget = withMoney.reduce((a, d) => a + (d.budget_amount || 0), 0);
+  const paid = withMoney.reduce((a, d) => a + (d.paid || 0), 0);
+  const paidBudgeted = withMoney.filter(d => d.budget_amount != null).reduce((a, d) => a + (d.paid || 0), 0);
+  const over = withMoney.filter(d => d.balance != null && d.balance < 0);
+  const noBill = withMoney.reduce((a, d) => a + (d.payments || []).filter(p => !(p.bills || []).length).length, 0);
+  const people = new Map();
+  for (const d of withMoney) for (const p of d.payments || []) {
+    const r = people.get(p.paid_by) || { username: p.paid_by, name: p.paid_by_name, total: 0, count: 0, deliveries: new Set(), noBill: 0 };
+    r.total += p.amount; r.count++; r.deliveries.add(d.id); if (!(p.bills || []).length) r.noBill++;
+    people.set(p.paid_by, r);
+  }
+  const rows = [...people.values()].sort((a, b) => b.total - a.total);
+  return `
+  <div class="card" id="dlv-budget">
+    <div class="card-title" style="margin:0;">Delivery budget</div>
+    <div class="small muted">Porter / transport budgets set by the purchase team, and what the site team has paid against them (each payment with its bill).${dlvCanManage() ? '' : ' You see the deliveries you are tagged on.'}</div>
+    <div class="dlv-money-tiles" style="margin-top:10px;">
+      <div class="dlv-tile"><span>Total budget</span><b>${dlvInr(budget)}</b></div>
+      <div class="dlv-tile"><span>Total paid</span><b>${dlvInr(paid)}</b></div>
+      <div class="dlv-tile ${paidBudgeted > budget ? 'bad' : 'good'}"><span>${paidBudgeted > budget ? 'Over budget by' : 'Balance'}</span><b>${dlvInr(Math.abs(Math.round((budget - paidBudgeted) * 100) / 100))}</b></div>
+      <div class="dlv-tile ${over.length ? 'bad' : ''}"><span>Deliveries over budget</span><b>${over.length}</b></div>
+    </div>
+    ${noBill ? `<div class="small" style="margin-top:6px;">🧾 ${noBill} payment${noBill > 1 ? 's' : ''} without a bill.</div>` : ''}
+    ${over.length ? `<div class="dlv-files" style="margin-top:6px;">${over.map(d => `<button type="button" class="dlv-file dlv-over" data-dlv-goto="${d.id}">${dlvEsc(d.ref)} · over by ${dlvInr(-d.balance)}</button>`).join('')}</div>` : ''}
+    ${rows.length ? `<div class="dlv-section" style="margin-top:12px;">Paid per person</div><div class="dlv-perf-wrap"><table class="dlv-perf"><thead><tr><th>Person</th><th>Payments</th><th>Deliveries</th><th>Without bill</th><th style="text-align:right;">Total paid</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td><b>${dlvEsc(r.name || personName(r.username))}</b></td><td>${r.count}</td><td>${r.deliveries.size}</td><td>${r.noBill ? `<span class="dlv-late">${r.noBill}</span>` : '0'}</td><td style="text-align:right;"><b>${dlvInr(Math.round(r.total * 100) / 100)}</b></td></tr>`).join('')}
+    </tbody></table></div>` : ''}
+  </div>`;
 }
 
 function renderDeliveriesView() {
@@ -231,8 +429,9 @@ function renderDeliveriesView() {
   <div class="card">
     <div class="task-tabs" role="tablist">${DLV_TABS.map(t => `<button class="task-tab${tab === t.key ? ' active' : ''}" data-dlv-tab="${t.key}">${t.label} <span class="task-tab-count">${items.filter(t.match).length}</span></button>`).join('')}</div>
     <input type="text" id="delivery-search" placeholder="Search by material, DLV number, driver, vehicle, Porter order ID…" value="${dlvEsc(ui.deliverySearch || '')}" style="margin:10px 0;">
-    ${list.length ? list.map(deliveryCardHTML).join('') : `<div class="empty">${q ? 'No delivery matches your search.' : tab === 'pending' ? (dlvCanManage() ? 'No deliveries to receive. Open a material task and tap "🚚 Add to delivery", or add one here.' : 'Nothing to receive right now.') : 'Nothing here yet.'}</div>`}
+    ${list.length ? list.map(deliveryCardHTML).join('') : `<div class="empty">${q ? 'No delivery matches your search.' : tab === 'docs' ? 'All required documents are in.' : tab === 'pending' ? (dlvCanManage() ? 'No deliveries to receive. Open a material task and tap "🚚 Add to delivery", or add one here.' : 'Nothing to receive right now.') : 'Nothing here yet.'}</div>`}
   </div>
+  ${deliveryBudgetHTML()}
   ${deliveryPerformanceHTML()}
   ${ui.deliveryPhoto ? `<div class="dlv-viewer" data-dlv-act="close-photo"><img src="${ui.deliveryPhoto.data}" alt="${dlvEsc(ui.deliveryPhoto.name)}"><div class="dlv-viewer-bar"><span>${dlvEsc(ui.deliveryPhoto.name)}</span><button class="btn btn-sm" data-dlv-act="download-photo">Download</button><button class="btn btn-sm" data-dlv-act="close-photo">Close</button></div></div>` : ''}`;
 }
@@ -311,7 +510,7 @@ function dlvStampPhoto(dataUrl, text) {
 
 function bindDeliveriesView() {
   const act = (name, fn) => document.querySelectorAll(`[data-dlv-act="${name}"]`).forEach(el => el.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(el); });
-  act('new', () => { ui.deliveryForm = { mode: 'new', title: '', receivers: [], files: [], search: '' }; ui.deliveryErr = ''; render(); });
+  act('new', () => { ui.deliveryForm = { mode: 'new', title: '', receivers: [], files: [], search: '', required_docs: dlvDefaultRequired().slice() }; ui.deliveryErr = ''; render(); });
   act('cancel-form', () => { ui.deliveryForm = null; ui.deliveryErr = ''; render(); });
   act('proof-cancel', () => { ui.deliveryProof = null; render(); });
   act('cancel-cancel', () => { ui.deliveryCancel = null; render(); });
@@ -343,7 +542,13 @@ function bindDeliveriesView() {
       const map = { title: 'dlv-title', quantity: 'dlv-quantity', expected_date: 'dlv-date', expected_time: 'dlv-time', project: 'dlv-project', site_location: 'dlv-site',
         vendor: 'dlv-vendor', transport: 'dlv-transport', porter_order_id: 'dlv-porter', delivery_ref: 'dlv-ref', vehicle_no: 'dlv-vehicle', driver_name: 'dlv-driver', driver_phone: 'dlv-phone', description: 'dlv-desc' };
       for (const [k, id] of Object.entries(map)) { const x = v(id); if (x !== undefined) f[k] = x; }
+      const bud = v('dlv-budget'); if (bud !== undefined) f.budget_amount = bud === '' ? null : bud;
+      const bn = v('dlv-budget-note'); if (bn !== undefined) f.budget_note = bn;
     };
+    document.querySelectorAll('#delivery-form input[type="number"]').forEach(el => { el.addEventListener('input', keep); el.addEventListener('change', keep); });
+    document.querySelectorAll('[data-dlv-reqdoc]').forEach(cb => cb.onchange = () => {
+      keep(); const s = new Set(f.required_docs || dlvDefaultRequired()); if (cb.checked) s.add(cb.dataset.dlvReqdoc); else s.delete(cb.dataset.dlvReqdoc); f.required_docs = [...s];
+    });
     document.querySelectorAll('#delivery-form input[type="text"], #delivery-form input[type="date"], #delivery-form input[type="time"], #delivery-form textarea, #delivery-form select').forEach(el => {
       if (el.id === 'dlv-people-search') return;
       el.addEventListener('input', keep); el.addEventListener('change', keep);
@@ -360,13 +565,23 @@ function bindDeliveriesView() {
     act('save-form', async (btn) => {
       keep();
       if (ui.deliverySaving) return;
+      if (f.limited) {
+        ui.deliverySaving = true; ui.deliveryErr = ''; render();
+        try {
+          await api(`/api/deliveries/${f.id}/update`, { method: 'POST', body: JSON.stringify({ budget_amount: f.budget_amount, budget_note: f.budget_note, required_docs: f.required_docs || dlvDefaultRequired() }) });
+          const id = f.id; ui.deliveryForm = null; ui.deliverySaving = false; setBanner('Budget and documents list updated.', 'ok'); await refreshData(); openDeliveryOnPage(id);
+        } catch (e) { ui.deliverySaving = false; ui.deliveryErr = e.message; render(); }
+        return;
+      }
+      if (f.budget_amount != null && f.budget_amount !== '' && !(Number(f.budget_amount) >= 0)) { ui.deliveryErr = 'Enter the budget as an amount in rupees.'; render(); return; }
       if (!String(f.title || '').trim()) { ui.deliveryErr = 'Write what is being delivered.'; render(); return; }
       if (!f.expected_date) { ui.deliveryErr = 'Pick the delivery date (time is optional).'; render(); return; }
       if (!(f.receivers || []).length) { ui.deliveryErr = 'Tag at least one person on site who will receive it.'; render(); return; }
       const body = { title: f.title, quantity: f.quantity, project: f.project, site_location: f.site_location, vendor: f.vendor, transport: f.transport,
         porter_order_id: f.porter_order_id, delivery_ref: f.delivery_ref, vehicle_no: f.vehicle_no, driver_name: f.driver_name, driver_phone: f.driver_phone,
         description: f.description, expected_at: f.expected_date + (f.expected_time ? `T${f.expected_time}` : ''), receivers: f.receivers,
-        attachments: (f.files || []).map(x => ({ name: x.name, data: x.data })) };
+        attachments: (f.files || []).map(x => ({ name: x.name, data: x.data })),
+        budget_amount: f.budget_amount == null || f.budget_amount === '' ? null : Number(f.budget_amount), budget_note: f.budget_note || '', required_docs: f.required_docs || dlvDefaultRequired() };
       if (f.mode === 'new' && f.task_id) body.task_id = f.task_id;
       ui.deliverySaving = true; ui.deliveryErr = ''; render();
       try {
@@ -390,7 +605,8 @@ function bindDeliveriesView() {
     const [date, time] = String(d.expected_at || '').split('T');
     ui.deliveryForm = { mode: 'edit', id: d.id, ref: d.ref, title: d.title, quantity: d.quantity, project: d.project, site_location: d.site_location, vendor: d.vendor, transport: d.transport || '',
       porter_order_id: d.porter_order_id, delivery_ref: d.delivery_ref, vehicle_no: d.vehicle_no, driver_name: d.driver_name, driver_phone: d.driver_phone, description: d.description,
-      expected_date: date || '', expected_time: time || '', receivers: (d.receivers || []).slice(), files: [], search: '' };
+      expected_date: date || '', expected_time: time || '', receivers: (d.receivers || []).slice(), files: [], search: '',
+      budget_amount: d.budget_amount, budget_note: d.budget_note || '', required_docs: (d.required_docs || []).slice(), limited: d.status === 'unloaded' };
     ui.deliveryErr = ''; render(); window.scrollTo(0, 0);
   });
   document.querySelectorAll('[data-dlv-followup]').forEach(b => b.onclick = async () => {
@@ -418,6 +634,95 @@ function bindDeliveriesView() {
       const r = await api(`/api/deliveries/${did}/files/${fid}`);
       if (/^data:image\//i.test(r.data)) { ui.deliveryPhoto = { data: r.data, name: r.name }; render(); } else downloadDataUrl(r.data, r.name);
     } catch (err) { setBanner(err.message); render(); }
+  });
+
+  // ---- in-card tabs
+  document.querySelectorAll('[data-dlv-ctab]').forEach(b => b.onclick = (e) => {
+    e.preventDefault(); const [id, k] = b.dataset.dlvCtab.split(':'); ui.dlvCardTab = { ...(ui.dlvCardTab || {}), [id]: k }; render();
+  });
+  document.querySelectorAll('[data-dlv-docdir]').forEach(b => b.onclick = (e) => {
+    e.preventDefault(); const [id, k] = b.dataset.dlvDocdir.split(':'); ui.dlvDocDir = { ...(ui.dlvDocDir || {}), [id]: k };
+    if (ui.dlvDoc && ui.dlvDoc.id === Number(id)) ui.dlvDoc = null; render();
+  });
+  document.querySelectorAll('[data-dlv-goto]').forEach(b => b.onclick = () => { const id = Number(b.dataset.dlvGoto); ui.dlvCardTab = { ...(ui.dlvCardTab || {}), [id]: 'money' }; openDeliveryOnPage(id); });
+  // Reads picked files; photos get the date/time + delivery number stamped on them.
+  const readFiles = (input, target, stampWord, ref, max = 10) => {
+    const list = Array.from(input.files || []).slice(0, max - (target.files || []).length); if (!list.length) return;
+    target.busy = true; target.err = ''; render(); let left = list.length;
+    list.forEach(file => readAnyFile(file, async (data) => {
+      if (data && /^data:image\//i.test(data)) {
+        const stamp = `${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${ref} · ${stampWord} · ${session.name}`;
+        target.files.push({ name: file.name.replace(/\.[^.]+$/, '') + '.jpg', data: await dlvStampPhoto(data, stamp) });
+      } else if (data) target.files.push({ name: file.name, data });
+      if (--left === 0) { target.busy = false; render(); }
+    }));
+  };
+  // documents
+  document.querySelectorAll('[data-dlv-doc-new]').forEach(b => b.onclick = (e) => {
+    e.preventDefault(); const [id, dir, type] = b.dataset.dlvDocNew.split(':');
+    const d = (deliveriesData.items || []).find(x => x.id === Number(id));
+    const first = type || (d ? (dlvMissingDocs(d, dir)[0] || dlvDocTypes().find(t => t.dir === dir).key) : '');
+    ui.dlvDoc = { id: Number(id), dir, type: first, files: [], note: '', err: '' }; render();
+  });
+  act('doc-cancel', () => { ui.dlvDoc = null; render(); });
+  const df = ui.dlvDoc;
+  if (df) {
+    const d = (deliveriesData.items || []).find(x => x.id === df.id);
+    const ty = document.getElementById('dlv-doc-type'); if (ty) ty.onchange = () => { df.type = ty.value; };
+    const nt = document.getElementById('dlv-doc-note'); if (nt) nt.oninput = () => { df.note = nt.value; };
+    const fi = document.getElementById('dlv-doc-files'); if (fi) fi.onchange = () => readFiles(fi, df, (dlvDoc(df.type) || {}).label || 'Document', d ? d.ref : '');
+    document.querySelectorAll('[data-dlv-doc-remove]').forEach(b => b.onclick = () => { df.files.splice(Number(b.dataset.dlvDocRemove), 1); render(); });
+    document.querySelectorAll('[data-dlv-doc-send]').forEach(b => b.onclick = async () => {
+      if (df.saving) return;
+      if (!df.files.length) { df.err = 'Attach the document — a clear photo or the PDF.'; render(); return; }
+      df.saving = true; df.err = ''; render();
+      try {
+        await api(`/api/deliveries/${df.id}/documents`, { method: 'POST', body: JSON.stringify({ type: df.type, note: df.note, attachments: df.files }) });
+        const label = (dlvDoc(df.type) || {}).label || 'Document'; const dir = df.dir; ui.dlvDoc = null;
+        setBanner(`${label} uploaded — ${dir === 'to_site' ? 'the site team has been told' : 'head office has been told'}.`, 'ok'); await refreshData();
+      } catch (e) { df.saving = false; df.err = e.message; render(); }
+    });
+  }
+  document.querySelectorAll('[data-dlv-file-del]').forEach(b => b.onclick = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Remove?'; b.classList.add('armed'); setTimeout(() => { if (b.isConnected) { b.dataset.armed = ''; b.textContent = '✕'; b.classList.remove('armed'); } }, 4000); return; }
+    const [did, fid] = b.dataset.dlvFileDel.split(':'); b.disabled = true;
+    try { await api(`/api/deliveries/${did}/files/${fid}/delete`, { method: 'POST' }); setBanner('File removed.', 'ok'); await refreshData(); }
+    catch (err) { b.disabled = false; setBanner(err.message); render(); }
+  });
+  // payments
+  document.querySelectorAll('[data-dlv-pay-new]').forEach(b => b.onclick = (e) => {
+    e.preventDefault();
+    ui.dlvPay = { id: Number(b.dataset.dlvPayNew), amount: '', purpose: dlvPayPurposes()[0], mode: dlvPayModes()[0], paid_to: '', date: typeof istDayKey === 'function' ? istDayKey(new Date().toISOString()) : dlvIstDay(new Date().toISOString()), files: [], note: '', no_bill_reason: '', err: '' };
+    render(); const el = document.getElementById('dlv-pay-amount'); if (el) el.focus();
+  });
+  act('pay-cancel', () => { ui.dlvPay = null; render(); });
+  const pf = ui.dlvPay;
+  if (pf) {
+    const d = (deliveriesData.items || []).find(x => x.id === pf.id);
+    const bindV = (id, k, rerender) => { const el = document.getElementById(id); if (el) { el.oninput = () => { pf[k] = el.value; }; el.onchange = () => { pf[k] = el.value; if (rerender) { render(); const n = document.getElementById(id); if (n && n.focus) n.focus(); } }; } };
+    bindV('dlv-pay-amount', 'amount', true); bindV('dlv-pay-purpose', 'purpose'); bindV('dlv-pay-mode', 'mode'); bindV('dlv-pay-to', 'paid_to'); bindV('dlv-pay-date', 'date'); bindV('dlv-pay-note', 'note'); bindV('dlv-pay-nobill', 'no_bill_reason');
+    const fi = document.getElementById('dlv-pay-files'); if (fi) fi.onchange = () => readFiles(fi, pf, 'Bill', d ? d.ref : '', 5);
+    document.querySelectorAll('[data-dlv-pay-remove]').forEach(b => b.onclick = () => { pf.files.splice(Number(b.dataset.dlvPayRemove), 1); render(); });
+    document.querySelectorAll('[data-dlv-pay-send]').forEach(b => b.onclick = async () => {
+      if (pf.saving) return;
+      if (!(Number(pf.amount) > 0)) { pf.err = 'Enter the amount paid.'; render(); return; }
+      if (!pf.files.length && String(pf.no_bill_reason || '').trim().length < 5) { pf.err = 'Add a photo of the bill / receipt — or, if there is no bill, write why.'; render(); return; }
+      pf.saving = true; pf.err = ''; render();
+      try {
+        const r = await api(`/api/deliveries/${pf.id}/payments`, { method: 'POST', body: JSON.stringify({ amount: Number(pf.amount), purpose: pf.purpose, mode: pf.mode, paid_to: pf.paid_to, paid_at: pf.date, note: pf.note, no_bill_reason: pf.no_bill_reason, attachments: pf.files }) });
+        ui.dlvPay = null;
+        setBanner(`Payment saved. Paid ${dlvInr(r.paid)}${r.balance == null ? '' : r.overBudget ? ` — over budget by ${dlvInr(-r.balance)}` : ` — ${dlvInr(r.balance)} left`}.`, r.overBudget ? '' : 'ok');
+        await refreshData();
+      } catch (e) { pf.saving = false; pf.err = e.message; render(); }
+    });
+  }
+  document.querySelectorAll('[data-dlv-pay-del]').forEach(b => b.onclick = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Remove?'; b.classList.add('armed'); setTimeout(() => { if (b.isConnected) { b.dataset.armed = ''; b.textContent = '✕'; b.classList.remove('armed'); } }, 4000); return; }
+    const [did, pid] = b.dataset.dlvPayDel.split(':'); b.disabled = true;
+    try { await api(`/api/deliveries/${did}/payments/${pid}/delete`, { method: 'POST' }); setBanner('Payment removed.', 'ok'); await refreshData(); }
+    catch (err) { b.disabled = false; setBanner(err.message); render(); }
   });
 
   // ---- proof

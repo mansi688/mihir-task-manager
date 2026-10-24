@@ -4,6 +4,31 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Delivery documents and budget
+### Added
+- **Documents on every delivery**, in their own tab on the delivery card, split into **📤 Sent to site** (delivery
+  challan, PO, vendor invoice, e-way bill, Porter booking, other — uploaded by the purchase side; the site team is
+  notified and can open / download / print them) and **📥 From site to head office** (signed/stamped challan, GRN,
+  invoice received with material, weighbridge slip, shortage/damage report, other — uploaded by the tagged site team;
+  the person who added the delivery and the task creator are notified, with "all required documents from site are in"
+  when the set is complete).
+- **Required vs optional** per delivery: ticked on the delivery form (default: delivery challan + signed challan);
+  unticked types stay optional and can still be uploaded. Cards show "📄 n documents pending"; new
+  **Documents pending** tab on the Deliveries page; after unloading, the site team gets a **"Documents pending"**
+  reminder at the 9 AM / 3 PM / 6 PM slots (for 30 days) until the required from-site documents are uploaded.
+- **Budget & payments** tab: the purchase side sets a porter / transport budget (and note) per delivery; the site team
+  records each payment (amount, what for, paid to, mode, date) with a **photo of the bill** (stamped with date, time and
+  DLV number) — or a reason when there is no bill. Paid and balance are worked out; over-budget shows in red and the
+  purchase side is notified with the running total. Payer can remove their own payment within 48 h; purchase any time.
+- **Delivery budget** summary on the Deliveries page: total budget, total paid, balance, deliveries over budget,
+  payments without a bill, and **paid per person**.
+- After unloading the purchase side can still change the budget and the documents list (other details stay locked).
+### Database
+- `deliveries.budget_amount NUMERIC(12,2)`, `budget_note`, `required_docs` (default `challan,signed_challan`);
+  `delivery_files.doc_type`, `note`, `payment_id`; new table `delivery_payments`. All additive (created on start).
+### Rollback
+- Previous deploy; the new columns/table are simply unused.
+
 ## [Unreleased] — Delivery reminders and follow-up
 ### Added
 - **Delivery reminders** for the tagged site team at the same 9 AM / 3 PM / 6 PM slots, under Notifications →

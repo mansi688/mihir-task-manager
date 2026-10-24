@@ -450,6 +450,15 @@ async function init() {
   await run('CREATE INDEX IF NOT EXISTS idx_deliveries_task ON deliveries(task_id)');
   await ensureColumn('deliveries', 'closed_task', 'INTEGER DEFAULT 0'); // 1 = adding it to Deliveries closed its task
   await ensureColumn('deliveries', 'last_followup_at', 'TEXT');
+  // Budget for porter / transport / unloading, and which documents this delivery needs.
+  await ensureColumn('deliveries', 'budget_amount', 'NUMERIC(12,2)');
+  await ensureColumn('deliveries', 'budget_note', 'TEXT');
+  await ensureColumn('deliveries', 'required_docs', "TEXT DEFAULT 'challan,signed_challan'");
+  await run(`CREATE TABLE IF NOT EXISTS delivery_payments(
+    id SERIAL PRIMARY KEY, delivery_id INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+    amount NUMERIC(12,2) NOT NULL CHECK (amount > 0), purpose TEXT NOT NULL, paid_to TEXT, mode TEXT, paid_at TEXT NOT NULL,
+    note TEXT, no_bill_reason TEXT, paid_by TEXT NOT NULL, paid_by_name TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_delivery_payments_delivery ON delivery_payments(delivery_id)');
   await ensureColumn('deliveries', 'last_followup_by', 'TEXT');
   await ensureColumn('deliveries', 'followup_count', 'INTEGER DEFAULT 0');
   await run('CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status, expected_at)');
@@ -458,6 +467,9 @@ async function init() {
     kind TEXT NOT NULL DEFAULT 'attachment', name TEXT NOT NULL, data TEXT NOT NULL,
     taken_at TEXT, uploaded_by TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_delivery_files_delivery ON delivery_files(delivery_id)');
+  await ensureColumn('delivery_files', 'doc_type', 'TEXT');
+  await ensureColumn('delivery_files', 'note', 'TEXT');
+  await ensureColumn('delivery_files', 'payment_id', 'INTEGER');
   // Chat: 'general' (everyone) or 'team:<department>' rooms; files hang off a message.
   await run(`CREATE TABLE IF NOT EXISTS chat_messages(
     id SERIAL PRIMARY KEY, room TEXT NOT NULL DEFAULT 'general',
@@ -1304,8 +1316,17 @@ module.exports = {
           ORDER BY (d.status IN ('scheduled','dispatched')) DESC, COALESCE(d.expected_at, d.created_at) DESC LIMIT 2000`,
           [username, `%,${username},%`, username, username, username]);
     if (!rows.length) return [];
-    const files = await all('SELECT id, delivery_id, kind, name, taken_at, uploaded_by, created_at FROM delivery_files WHERE delivery_id = ANY(?::int[]) ORDER BY id', [rows.map(r => r.id)]);
-    return rows.map(r => ({ ...r, receivers: r.receivers ? r.receivers.split(',').filter(Boolean) : [], files: files.filter(f => f.delivery_id === r.id) }));
+    const ids = rows.map(r => r.id);
+    const files = await all('SELECT id, delivery_id, kind, doc_type, note, payment_id, name, taken_at, uploaded_by, created_at FROM delivery_files WHERE delivery_id = ANY(?::int[]) ORDER BY id', [ids]);
+    const pays = await all('SELECT * FROM delivery_payments WHERE delivery_id = ANY(?::int[]) ORDER BY paid_at, id', [ids]);
+    return rows.map(r => {
+      const payments = pays.filter(p => p.delivery_id === r.id).map(p => ({ ...p, amount: Number(p.amount), bills: files.filter(f => f.payment_id === p.id).map(f => ({ id: f.id, name: f.name })) }));
+      const paid = Math.round(payments.reduce((a, p) => a + p.amount, 0) * 100) / 100;
+      const budget = r.budget_amount == null ? null : Number(r.budget_amount);
+      return { ...r, budget_amount: budget, receivers: r.receivers ? r.receivers.split(',').filter(Boolean) : [],
+        required_docs: String(r.required_docs == null ? 'challan,signed_challan' : r.required_docs).split(',').filter(Boolean),
+        files: files.filter(f => f.delivery_id === r.id && !f.payment_id), payments, paid, balance: budget == null ? null : Math.round((budget - paid) * 100) / 100 };
+    });
   },
   async updateDelivery(id, fields) {
     const keys = Object.keys(fields); if (!keys.length) return null;
@@ -1316,7 +1337,13 @@ module.exports = {
     const now = new Date().toISOString();
     for (const f of files || []) await run('INSERT INTO delivery_files(delivery_id,kind,name,data,taken_at,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)', [Number(id), kind, f.name, f.data, f.taken_at || null, uploadedBy, now]);
   },
-  async listOpenDeliveriesForReminders() { return all("SELECT * FROM deliveries WHERE status IN ('scheduled','dispatched','delivered') AND receivers <> ''"); },
+  async listOpenDeliveriesForReminders() {
+    const since = new Date(Date.now() - 30 * 864e5).toISOString();
+    const rows = await all("SELECT * FROM deliveries WHERE receivers <> '' AND (status IN ('scheduled','dispatched','delivered') OR (status='unloaded' AND unloaded_at >= ?))", [since]);
+    if (!rows.length) return [];
+    const docs = await all("SELECT delivery_id, doc_type FROM delivery_files WHERE kind='document' AND delivery_id = ANY(?::int[])", [rows.map(r => r.id)]);
+    return rows.map(r => ({ ...r, docs_present: docs.filter(x => x.delivery_id === r.id).map(x => x.doc_type) }));
+  },
   // One delivery reminder card per person per delivery: the new slot's reminder replaces the last one.
   async removeEarlierDeliveryReminders(username, ref) {
     await run("DELETE FROM notifications WHERE username=? AND type='delivery_reminder' AND message LIKE ?", [username, `%(${ref})%`]);
@@ -1324,6 +1351,30 @@ module.exports = {
   async markDeliveryFollowUp(id, by) {
     return get('UPDATE deliveries SET last_followup_at=?, last_followup_by=?, followup_count=COALESCE(followup_count,0)+1 WHERE id=? RETURNING *', [new Date().toISOString(), by, Number(id)]);
   },
+  async addDeliveryDocument(id, docType, files, note, uploadedBy) {
+    const now = new Date().toISOString();
+    for (const f of files || []) await run('INSERT INTO delivery_files(delivery_id,kind,doc_type,note,name,data,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?,?)', [Number(id), 'document', docType, note || null, f.name, f.data, uploadedBy, now]);
+  },
+  async deliveryDocTypesPresent(id) { return (await all("SELECT DISTINCT doc_type FROM delivery_files WHERE delivery_id=? AND kind='document'", [Number(id)])).map(r => r.doc_type); },
+  async deleteDeliveryFile(fileId) { const r = await run('DELETE FROM delivery_files WHERE id=?', [Number(fileId)]); return r.rowCount > 0; },
+  async addDeliveryPayment(deliveryId, p, bills) {
+    return runInTransaction(async (tx) => {
+      const now = new Date().toISOString();
+      const r = await tx.get(`INSERT INTO delivery_payments(delivery_id,amount,purpose,paid_to,mode,paid_at,note,no_bill_reason,paid_by,paid_by_name,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING *`, [Number(deliveryId), p.amount, p.purpose, p.paid_to, p.mode, p.paid_at, p.note, p.no_bill_reason, p.paid_by, p.paid_by_name, now]);
+      for (const f of bills || []) await tx.run('INSERT INTO delivery_files(delivery_id,kind,payment_id,name,data,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)', [Number(deliveryId), 'bill', r.id, f.name, f.data, p.paid_by, now]);
+      return r;
+    });
+  },
+  async getDeliveryPayment(id) { const n = Number(id); if (!Number.isInteger(n)) return null; return get('SELECT * FROM delivery_payments WHERE id=?', [n]); },
+  async deleteDeliveryPayment(id) {
+    return runInTransaction(async (tx) => {
+      await tx.run('DELETE FROM delivery_files WHERE payment_id=?', [Number(id)]);
+      const r = await tx.run('DELETE FROM delivery_payments WHERE id=?', [Number(id)]);
+      return r.rowCount > 0;
+    });
+  },
+  async deliveryPaidTotal(id) { const r = await get('SELECT COALESCE(SUM(amount),0) AS t FROM delivery_payments WHERE delivery_id=?', [Number(id)]); return Number(r.t); },
   async deleteDelivery(id) { const r = await run('DELETE FROM deliveries WHERE id=?', [Number(id)]); return r.rowCount > 0; },
   async getDeliveryFile(fileId) { const n = Number(fileId); if (!Number.isInteger(n)) return null; return get('SELECT * FROM delivery_files WHERE id=?', [n]); },
   async addTaskFiles(taskId, replyId, files, uploadedBy, tx) {
