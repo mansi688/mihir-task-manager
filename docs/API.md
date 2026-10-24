@@ -31,3 +31,12 @@ All under the existing `/api`, Bearer token unless noted. Existing endpoints are
 | POST /api/deliveries/:id/files/:fileId/delete | uploader or Admin/Purchase | Remove a document or attachment (not proof photos or bills) |
 | POST /api/deliveries/:id/payments | tagged site team, Admin/Purchase | `{amount, purpose, mode, paid_to, paid_at, note, attachments}` — bill photo required unless `no_bill_reason` (≥5 chars). Returns `{paid, balance, overBudget}` |
 | POST /api/deliveries/:id/payments/:pid/delete | payer within 48 h, or Admin/Purchase | Removes the payment and its bill |
+| GET /api/budget | everyone (Director/Admin/Accounts/Purchase see all) | Allotted money, payments with bills and status, per-person totals; `canAllot`, `canVerify`, `seesAll` |
+| POST /api/budget/allot | Director, Admin | `{username, kind: allot\|return, amount, mode, reference, note}` → `{balance}` |
+| POST /api/budget/allotments/:id/delete | Director, Admin | Remove an allotted / returned entry |
+| POST /api/budget/payments | money holder, site team on the delivery, Purchase, Director/Admin | Payment with bill, optional `delivery_id` → `{wallet}` |
+| POST /api/budget/payments/:id/verify | Director, Admin (not own) | `{status: verified\|query\|rejected\|pending, note}` |
+| POST /api/budget/payments/:id/reply | the payer | Answer a question `{note, attachments}` → back to "to verify" |
+| POST /api/budget/payments/:id/delete | payer (48 h, not verified), Purchase (not verified), Director/Admin | Remove a payment |
+| POST /api/budget/request-topup | anyone | `{amount, note}` → told to whoever allots them money (or Directors) |
+| GET /api/budget/bills/:fileId | see-all roles, the payer, people on the delivery | Bill image / PDF |

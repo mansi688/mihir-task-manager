@@ -459,6 +459,22 @@ async function init() {
     amount NUMERIC(12,2) NOT NULL CHECK (amount > 0), purpose TEXT NOT NULL, paid_to TEXT, mode TEXT, paid_at TEXT NOT NULL,
     note TEXT, no_bill_reason TEXT, paid_by TEXT NOT NULL, paid_by_name TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_delivery_payments_delivery ON delivery_payments(delivery_id)');
+  // Allotted money (advance / imprest): Director or Admin gives a site person an amount; that person pays porters etc.
+  // on their behalf and records each payment with its bill; the Director verifies each one.
+  // A payment may be for a delivery or not (delivery_id NULL); deleting a delivery keeps its payments.
+  await run('ALTER TABLE delivery_payments ALTER COLUMN delivery_id DROP NOT NULL');
+  await ensureColumn('delivery_payments', 'delivery_ref', 'TEXT');
+  await ensureColumn('delivery_payments', 'delivery_title', 'TEXT');
+  await ensureColumn('delivery_payments', 'verify_status', "TEXT DEFAULT 'pending'"); // pending | verified | rejected | query
+  await ensureColumn('delivery_payments', 'verify_note', 'TEXT');
+  await ensureColumn('delivery_payments', 'verified_by', 'TEXT');
+  await ensureColumn('delivery_payments', 'verified_at', 'TEXT');
+  await ensureColumn('delivery_payments', 'reply_note', 'TEXT'); // the payer's answer to a question
+  await run(`CREATE TABLE IF NOT EXISTS budget_allotments(
+    id SERIAL PRIMARY KEY, username TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'allot', amount NUMERIC(12,2) NOT NULL CHECK (amount > 0),
+    note TEXT, mode TEXT, reference TEXT, by_username TEXT NOT NULL, by_name TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_budget_allotments_user ON budget_allotments(username)');
+  await ensureColumn('users', 'budget_topup_asked_at', 'TEXT');
   await ensureColumn('deliveries', 'last_followup_by', 'TEXT');
   await ensureColumn('deliveries', 'followup_count', 'INTEGER DEFAULT 0');
   await run('CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status, expected_at)');
@@ -467,6 +483,7 @@ async function init() {
     kind TEXT NOT NULL DEFAULT 'attachment', name TEXT NOT NULL, data TEXT NOT NULL,
     taken_at TEXT, uploaded_by TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_delivery_files_delivery ON delivery_files(delivery_id)');
+  await run('ALTER TABLE delivery_files ALTER COLUMN delivery_id DROP NOT NULL'); // bills of payments not tied to a delivery
   await ensureColumn('delivery_files', 'doc_type', 'TEXT');
   await ensureColumn('delivery_files', 'note', 'TEXT');
   await ensureColumn('delivery_files', 'payment_id', 'INTEGER');
@@ -1321,7 +1338,7 @@ module.exports = {
     const pays = await all('SELECT * FROM delivery_payments WHERE delivery_id = ANY(?::int[]) ORDER BY paid_at, id', [ids]);
     return rows.map(r => {
       const payments = pays.filter(p => p.delivery_id === r.id).map(p => ({ ...p, amount: Number(p.amount), bills: files.filter(f => f.payment_id === p.id).map(f => ({ id: f.id, name: f.name })) }));
-      const paid = Math.round(payments.reduce((a, p) => a + p.amount, 0) * 100) / 100;
+      const paid = Math.round(payments.filter(p => p.verify_status !== 'rejected').reduce((a, p) => a + p.amount, 0) * 100) / 100;
       const budget = r.budget_amount == null ? null : Number(r.budget_amount);
       return { ...r, budget_amount: budget, receivers: r.receivers ? r.receivers.split(',').filter(Boolean) : [],
         required_docs: String(r.required_docs == null ? 'challan,signed_challan' : r.required_docs).split(',').filter(Boolean),
@@ -1360,9 +1377,11 @@ module.exports = {
   async addDeliveryPayment(deliveryId, p, bills) {
     return runInTransaction(async (tx) => {
       const now = new Date().toISOString();
-      const r = await tx.get(`INSERT INTO delivery_payments(delivery_id,amount,purpose,paid_to,mode,paid_at,note,no_bill_reason,paid_by,paid_by_name,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING *`, [Number(deliveryId), p.amount, p.purpose, p.paid_to, p.mode, p.paid_at, p.note, p.no_bill_reason, p.paid_by, p.paid_by_name, now]);
-      for (const f of bills || []) await tx.run('INSERT INTO delivery_files(delivery_id,kind,payment_id,name,data,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)', [Number(deliveryId), 'bill', r.id, f.name, f.data, p.paid_by, now]);
+      const did = deliveryId == null ? null : Number(deliveryId);
+      const d = did ? await tx.get('SELECT ref, title FROM deliveries WHERE id=?', [did]) : null;
+      const r = await tx.get(`INSERT INTO delivery_payments(delivery_id,delivery_ref,delivery_title,amount,purpose,paid_to,mode,paid_at,note,no_bill_reason,paid_by,paid_by_name,created_at,verify_status)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'pending') RETURNING *`, [did, d ? d.ref : null, d ? d.title : null, p.amount, p.purpose, p.paid_to, p.mode, p.paid_at, p.note, p.no_bill_reason, p.paid_by, p.paid_by_name, now]);
+      for (const f of bills || []) await tx.run('INSERT INTO delivery_files(delivery_id,kind,payment_id,name,data,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)', [did, 'bill', r.id, f.name, f.data, p.paid_by, now]);
       return r;
     });
   },
@@ -1374,8 +1393,54 @@ module.exports = {
       return r.rowCount > 0;
     });
   },
-  async deliveryPaidTotal(id) { const r = await get('SELECT COALESCE(SUM(amount),0) AS t FROM delivery_payments WHERE delivery_id=?', [Number(id)]); return Number(r.t); },
-  async deleteDelivery(id) { const r = await run('DELETE FROM deliveries WHERE id=?', [Number(id)]); return r.rowCount > 0; },
+  async deliveryPaidTotal(id) { const r = await get("SELECT COALESCE(SUM(amount),0) AS t FROM delivery_payments WHERE delivery_id=? AND COALESCE(verify_status,'pending') <> 'rejected'", [Number(id)]); return Number(r.t); },
+  async deleteDelivery(id) {
+    return runInTransaction(async (tx) => {
+      // Money already paid stays on record (in the payer's statement) even if the delivery is removed.
+      await tx.run("UPDATE delivery_files SET delivery_id=NULL WHERE delivery_id=? AND kind='bill'", [Number(id)]);
+      await tx.run('UPDATE delivery_payments SET delivery_id=NULL WHERE delivery_id=?', [Number(id)]);
+      const r = await tx.run('DELETE FROM deliveries WHERE id=?', [Number(id)]);
+      return r.rowCount > 0;
+    });
+  },
+  // ---- Allotted money
+  async addAllotment(a) {
+    return get(`INSERT INTO budget_allotments(username,kind,amount,note,mode,reference,by_username,by_name,created_at) VALUES(?,?,?,?,?,?,?,?,?) RETURNING *`,
+      [a.username, a.kind, a.amount, a.note || null, a.mode || null, a.reference || null, a.by_username, a.by_name || null, new Date().toISOString()]);
+  },
+  async getAllotment(id) { const n = Number(id); if (!Number.isInteger(n)) return null; return get('SELECT * FROM budget_allotments WHERE id=?', [n]); },
+  async deleteAllotment(id) { const r = await run('DELETE FROM budget_allotments WHERE id=?', [Number(id)]); return r.rowCount > 0; },
+  async listAllotments(username) {
+    const rows = username ? await all('SELECT * FROM budget_allotments WHERE username=? ORDER BY created_at, id', [username]) : await all('SELECT * FROM budget_allotments ORDER BY created_at, id');
+    return rows.map(r => ({ ...r, amount: Number(r.amount) }));
+  },
+  // Every payment (with or without a delivery), with its delivery's details and bill ids.
+  async listBudgetPayments(username) {
+    const rows = await all(`SELECT p.*, d.ref AS d_ref, d.title AS d_title, d.project AS d_project, d.budget_amount AS d_budget, d.status AS d_status, d.receivers AS d_receivers
+      FROM delivery_payments p LEFT JOIN deliveries d ON d.id = p.delivery_id ${username ? 'WHERE p.paid_by = ?' : ''} ORDER BY p.paid_at DESC, p.id DESC LIMIT 5000`, username ? [username] : []);
+    if (!rows.length) return [];
+    const bills = await all("SELECT id, payment_id, name FROM delivery_files WHERE kind='bill' AND payment_id = ANY(?::int[]) ORDER BY id", [rows.map(r => r.id)]);
+    return rows.map(r => ({ ...r, amount: Number(r.amount), verify_status: r.verify_status || 'pending', d_budget: r.d_budget == null ? null : Number(r.d_budget),
+      bills: bills.filter(b => b.payment_id === r.id).map(b => ({ id: b.id, name: b.name })) }));
+  },
+  async lastTopupRequest(username) { const r = await get('SELECT budget_topup_asked_at AS t FROM users WHERE username=?', [username]); return r && r.t; },
+  async markTopupRequest(username) { await run('UPDATE users SET budget_topup_asked_at=? WHERE username=?', [new Date().toISOString(), username]); },
+  async allotmentHolderOf(username) { return get('SELECT 1 AS x FROM budget_allotments WHERE username=? LIMIT 1', [username]); },
+  async allottersOf(username) { return (await all('SELECT DISTINCT by_username FROM budget_allotments WHERE username=?', [username])).map(r => r.by_username); },
+  async setPaymentVerify(id, status, note, by) {
+    return get('UPDATE delivery_payments SET verify_status=?, verify_note=?, verified_by=?, verified_at=? WHERE id=? RETURNING *', [status, note || null, by, new Date().toISOString(), Number(id)]);
+  },
+  async setPaymentReply(id, note) { return get("UPDATE delivery_payments SET reply_note=?, verify_status='pending' WHERE id=? RETURNING *", [note, Number(id)]); },
+  async addPaymentBills(paymentId, deliveryId, files, by) {
+    const now = new Date().toISOString();
+    for (const f of files || []) await run('INSERT INTO delivery_files(delivery_id,kind,payment_id,name,data,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)', [deliveryId == null ? null : Number(deliveryId), 'bill', Number(paymentId), f.name, f.data, by, now]);
+  },
+  // Balance for one person: allotted − returned − paid (rejected payments do not count).
+  async holderBalance(username) {
+    const a = await get("SELECT COALESCE(SUM(CASE WHEN kind='allot' THEN amount ELSE -amount END),0) AS t FROM budget_allotments WHERE username=?", [username]);
+    const p = await get("SELECT COALESCE(SUM(amount),0) AS t FROM delivery_payments WHERE paid_by=? AND COALESCE(verify_status,'pending') <> 'rejected'", [username]);
+    return Math.round((Number(a.t) - Number(p.t)) * 100) / 100;
+  },
   async getDeliveryFile(fileId) { const n = Number(fileId); if (!Number.isInteger(n)) return null; return get('SELECT * FROM delivery_files WHERE id=?', [n]); },
   async addTaskFiles(taskId, replyId, files, uploadedBy, tx) {
     const runner = tx ? tx.run : run;

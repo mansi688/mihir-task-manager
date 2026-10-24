@@ -84,7 +84,7 @@ test('delivery documents (sent to site / from site, required vs optional) and bu
   const p2 = await P(site2, `/api/deliveries/${id}/payments`, { amount: 900.5, purpose: 'Unloading labour', mode: 'Cash', no_bill_reason: 'labourers paid cash, no receipt' });
   assert.equal(p2.status, 200, JSON.stringify(p2.data)); assert.equal(p2.data.paid, 1750.5); assert.equal(p2.data.balance, -250.5); assert.equal(p2.data.overBudget, true);
   n = (await G(buyer, '/api/notifications')).data.items.filter(x => x.type === 'delivery_payment');
-  assert.ok(n.some(x => /over budget by ₹250\.5/.test(x.message) && /no bill/.test(x.message)), JSON.stringify(n.map(x => x.message)));
+  assert.ok(n.some(x => /over by ₹250\.5/.test(x.message) && /no bill/.test(x.message)), JSON.stringify(n.map(x => x.message)));
   d = await one(site, id);
   assert.equal(d.paid, 1750.5); assert.equal(d.balance, -250.5); assert.equal(d.payments.length, 2);
   const pay1 = d.payments.find(x => x.id === p1.data.id), pay2 = d.payments.find(x => x.id === p2.data.id);

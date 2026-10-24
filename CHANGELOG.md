@@ -4,6 +4,39 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Allotted money (per person, monthly + top-ups) with bill verification
+### Changed
+- **Budget is now per person, not per delivery.** A Director (or Admin) allots money to someone on site — a monthly
+  amount, top-ups any time, and money they return. That person pays porters / transport / unloading labour on the
+  Director's behalf and records every payment with a photo of the bill (or a reason when there is none) — for a
+  delivery they are on, or not for a delivery. The per-delivery budget fields are gone from the delivery form and card;
+  the delivery's 💰 Payments tab lists what was paid for it, with each payment's verification status.
+- **Budget tab** rebuilt around this:
+  - **To verify** (Director / Admin): each payment with its bill photo, who paid whom, the delivery, the payer's balance;
+    ✓ Verify, ❓ Ask (question goes to the payer, who answers and can add the bill — it comes back to verify), ✗ Not
+    accepted (not counted; the money stays with the person). "Verify all with a bill". Menu badge = payments waiting.
+  - **People & balances**: per person for the month — carried forward, allotted, paid, verified, to verify, not
+    accepted, balance (negative = paid from own pocket); Statement and + Top up buttons.
+  - **Statement**: month-by-month ledger per person with running balance — allotted / returned / each payment, bills,
+    status. Unused money carries forward.
+  - **All payments** (status / purpose / bill filters, CSV download), **Receipts** (bill gallery + payments without a
+    bill), **Summary** (per person, purpose, project, mode).
+  - The person holding money sees "Your money" (carried forward, allotted, paid, balance in hand, verified, waiting),
+    **+ Record a payment**, **🙋 Ask for top-up** (goes to whoever allots them money), and questions to answer.
+- Payments are checked by whoever allotted the person money (otherwise the Directors). Verified payments can only be
+  removed by a Director / Admin. Deleting a delivery keeps its payments (and bills) in the statement.
+- Who sees all: Directors, Admin, Accounts, the purchase side; everyone else sees their own money and payments.
+### API
+- `GET /api/budget`; `POST /api/budget/allot` `{username, kind: allot|return, amount, mode, reference, note}`;
+  `POST /api/budget/allotments/:id/delete`; `POST /api/budget/payments` (optional `delivery_id`);
+  `POST /api/budget/payments/:id/verify` `{status: verified|query|rejected|pending, note}`;
+  `POST /api/budget/payments/:id/reply` `{note, attachments}`; `POST /api/budget/payments/:id/delete`;
+  `POST /api/budget/request-topup` `{amount, note}`; `GET /api/budget/bills/:fileId`.
+### Database
+- New table `budget_allotments`; `delivery_payments.delivery_id` now nullable, plus `delivery_ref`, `delivery_title`,
+  `verify_status` (default `pending`), `verify_note`, `verified_by`, `verified_at`, `reply_note`;
+  `delivery_files.delivery_id` nullable (bills of payments without a delivery); `users.budget_topup_asked_at`. Additive.
+
 ## [Unreleased] — Budget tab and delivery sounds
 ### Added
 - **Budget** page in the menu (after Deliveries): every delivery's porter / transport budget against what was actually

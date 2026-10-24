@@ -132,7 +132,7 @@ function deliveryFormHTML() {
     ${f.task_id ? `<div class="notice" style="margin-top:10px;">From task <b>${dlvEsc(f.task_title || '')}</b> <span class="mono small">${dlvEsc(f.task_id)}</span> — only the title is copied.
       <b>The task will be closed</b> (its work is done) and from now on only this delivery is tracked — the site team you tag, not the people who did the task. The site team can still open the task.</div>
       ${(f.pendingParts || []).length ? `<div class="notice dlv-warn" style="margin-top:8px;">⚠ Still waiting for approval on the task: <b>${f.pendingParts.map(u => dlvEsc(personName(u))).join(', ')}</b>. Closing the task means their part will not count as approved work — approve them on the task first if they should get credit.</div>` : ''}` : ''}
-    ${f.limited ? `<div class="notice" style="margin-top:10px;">This delivery is already unloaded — only its budget and the documents list can still be changed.</div>` : `
+    ${f.limited ? `<div class="notice" style="margin-top:10px;">This delivery is already unloaded — only its documents list can still be changed.</div>` : `
     <div class="dlv-section">What and when</div>
     <div class="row">${field('dlv-title', 'What is being delivered *', f.title, 'e.g. Tiles — 400 boxes')}${field('dlv-quantity', 'Quantity', f.quantity, 'e.g. 400 boxes / 50 bags')}</div>
     <div class="row">
@@ -173,11 +173,6 @@ function dlvBudgetDocsFormHTML(f) {
   const group = (dir, title) => `<div class="dlv-reqgroup"><div class="small"><b>${title}</b></div>${dlvDocTypes().filter(t => t.dir === dir).map(t => `
     <label class="dlv-reqdoc"><input type="checkbox" data-dlv-reqdoc="${t.key}" ${req.has(t.key) ? 'checked' : ''}> ${dlvEsc(t.label)}</label>`).join('')}</div>`;
   return `
-    <div class="dlv-section">Budget <span class="muted small">— porter / transport money the site team may spend. They record every payment with the bill; paid and balance are worked out.</span></div>
-    <div class="row">
-      <div class="col"><label for="dlv-budget">Budget (₹)</label><input type="number" id="dlv-budget" min="0" step="1" inputmode="decimal" value="${dlvEsc(f.budget_amount == null ? '' : f.budget_amount)}" placeholder="e.g. 2500 — leave empty if none"></div>
-      <div class="col"><label for="dlv-budget-note">Budget note <span class="muted small">(optional)</span></label><input type="text" id="dlv-budget-note" value="${dlvEsc(f.budget_note || '')}" placeholder="e.g. Porter fare + 2 labourers for unloading"></div>
-    </div>
     <div class="dlv-section">Documents <span class="muted small">— tick the ones that must be there. Unticked ones are optional: they can still be uploaded.</span></div>
     <div class="dlv-reqgroups">${group('to_site', '📤 Sent to site (by purchase)')}${group('from_site', '📥 From site to head office')}</div>`;
 }
@@ -231,7 +226,7 @@ function deliveryCardHTML(d) {
           ${overdue ? '<span class="row-flag row-flag-bad">Late</span>' : ''}
           ${dlvMine(d) && ['scheduled', 'dispatched', 'delivered'].includes(d.status) ? '<span class="row-flag row-flag-me">Your proof needed</span>' : ''}
           ${dlvMissingDocs(d).length ? `<span class="row-flag dlv-flag-docs">📄 ${dlvMissingDocs(d).length} document${dlvMissingDocs(d).length > 1 ? 's' : ''} pending</span>` : ''}
-          ${d.budget_amount != null ? `<span class="${d.balance < 0 ? 'dlv-over' : ''}">💰 ${dlvInr(d.paid)} / ${dlvInr(d.budget_amount)}</span>` : (d.paid ? `<span>💰 ${dlvInr(d.paid)} paid</span>` : '')}
+          ${d.paid ? `<span>💰 ${dlvInr(d.paid)} paid</span>` : ''}
         </span>
       </span>
       <span class="badge dlv-badge">${dlvEsc(st.label)}</span>
@@ -272,7 +267,7 @@ function deliveryCardHTML(d) {
         ${manage && ['scheduled', 'dispatched', 'delivered'].includes(d.status) ? `<button class="btn btn-sm dlv-fu ${d.last_followup_at ? 'done' : ''}" data-dlv-followup="${d.id}" title="Remind the site team to update this delivery">📣 ${d.last_followup_at ? 'Follow up again' : 'Follow up'}</button>` : ''}
         ${manage && d.status === 'scheduled' ? `<button class="btn btn-sm" data-dlv-dispatch="${d.id}">🚚 Mark on the way</button>` : ''}
         ${manage && !['unloaded', 'cancelled'].includes(d.status) ? `<button class="btn btn-sm" data-dlv-edit="${d.id}">✏️ Edit details</button><button class="btn btn-sm btn-danger" data-dlv-cancel="${d.id}">Cancel</button>` : ''}
-        ${manage && d.status === 'unloaded' ? `<button class="btn btn-sm" data-dlv-edit="${d.id}">✏️ Edit budget / documents list</button>` : ''}
+        ${manage && d.status === 'unloaded' ? `<button class="btn btn-sm" data-dlv-edit="${d.id}">✏️ Edit documents list</button>` : ''}
         ${manage && ui.deliveryDelete !== d.id ? `<button class="btn btn-sm btn-danger" data-dlv-delete="${d.id}">🗑 Delete</button>` : ''}
       </div>
       `}
@@ -296,7 +291,7 @@ function dlvCardTabsHTML(d) {
   return `<div class="dlv-ctabs" role="tablist">
     ${b('details', '🚚 Details')}
     ${b('docs', '📄 Documents', ` <span class="dlv-ctab-count ${dlvMissingDocs(d).length ? 'warn' : 'ok'}">${docCount}</span>`)}
-    ${b('money', '💰 Budget & payments', (d.payments || []).length ? ` <span class="dlv-ctab-count ${d.balance != null && d.balance < 0 ? 'warn' : ''}">${dlvInr(d.paid)}</span>` : '')}
+    ${b('money', '💰 Payments', (d.payments || []).length ? ` <span class="dlv-ctab-count">${dlvInr(d.paid)}</span>` : '')}
   </div>`;
 }
 function dlvCanUploadDir(d, dir) { return d.status !== 'cancelled' && (dlvCanManage() || (dir === 'from_site' && dlvMine(d))); }
@@ -354,26 +349,19 @@ function dlvMoneyHTML(d) {
   const manage = dlvCanManage();
   const canPay = d.status !== 'cancelled' && (manage || dlvMine(d));
   const pays = d.payments || [];
-  const budget = d.budget_amount;
-  const pct = budget ? Math.min(100, Math.round(d.paid / budget * 100)) : 0;
   const form = ui.dlvPay && ui.dlvPay.id === d.id ? ui.dlvPay : null;
-  const canDel = p => manage || (p.paid_by === session.username && Date.now() - new Date(p.created_at).getTime() < 48 * 3600000);
+  const canDel = p => (typeof budgetData !== 'undefined' && budgetData.canAllot) || ((p.verify_status || 'pending') !== 'verified' && (manage || (p.paid_by === session.username && Date.now() - new Date(p.created_at).getTime() < 48 * 3600000)));
+  const stChip = p => typeof budChip === 'function' ? budChip(p.verify_status || 'pending') : '';
   return `<div class="dlv-money">
-    <div class="dlv-money-tiles">
-      <div class="dlv-tile"><span>Budget</span><b>${budget == null ? 'Not set' : dlvInr(budget)}</b></div>
-      <div class="dlv-tile"><span>Paid</span><b>${dlvInr(d.paid || 0)}</b></div>
-      <div class="dlv-tile ${d.balance != null && d.balance < 0 ? 'bad' : 'good'}"><span>${d.balance != null && d.balance < 0 ? 'Over budget' : 'Balance'}</span><b>${d.balance == null ? '—' : dlvInr(Math.abs(d.balance))}</b></div>
-    </div>
-    ${budget ? `<div class="dlv-bar"><div class="dlv-bar-fill ${d.balance < 0 ? 'over' : pct >= 80 ? 'near' : ''}" style="width:${pct}%"></div></div>` : ''}
-    ${d.budget_note ? `<div class="small muted" style="margin-top:4px;">${dlvEsc(d.budget_note)}</div>` : ''}
-    ${budget == null && manage ? `<div class="small muted" style="margin-top:4px;">No budget set — tap “Edit” on the Details tab to add one.</div>` : ''}
+    <div class="small muted">Porter / transport / unloading money paid for this delivery. It comes out of the payer's allotted money in <b>Budget</b>, where the Director verifies each bill. <button type="button" class="linkish" data-dlv-act="open-budget">Open Budget ›</button></div>
     <div class="dlv-section" style="margin-top:12px;">Payments ${pays.length ? `<span class="muted small">(${pays.length})</span>` : ''}</div>
-    ${pays.length ? `<div class="dlv-perf-wrap"><table class="dlv-perf dlv-pays"><thead><tr><th>Date</th><th>For</th><th>Paid to</th><th>Mode</th><th>By</th><th style="text-align:right;">Amount</th><th>Bill</th><th></th></tr></thead><tbody>
-      ${pays.map(p => `<tr><td>${dlvEsc(dlvWhen(p.paid_at))}</td><td>${dlvEsc(p.purpose)}${p.note ? `<div class="small muted">${dlvEsc(p.note)}</div>` : ''}</td><td>${dlvEsc(p.paid_to || '—')}</td><td>${dlvEsc(p.mode || '—')}</td>
+    ${pays.length ? `<div class="dlv-perf-wrap"><table class="dlv-perf dlv-pays"><thead><tr><th>Date</th><th>For</th><th>Paid to</th><th>Mode</th><th>By</th><th style="text-align:right;">Amount</th><th>Bill</th><th>Status</th><th></th></tr></thead><tbody>
+      ${pays.map(p => `<tr class="${p.verify_status === 'rejected' ? 'bud-row-rej' : ''}"><td>${dlvEsc(dlvWhen(p.paid_at))}</td><td>${dlvEsc(p.purpose)}${p.note ? `<div class="small muted">${dlvEsc(p.note)}</div>` : ''}</td><td>${dlvEsc(p.paid_to || '—')}</td><td>${dlvEsc(p.mode || '—')}</td>
         <td>${dlvEsc(p.paid_by_name || personName(p.paid_by))}</td><td style="text-align:right;"><b>${dlvInr(p.amount)}</b></td>
         <td>${(p.bills || []).length ? p.bills.map((f, i) => `<button type="button" class="dlv-file" data-dlv-file="${d.id}:${f.id}">🧾 ${p.bills.length > 1 ? i + 1 : 'Bill'}</button>`).join(' ') : `<span class="dlv-nobill" title="${dlvEsc(p.no_bill_reason || '')}">No bill${p.no_bill_reason ? ` — ${dlvEsc(p.no_bill_reason)}` : ''}</span>`}</td>
+        <td>${stChip(p)}</td>
         <td>${canDel(p) ? `<button type="button" class="dlv-x" data-dlv-pay-del="${d.id}:${p.id}" title="Remove this payment" aria-label="Remove">✕</button>` : ''}</td></tr>`).join('')}
-      <tr class="dlv-total"><td colspan="5">Total paid</td><td style="text-align:right;"><b>${dlvInr(d.paid)}</b></td><td colspan="2"></td></tr>
+      <tr class="dlv-total"><td colspan="5">Total paid${pays.some(p => p.verify_status === 'rejected') ? ' (not counting “not accepted”)' : ''}</td><td style="text-align:right;"><b>${dlvInr(d.paid)}</b></td><td colspan="3"></td></tr>
     </tbody></table></div>` : '<div class="empty" style="padding:10px;">No payments recorded yet.</div>'}
     ${form ? dlvPayFormHTML(d, form) : (canPay ? `<button type="button" class="btn btn-primary btn-sm" style="margin-top:8px;" data-dlv-pay-new="${d.id}">+ Record a payment</button>` : '')}
   </div>`;
@@ -395,7 +383,7 @@ function dlvPayFormHTML(d, f) {
     ${f.busy ? '<div class="small muted">Preparing photo…</div>' : ''}
     ${(f.files || []).length ? '' : `<label for="dlv-pay-nobill">No bill? Say why <span class="muted small">(only if there is no bill)</span></label><input type="text" id="dlv-pay-nobill" value="${dlvEsc(f.no_bill_reason || '')}" placeholder="e.g. labourers paid cash, no receipt">`}
     <label for="dlv-pay-note">Note <span class="muted small">(optional)</span></label><input type="text" id="dlv-pay-note" value="${dlvEsc(f.note || '')}">
-    ${d.budget_amount != null && Number(f.amount) > 0 && d.paid + Number(f.amount) > d.budget_amount ? `<div class="notice dlv-warn" style="margin-top:8px;">⚠ This goes over the budget by ${dlvInr(d.paid + Number(f.amount) - d.budget_amount)}. The purchase team will be told.</div>` : ''}
+
     ${f.err ? `<div class="err">${dlvEsc(f.err)}</div>` : ''}
     <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn btn-primary btn-sm" data-dlv-pay-send="${d.id}" ${f.saving || f.busy ? 'disabled' : ''}>${f.saving ? 'Saving…' : '✓ Save payment'}</button>
@@ -403,39 +391,6 @@ function dlvPayFormHTML(d, f) {
     </div>
   </div>`;
 }
-// ---- Page summary: budget, paid, balance across deliveries, and paid per person
-function deliveryBudgetHTML() {
-  const items = (deliveriesData.items || []).filter(d => d.status !== 'cancelled' && (dlvCanManage() || dlvMine(d)));
-  const withMoney = items.filter(d => d.budget_amount != null || (d.payments || []).length);
-  if (!withMoney.length) return '';
-  const budget = withMoney.reduce((a, d) => a + (d.budget_amount || 0), 0);
-  const paid = withMoney.reduce((a, d) => a + (d.paid || 0), 0);
-  const paidBudgeted = withMoney.filter(d => d.budget_amount != null).reduce((a, d) => a + (d.paid || 0), 0);
-  const over = withMoney.filter(d => d.balance != null && d.balance < 0);
-  const noBill = withMoney.reduce((a, d) => a + (d.payments || []).filter(p => !(p.bills || []).length).length, 0);
-  const people = new Map();
-  for (const d of withMoney) for (const p of d.payments || []) {
-    const r = people.get(p.paid_by) || { username: p.paid_by, name: p.paid_by_name, total: 0, count: 0, deliveries: new Set(), noBill: 0 };
-    r.total += p.amount; r.count++; r.deliveries.add(d.id); if (!(p.bills || []).length) r.noBill++;
-    people.set(p.paid_by, r);
-  }
-  const rows = [...people.values()].sort((a, b) => b.total - a.total);
-  return `
-  <div class="card" id="dlv-budget">
-    <div class="card-title" style="margin:0;">Delivery budget</div>
-    <div class="small muted">Porter / transport budgets set by the purchase team, and what the site team has paid against them (each payment with its bill).${dlvCanManage() ? '' : ' You see the deliveries you are tagged on.'}</div>
-    <div class="dlv-money-tiles" style="margin-top:10px;">
-      <div class="dlv-tile"><span>Total budget</span><b>${dlvInr(budget)}</b></div>
-      <div class="dlv-tile"><span>Total paid</span><b>${dlvInr(paid)}</b></div>
-      <div class="dlv-tile ${paidBudgeted > budget ? 'bad' : 'good'}"><span>${paidBudgeted > budget ? 'Over budget by' : 'Balance'}</span><b>${dlvInr(Math.abs(Math.round((budget - paidBudgeted) * 100) / 100))}</b></div>
-      <div class="dlv-tile ${over.length ? 'bad' : ''}"><span>Deliveries over budget</span><b>${over.length}</b></div>
-    </div>
-    ${noBill ? `<div class="small" style="margin-top:6px;">🧾 ${noBill} payment${noBill > 1 ? 's' : ''} without a bill.</div>` : ''}
-    ${over.length ? `<div class="dlv-files" style="margin-top:6px;">${over.map(d => `<button type="button" class="dlv-file dlv-over" data-dlv-goto="${d.id}">${dlvEsc(d.ref)} · over by ${dlvInr(-d.balance)}</button>`).join('')}</div>` : ''}
-    <div style="margin-top:10px;"><button class="btn btn-sm" data-dlv-act="open-budget">💰 Open the Budget tab — all expenses, receipts and per person ›</button></div>
-  </div>`;
-}
-
 function renderDeliveriesView() {
   const items = deliveriesData.items || [];
   const q = (ui.deliverySearch || '').trim().toLowerCase();
@@ -460,7 +415,6 @@ function renderDeliveriesView() {
     <input type="text" id="delivery-search" placeholder="Search by material, DLV number, driver, vehicle, Porter order ID…" value="${dlvEsc(ui.deliverySearch || '')}" style="margin:10px 0;">
     ${list.length ? list.map(deliveryCardHTML).join('') : `<div class="empty">${q ? 'No delivery matches your search.' : tab === 'docs' ? 'All required documents are in.' : tab === 'pending' ? (dlvCanManage() ? 'No deliveries to receive. Open a material task and tap "🚚 Add to delivery", or add one here.' : 'Nothing to receive right now.') : 'Nothing here yet.'}</div>`}
   </div>
-  ${deliveryBudgetHTML()}
   ${deliveryPerformanceHTML()}
   ${ui.deliveryPhoto ? `<div class="dlv-viewer" data-dlv-act="close-photo"><img src="${ui.deliveryPhoto.data}" alt="${dlvEsc(ui.deliveryPhoto.name)}"><div class="dlv-viewer-bar"><span>${dlvEsc(ui.deliveryPhoto.name)}</span><button class="btn btn-sm" data-dlv-act="download-photo">Download</button><button class="btn btn-sm" data-dlv-act="close-photo">Close</button></div></div>` : ''}`;
 }
@@ -573,8 +527,6 @@ function bindDeliveriesView() {
       const map = { title: 'dlv-title', quantity: 'dlv-quantity', expected_date: 'dlv-date', expected_time: 'dlv-time', project: 'dlv-project', site_location: 'dlv-site',
         vendor: 'dlv-vendor', transport: 'dlv-transport', porter_order_id: 'dlv-porter', delivery_ref: 'dlv-ref', vehicle_no: 'dlv-vehicle', driver_name: 'dlv-driver', driver_phone: 'dlv-phone', description: 'dlv-desc' };
       for (const [k, id] of Object.entries(map)) { const x = v(id); if (x !== undefined) f[k] = x; }
-      const bud = v('dlv-budget'); if (bud !== undefined) f.budget_amount = bud === '' ? null : bud;
-      const bn = v('dlv-budget-note'); if (bn !== undefined) f.budget_note = bn;
     };
     document.querySelectorAll('#delivery-form input[type="number"]').forEach(el => { el.addEventListener('input', keep); el.addEventListener('change', keep); });
     document.querySelectorAll('[data-dlv-reqdoc]').forEach(cb => cb.onchange = () => {
@@ -599,12 +551,11 @@ function bindDeliveriesView() {
       if (f.limited) {
         ui.deliverySaving = true; ui.deliveryErr = ''; render();
         try {
-          await api(`/api/deliveries/${f.id}/update`, { method: 'POST', body: JSON.stringify({ budget_amount: f.budget_amount, budget_note: f.budget_note, required_docs: f.required_docs || dlvDefaultRequired() }) });
-          const id = f.id; ui.deliveryForm = null; ui.deliverySaving = false; setBanner('Budget and documents list updated.', 'ok'); await refreshData(); openDeliveryOnPage(id);
+          await api(`/api/deliveries/${f.id}/update`, { method: 'POST', body: JSON.stringify({ required_docs: f.required_docs || dlvDefaultRequired() }) });
+          const id = f.id; ui.deliveryForm = null; ui.deliverySaving = false; setBanner('Documents list updated.', 'ok'); await refreshData(); openDeliveryOnPage(id);
         } catch (e) { ui.deliverySaving = false; ui.deliveryErr = e.message; render(); }
         return;
       }
-      if (f.budget_amount != null && f.budget_amount !== '' && !(Number(f.budget_amount) >= 0)) { ui.deliveryErr = 'Enter the budget as an amount in rupees.'; render(); return; }
       if (!String(f.title || '').trim()) { ui.deliveryErr = 'Write what is being delivered.'; render(); return; }
       if (!f.expected_date) { ui.deliveryErr = 'Pick the delivery date (time is optional).'; render(); return; }
       if (!(f.receivers || []).length) { ui.deliveryErr = 'Tag at least one person on site who will receive it.'; render(); return; }
@@ -612,7 +563,7 @@ function bindDeliveriesView() {
         porter_order_id: f.porter_order_id, delivery_ref: f.delivery_ref, vehicle_no: f.vehicle_no, driver_name: f.driver_name, driver_phone: f.driver_phone,
         description: f.description, expected_at: f.expected_date + (f.expected_time ? `T${f.expected_time}` : ''), receivers: f.receivers,
         attachments: (f.files || []).map(x => ({ name: x.name, data: x.data })),
-        budget_amount: f.budget_amount == null || f.budget_amount === '' ? null : Number(f.budget_amount), budget_note: f.budget_note || '', required_docs: f.required_docs || dlvDefaultRequired() };
+        required_docs: f.required_docs || dlvDefaultRequired() };
       if (f.mode === 'new' && f.task_id) body.task_id = f.task_id;
       ui.deliverySaving = true; ui.deliveryErr = ''; render();
       try {
@@ -638,7 +589,7 @@ function bindDeliveriesView() {
     ui.deliveryForm = { mode: 'edit', id: d.id, ref: d.ref, title: d.title, quantity: d.quantity, project: d.project, site_location: d.site_location, vendor: d.vendor, transport: d.transport || '',
       porter_order_id: d.porter_order_id, delivery_ref: d.delivery_ref, vehicle_no: d.vehicle_no, driver_name: d.driver_name, driver_phone: d.driver_phone, description: d.description,
       expected_date: date || '', expected_time: time || '', receivers: (d.receivers || []).slice(), files: [], search: '',
-      budget_amount: d.budget_amount, budget_note: d.budget_note || '', required_docs: (d.required_docs || []).slice(), limited: d.status === 'unloaded' };
+      required_docs: (d.required_docs || []).slice(), limited: d.status === 'unloaded' };
     ui.deliveryErr = ''; render(); window.scrollTo(0, 0);
   });
   document.querySelectorAll('[data-dlv-followup]').forEach(b => b.onclick = async () => {
@@ -744,7 +695,7 @@ function bindDeliveriesView() {
       try {
         const r = await api(`/api/deliveries/${pf.id}/payments`, { method: 'POST', body: JSON.stringify({ amount: Number(pf.amount), purpose: pf.purpose, mode: pf.mode, paid_to: pf.paid_to, paid_at: pf.date, note: pf.note, no_bill_reason: pf.no_bill_reason, attachments: pf.files }) });
         ui.dlvPay = null;
-        setBanner(`Payment saved. Paid ${dlvInr(r.paid)}${r.balance == null ? '' : r.overBudget ? ` — over budget by ${dlvInr(-r.balance)}` : ` — ${dlvInr(r.balance)} left`}.`, r.overBudget ? '' : 'ok');
+        setBanner(`Payment saved — sent to the Director for verification.${r.wallet != null ? ` Balance with you: ${r.wallet < 0 ? '−' : ''}${dlvInr(Math.abs(r.wallet))}${r.wallet < 0 ? ' (from your own pocket — ask for a top-up in Budget)' : ''}.` : ''}`, r.wallet != null && r.wallet < 0 ? '' : 'ok');
         await refreshData();
       } catch (e) { pf.saving = false; pf.err = e.message; render(); }
     });
