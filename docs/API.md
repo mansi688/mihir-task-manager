@@ -21,7 +21,7 @@ All under the existing `/api`, Bearer token unless noted. Existing endpoints are
 | POST /api/meetings · GET /api/meetings · GET /api/meetings/:id · GET …/recording · POST …/retry | organiser/participants/Admin | meetings |
 | GET /api/chat/rooms · GET /api/chat/unread · GET/POST /api/chat/rooms/:room/messages · POST …/read · DELETE /api/chat/messages/:id | any (delete: own / Admin) | company chat (docs/CHAT.md) |
 | GET /api/tasks/watching | everyone | Tasks you are only "kept informed" on |
-| GET /api/deliveries | everyone (Admin/Purchase/Director see all) | Deliveries you are on, with file list |
+| GET /api/deliveries | everyone (Admin/Purchase/Director/Accounts see all) | Deliveries you are on, with files, payments, `paid`, `balance`; `seesAll` flag |
 | POST /api/deliveries | Admin, Purchase Department | Add a delivery (optionally from a task) |
 | POST /api/deliveries/:id/update | Admin, Purchase Department | Edit details, re-tag site team, add files; `budget_amount`, `budget_note`, `required_docs[]` (after unloading only these three) |
 | POST /api/deliveries/:id/status | Admin, Purchase Department | `dispatched` or `cancelled` (with reason) |

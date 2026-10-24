@@ -4,6 +4,25 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Budget tab and delivery sounds
+### Added
+- **Budget** page in the menu (after Deliveries): every delivery's porter / transport budget against what was actually
+  paid. Filters: period (this month, last month, last 30 days, this year, all time, custom dates), project / site,
+  paid by, search. Tiles: total budget, spent, balance or over budget, all expenses in the period, deliveries over
+  budget, payments without a bill.
+  - **Budget vs spent** — one row per delivery: budget, spent, difference, % used, bills attached, status (within
+    budget / over budget / nothing spent yet / no budget set); click a delivery to open its 💰 tab.
+  - **All expenses** — every payment: date, delivery, project, what for, paid to, mode, who paid, amount, bill;
+    filter by purpose, mode, with / without bill; **Download expenses (CSV)**.
+  - **Receipts** — bill photos as a gallery (open full size / download) and the list of payments without a bill.
+  - **Summary** — paid per person, by purpose, by payment mode, and budget vs spent per project.
+  - Menu badge for the purchase side: deliveries over budget + payments without a bill in the last 30 days.
+- **Accounts Department** can see every delivery, its documents, payments and bills (read-only) to match receipts.
+- **Sounds**: a ring when a delivery is placed (for the person adding it and the site team notified) and a
+  "your package is delivered" chime when delivery is confirmed (for the person confirming and the people notified).
+  🔔 Sounds on / off button on the Deliveries page (remembered per device). Files: `frontend/sounds/`.
+  Sounds play while the app is open; phone push notifications use the phone's own notification sound.
+
 ## [Unreleased] — Delivery documents and budget
 ### Added
 - **Documents on every delivery**, in their own tab on the delivery card, split into **📤 Sent to site** (delivery

@@ -39,10 +39,16 @@ function mountDeliveries(app, deps) {
     const me = await db.getUserFresh(user.username);
     return !!(me && (isPurchase(me.team) || me.manage_deliveries));
   }
+  // Accounts Department: sees every delivery's budget, payments and bills (read-only) to match receipts.
+  async function isAccounts(user) {
+    const me = await db.getUserFresh(user.username);
+    return !!(me && /account/i.test(me.team || ''));
+  }
   const receiversOf = (d) => (Array.isArray(d.receivers) ? d.receivers : String(d.receivers || '').split(',')).filter(Boolean);
   async function canSee(user, d) {
     if (user.role === 'admin' || user.role === 'director' || d.created_by === user.username || receiversOf(d).includes(user.username)) return true;
     if (await canManage(user)) return true;
+    if (await isAccounts(user)) return true;
     if (d.task_id) {
       const t = await db.getTask(d.task_id);
       if (t && (t.created_by_username === user.username || (await db.listAssignees(t.id)).some(a => a.username === user.username))) return true;
@@ -97,8 +103,9 @@ function mountDeliveries(app, deps) {
 
   app.get('/api/deliveries', auth(ALL_ROLES), async (req, res) => {
     const manage = await canManage(req.user);
-    const everything = manage || req.user.role === 'director';
-    res.json({ canManage: manage, docTypes: DOC_TYPES, defaultRequired: DEFAULT_REQUIRED, payPurposes: PAY_PURPOSES, payModes: PAY_MODES,
+    const accounts = !manage && await isAccounts(req.user);
+    const everything = manage || accounts || req.user.role === 'director';
+    res.json({ canManage: manage, seesAll: everything, docTypes: DOC_TYPES, defaultRequired: DEFAULT_REQUIRED, payPurposes: PAY_PURPOSES, payModes: PAY_MODES,
       items: await db.listDeliveriesFor(req.user.username, everything) });
   });
 

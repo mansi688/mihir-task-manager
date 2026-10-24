@@ -46,6 +46,34 @@ function dlvMissingDocs(d, dir) {
   return (d.required_docs || []).filter(k => dlvDoc(k) && (!dir || dlvDoc(k).dir === dir) && !have.has(k));
 }
 
+// ---- Sounds: a ring when a delivery is placed, a "your package is delivered" chime when it arrives.
+// Played for the person who does it and for the people notified about it (new notifications only).
+const DLV_SOUND_FILES = { placed: '/sounds/delivery-placed.mp3', delivered: '/sounds/delivered.mp3' };
+const DLV_SOUND_FOR_TYPE = { delivery_scheduled: 'placed', delivery_delivered: 'delivered' };
+const dlvSoundCache = {};
+let dlvLastNotifId = null;
+function dlvSoundOn() { try { return safeStorage.getItem('ls_dlv_sound') !== 'off'; } catch (e) { return true; } }
+function dlvPlaySound(kind) {
+  if (!dlvSoundOn() || !DLV_SOUND_FILES[kind]) return;
+  try {
+    const a = dlvSoundCache[kind] || (dlvSoundCache[kind] = new Audio(DLV_SOUND_FILES[kind]));
+    a.currentTime = 0; const p = a.play(); if (p && p.catch) p.catch(() => {}); // browsers may block sound before the first tap
+  } catch (e) {}
+}
+// Called whenever the notification list is refreshed: rings once for each new delivery notification.
+function dlvSoundsForNotifications(items) {
+  const list = Array.isArray(items) ? items : [];
+  const maxId = list.reduce((m, n) => Math.max(m, Number(n.id) || 0), 0);
+  if (dlvLastNotifId === null) {
+    let saved = 0; try { saved = Number(safeStorage.getItem('ls_dlv_sound_last:' + (session && session.username)) || 0); } catch (e) {}
+    dlvLastNotifId = saved || maxId; // first load after login: nothing old rings
+  }
+  const fresh = list.filter(n => Number(n.id) > dlvLastNotifId && !Number(n.read) && DLV_SOUND_FOR_TYPE[n.type]);
+  if (maxId > dlvLastNotifId) { dlvLastNotifId = maxId; try { safeStorage.setItem('ls_dlv_sound_last:' + (session && session.username), String(maxId)); } catch (e) {} }
+  const kind = fresh.some(n => DLV_SOUND_FOR_TYPE[n.type] === 'delivered') ? 'delivered' : fresh.length ? 'placed' : null;
+  if (kind) dlvPlaySound(kind);
+}
+
 function dlvEsc(s) { return typeof esc === 'function' ? esc(s) : String(s == null ? '' : s); }
 function dlvWhen(w) {
   if (!w) return '';
@@ -404,9 +432,7 @@ function deliveryBudgetHTML() {
     </div>
     ${noBill ? `<div class="small" style="margin-top:6px;">🧾 ${noBill} payment${noBill > 1 ? 's' : ''} without a bill.</div>` : ''}
     ${over.length ? `<div class="dlv-files" style="margin-top:6px;">${over.map(d => `<button type="button" class="dlv-file dlv-over" data-dlv-goto="${d.id}">${dlvEsc(d.ref)} · over by ${dlvInr(-d.balance)}</button>`).join('')}</div>` : ''}
-    ${rows.length ? `<div class="dlv-section" style="margin-top:12px;">Paid per person</div><div class="dlv-perf-wrap"><table class="dlv-perf"><thead><tr><th>Person</th><th>Payments</th><th>Deliveries</th><th>Without bill</th><th style="text-align:right;">Total paid</th></tr></thead><tbody>
-      ${rows.map(r => `<tr><td><b>${dlvEsc(r.name || personName(r.username))}</b></td><td>${r.count}</td><td>${r.deliveries.size}</td><td>${r.noBill ? `<span class="dlv-late">${r.noBill}</span>` : '0'}</td><td style="text-align:right;"><b>${dlvInr(Math.round(r.total * 100) / 100)}</b></td></tr>`).join('')}
-    </tbody></table></div>` : ''}
+    <div style="margin-top:10px;"><button class="btn btn-sm" data-dlv-act="open-budget">💰 Open the Budget tab — all expenses, receipts and per person ›</button></div>
   </div>`;
 }
 
@@ -422,7 +448,10 @@ function renderDeliveriesView() {
     <div class="flex-between" style="flex-wrap:wrap;gap:10px;">
       <div><div class="card-title" style="margin:0;">Deliveries</div>
         <div class="small muted">Material on its way to site. The site team tagged on a delivery confirms it with photos — first the delivery, then the unloading.${dlvCanManage() ? ' Driver details are filled in here by the purchase team — the driver does not use this app.' : ' The purchase team adds deliveries and their driver details.'}</div></div>
-      ${dlvCanManage() && !ui.deliveryForm ? `<button class="btn btn-primary btn-sm" data-dlv-act="new">+ New delivery</button>` : ''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-sm" data-dlv-act="sound" title="Ring when a delivery is placed and when it is delivered">${dlvSoundOn() ? '🔔 Sounds on' : '🔕 Sounds off'}</button>
+        ${dlvCanManage() && !ui.deliveryForm ? `<button class="btn btn-primary btn-sm" data-dlv-act="new">+ New delivery</button>` : ''}
+      </div>
     </div>
   </div>
   ${deliveryFormHTML()}
@@ -527,6 +556,8 @@ function bindDeliveriesView() {
     } catch (e) { b.disabled = false; b.textContent = 'Yes, delete'; setBanner(e.message); render(); }
   });
   act('close-photo', () => { ui.deliveryPhoto = null; render(); });
+  act('sound', () => { const on = !dlvSoundOn(); try { safeStorage.setItem('ls_dlv_sound', on ? 'on' : 'off'); } catch (e) {} if (on) dlvPlaySound('placed'); render(); });
+  act('open-budget', () => { ui.adminTab = 'budget'; try { safeStorage.setItem('ls_last_tab', 'budget'); } catch (e) {} render(); window.scrollTo(0, 0); });
   act('download-photo', () => { const p = ui.deliveryPhoto; if (p) downloadDataUrl(p.data, p.name); });
   document.querySelectorAll('[data-dlv-tab]').forEach(b => b.onclick = () => { ui.deliveryTab = b.dataset.dlvTab; render(); });
   const perf = document.getElementById('dlv-perf-period'); if (perf) perf.onchange = () => { ui.dlvPerfPeriod = perf.value; render(); };
@@ -589,6 +620,7 @@ function bindDeliveriesView() {
           ? await api(`/api/deliveries/${f.id}/update`, { method: 'POST', body: JSON.stringify(body) })
           : await api('/api/deliveries', { method: 'POST', body: JSON.stringify(body) });
         const id = f.mode === 'edit' ? f.id : r.id;
+        if (f.mode !== 'edit') dlvPlaySound('placed');
         ui.deliveryForm = null; ui.deliverySaving = false;
         setBanner(f.mode === 'edit' ? 'Delivery updated — the site team has been told about any new details.'
           : `Added to deliveries as ${r.ref}. The site team has been notified.${r.closedTask ? ' The task is now closed — only the delivery is tracked.' : (r.keptOpenWhy ? ` The task was kept open because ${r.keptOpenWhy}.` : '')}`, 'ok');
@@ -757,6 +789,7 @@ function bindDeliveriesView() {
       try {
         await api(`/api/deliveries/${p.id}/proof`, { method: 'POST', body: JSON.stringify({ stage: p.stage, note: p.note, attachments: p.files.map(x => ({ name: x.name, data: x.data })), takenAt: p.files.map(x => x.taken_at) }) });
         const stage = p.stage; ui.deliveryProof = null;
+        if (stage === 'delivered') dlvPlaySound('delivered');
         setBanner(stage === 'delivered' ? 'Delivery confirmed with photos. Next: confirm the unloading.' : 'Unloading confirmed — everyone has been told.', 'ok');
         await refreshData(); openDeliveryOnPage(p.id);
       } catch (e) { p.saving = false; p.err = e.message; render(); }

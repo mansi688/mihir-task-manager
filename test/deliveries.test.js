@@ -11,7 +11,7 @@ test('deliveries: Purchase/Admin add them from a task; site team gets access, pr
   const buyer = await createMember(baseUrl, admin, 'tanu.p', 'Tanu Purchase', 'Purchase Department');
   const site = await createMember(baseUrl, admin, 'sachin.s', 'Sachin Site', 'Execution Department');
   const eng = await createMember(baseUrl, admin, 'eng.d', 'Eng D', 'Execution Department');
-  const outsider = await createMember(baseUrl, admin, 'out.d', 'Out Sider', 'Accounts');
+  const outsider = await createMember(baseUrl, admin, 'out.d', 'Out Sider', 'Sales');
   const P = (tok, path, body) => api(baseUrl, path, { method: 'POST', token: tok, body });
   const G = (tok, path) => api(baseUrl, path, { token: tok });
   const taskId = (await P(buyer, '/api/tasks', { title: 'Tiles — 400 boxes, Tower B', priority: 'medium', deadline: futureDate(6), assignedToList: ['eng.d'] })).data.id;

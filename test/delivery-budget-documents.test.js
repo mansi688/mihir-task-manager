@@ -11,7 +11,8 @@ test('delivery documents (sent to site / from site, required vs optional) and bu
   const buyer = await createMember(baseUrl, admin, 'tanu.b', 'Tanu Purchase', 'Purchase Department');
   const site = await createMember(baseUrl, admin, 'sachin.b', 'Sachin Site', 'Execution Department');
   const site2 = await createMember(baseUrl, admin, 'ravi.b', 'Ravi Site', 'Execution Department');
-  const outsider = await createMember(baseUrl, admin, 'out.b', 'Out Sider', 'Accounts');
+  const outsider = await createMember(baseUrl, admin, 'out.b', 'Out Sider', 'Sales');
+  const accts = await createMember(baseUrl, admin, 'acc.b', 'Asha Accounts', 'Accounts Department');
   const P = (tok, path, body) => api(baseUrl, path, { method: 'POST', token: tok, body });
   const G = (tok, path) => api(baseUrl, path, { token: tok });
   const one = async (tok, id) => (await G(tok, '/api/deliveries')).data.items.find(x => x.id === id);
@@ -89,7 +90,14 @@ test('delivery documents (sent to site / from site, required vs optional) and bu
   const pay1 = d.payments.find(x => x.id === p1.data.id), pay2 = d.payments.find(x => x.id === p2.data.id);
   assert.equal(pay1.bills.length, 1); assert.equal(pay2.bills.length, 0); assert.equal(pay2.no_bill_reason, 'labourers paid cash, no receipt');
   assert.ok(!d.files.some(f => f.kind === 'bill'), 'bills are listed under their payment, not with the documents');
-  // bill opens for people on the delivery
+  // Accounts: sees every delivery's payments and bills (read-only)
+  const al = (await G(accts, '/api/deliveries')).data;
+  assert.equal(al.canManage, false); assert.equal(al.seesAll, true);
+  assert.ok(al.items.some(x => x.id === id && x.payments.length === 2));
+  assert.equal((await G(accts, `/api/deliveries/${id}/files/${pay1.bills[0].id}`)).status, 200);
+  assert.equal((await P(accts, `/api/deliveries/${id}/payments`, { amount: 5, purpose: 'Other', no_bill_reason: 'just testing' })).status, 403, 'accounts cannot record payments');
+  assert.ok(!(await G(outsider, '/api/deliveries')).data.items.some(x => x.id === id));
+    // bill opens for people on the delivery
   assert.equal((await G(site2, `/api/deliveries/${id}/files/${pay1.bills[0].id}`)).status, 200);
   // delete: payer within 48h, or purchase
   assert.equal((await P(site2, `/api/deliveries/${id}/payments/${p1.data.id}/delete`)).status, 403);

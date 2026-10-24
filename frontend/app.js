@@ -105,7 +105,7 @@ if (token) {
   if (safeStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] };
+  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null;
   ui = defaultUiState(); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
   announcements = []; canPostAnnouncements = false; chat.rooms = []; chat.messages = {}; chat.hasOlder = {}; chat.lastVersion = null;
 }
@@ -215,6 +215,7 @@ const ICONS = {
   chat: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/>',
   megaphone: '<path d="M3 10v4h3l7 4V6L6 10z"/><path d="M16 9a4 4 0 010 6M18.5 6.5a7.5 7.5 0 010 11"/>',
   mapPin: '<path d="M12 21s-7-6.1-7-11.5a7 7 0 0114 0C19 14.9 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+  wallet: '<path d="M3 7h16a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M3 7l12-4 2 4"/><path d="M16 13.5h5"/><circle cx="16.5" cy="13.5" r=".6"/>',
   truck: '<path d="M3 6h11v10H3z"/><path d="M14 9h4l3 3v4h-7z"/><circle cx="7" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/>',
 };
 function icon(name, size) {
@@ -564,7 +565,7 @@ const CAD_DRAWING_EXTENSIONS = ['.dwg', '.dxf', '.rvt', '.rfa', '.skp', '.dgn', 
 
 /* ==================== ROLES / NAV ==================== */
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries', budget: 'Budget' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -677,6 +678,10 @@ function renderSidebar() {
       items.splice(at >= 0 ? at + 1 : items.length, 0, { key: 'approvals', label: 'Approvals', icon: 'clipboard', badge: () => approvalsNeedingMeCount() },
         { key: 'closure', label: 'Task Closure', icon: 'checkCircle', badge: () => (closureData.toDecide || []).length },
         { key: 'deliveries', label: 'Deliveries', icon: 'truck', badge: () => (typeof deliveriesNeedingMeCount === 'function' ? deliveriesNeedingMeCount() : 0) });
+      if (typeof budgetTabVisible === 'function' && budgetTabVisible()) {
+        const di = items.findIndex(i => i.key === 'deliveries');
+        items.splice(di + 1, 0, { key: 'budget', label: 'Budget', icon: 'wallet', badge: () => budgetAttentionCount() });
+      }
       groups[gi] = { ...g, items };
     }
   });
@@ -1709,7 +1714,7 @@ function applyData(key, v) {
         needsGuide: typeof v.needsGuide === 'boolean' ? (v.needsGuide && Date.now() - (typeof guideCompletedAt === 'number' ? guideCompletedAt : 0) > 120000) : !!session.needsGuide };
       safeStorage.setItem('ls_session', JSON.stringify(session));
       break;
-    case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; notifTaskInfo = v.tasks || {}; break;
+    case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; notifTaskInfo = v.tasks || {}; if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items); break;
     case 'closureData': closureData = v || { toDecide: [], mine: [], keptOpen: [] }; break;
     case 'deliveriesResp': if (typeof deliveriesData !== 'undefined') deliveriesData = v && Array.isArray(v.items) ? v : { canManage: false, items: [] }; break;
     case 'myApprovalRequests': myApprovalRequests = v; break;
@@ -6084,6 +6089,7 @@ function renderInner() {
   else if (ui.adminTab === 'approvals') body = renderApprovalsView();
   else if (ui.adminTab === 'closure') body = renderClosureView();
   else if (ui.adminTab === 'deliveries' && typeof renderDeliveriesView === 'function') body = renderDeliveriesView();
+  else if (ui.adminTab === 'budget' && typeof renderBudgetView === 'function') body = renderBudgetView();
   else if (ui.adminTab === 'alltasks' && session.role === 'admin') body = renderAllTasksCard();
   else if (ui.adminTab === 'accounts' && session.role === 'admin') body = renderAccountsView();
   else if (ui.adminTab === 'performance' && session.role === 'admin') body = renderPerformanceView();
@@ -6122,6 +6128,7 @@ function renderInner() {
   if (ui.adminTab === 'notifications') bindNotificationsView();
   if (ui.adminTab === 'closure') bindClosureView();
   if (ui.adminTab === 'deliveries' && typeof bindDeliveriesView === 'function') bindDeliveriesView();
+  if (ui.adminTab === 'budget' && typeof bindBudgetView === 'function') bindBudgetView();
   bindClosureForms();
   if (ui.adminTab === 'tasks') bindApprovalsHint();
   if (ui.adminTab === 'calendar') bindCalendarView();
