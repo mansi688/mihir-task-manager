@@ -39,12 +39,20 @@ function dlvTime(iso) { try { return new Date(iso).toLocaleString('en-IN', { tim
 function dlvMine(d) { return (d.receivers || []).includes(session.username); }
 function dlvCanManage() { return !!deliveriesData.canManage; }
 // Menu badge: deliveries waiting for my proof.
-function deliveriesNeedingMeCount() { return (deliveriesData.items || []).filter(d => dlvMine(d) && ['scheduled', 'dispatched', 'delivered'].includes(d.status)).length; }
+// Menu badge: for the purchase team, every delivery not yet unloaded; for the site team, the ones waiting for their proof.
+function deliveriesNeedingMeCount() {
+  const open = d => ['scheduled', 'dispatched', 'delivered'].includes(d.status);
+  return (deliveriesData.items || []).filter(d => open(d) && (dlvCanManage() || dlvMine(d))).length;
+}
 function deliveriesForTask(taskId) { return (deliveriesData.items || []).filter(d => d.task_id === taskId); }
 
 // From a task: open the form with only the title copied (and the project, and the task link).
+// Vendor suggestion for the purchase team (the field still accepts any vendor).
+function dlvVendorSuggestions() { return ['Kratex Tradetech India']; }
 function openDeliveryFromTask(t) {
-  ui.deliveryForm = { mode: 'new', task_id: t.id, task_title: t.title, title: t.title, project: t.project || '', expected_date: '', expected_time: '', receivers: [], files: [], transport: '', search: '' };
+  // People who submitted their part but were not approved yet — warned about on the form.
+  const pendingParts = (t.assignees || []).filter(a => a.submitted_at && !(a.decision === 'approve' && a.completed_at)).map(a => a.username);
+  ui.deliveryForm = { mode: 'new', task_id: t.id, task_title: t.title, title: t.title, project: t.project || '', expected_date: '', expected_time: '', receivers: [], files: [], transport: '', search: '', pendingParts };
   ui.deliveryTab = 'pending';
   if (typeof collapseTaskCards === 'function') collapseTaskCards();
   ui.adminTab = 'deliveries'; try { safeStorage.setItem('ls_last_tab', 'deliveries'); } catch (e) {}
@@ -70,7 +78,9 @@ function deliveryFormHTML() {
       <div class="card-title" style="margin:0;">${f.mode === 'edit' ? `Edit delivery ${dlvEsc(f.ref)}` : 'New delivery'}</div>
       <button class="btn btn-sm" data-dlv-act="cancel-form">Cancel</button>
     </div>
-    ${f.task_id ? `<div class="notice" style="margin-top:10px;">From task <b>${dlvEsc(f.task_title || '')}</b> <span class="mono small">${dlvEsc(f.task_id)}</span> — only the title is copied. The site team you tag can open the task too.</div>` : ''}
+    ${f.task_id ? `<div class="notice" style="margin-top:10px;">From task <b>${dlvEsc(f.task_title || '')}</b> <span class="mono small">${dlvEsc(f.task_id)}</span> — only the title is copied.
+      <b>The task will be closed</b> (its work is done) and from now on only this delivery is tracked — the site team you tag, not the people who did the task. The site team can still open the task.</div>
+      ${(f.pendingParts || []).length ? `<div class="notice dlv-warn" style="margin-top:8px;">⚠ Still waiting for approval on the task: <b>${f.pendingParts.map(u => dlvEsc(personName(u))).join(', ')}</b>. Closing the task means their part will not count as approved work — approve them on the task first if they should get credit.</div>` : ''}` : ''}
     <div class="dlv-section">What and when</div>
     <div class="row">${field('dlv-title', 'What is being delivered *', f.title, 'e.g. Tiles — 400 boxes')}${field('dlv-quantity', 'Quantity', f.quantity, 'e.g. 400 boxes / 50 bags')}</div>
     <div class="row">
@@ -79,12 +89,13 @@ function deliveryFormHTML() {
     </div>
     <div class="row">${field('dlv-project', 'Project / site', f.project, 'e.g. Mihir Amara', 'list="dlv-projects"')}${field('dlv-site', 'Where on site', f.site_location, 'e.g. Tower B store, gate 2')}</div>
     <datalist id="dlv-projects">${(projectsList || []).map(p => `<option value="${dlvEsc(p.name || p)}">`).join('')}</datalist>
-    <div class="row">${field('dlv-vendor', 'Vendor / supplier', f.vendor, 'e.g. Shah Sales')}</div>
+    <div class="row">${field('dlv-vendor', 'Vendor / supplier', f.vendor, 'e.g. Kratex Tradetech India', 'list="dlv-vendors"')}</div>
+    <datalist id="dlv-vendors">${dlvVendorSuggestions().map(v => `<option value="${dlvEsc(v)}">`).join('')}</datalist>
 
     <div class="dlv-section">Site team to receive it * <span class="muted small">— they get a notification and upload the proof</span></div>
     <div class="dlv-picked">${(f.receivers || []).length ? f.receivers.map(u => `<span class="dlv-chip">${dlvEsc(personName(u))}<button type="button" data-dlv-unpick="${dlvEsc(u)}" aria-label="Remove">✕</button></span>`).join('') : '<span class="muted small">Nobody tagged yet.</span>'}</div>
     <input type="text" id="dlv-people-search" placeholder="Search by name or department…" value="${dlvEsc(f.search || '')}" autocomplete="off">
-    <div class="dlv-people">${people.filter(u => !q || `${u.name} ${u.username} ${u.team || ''}`.toLowerCase().includes(q)).slice(0, 40).map(u => `
+    <div class="dlv-people">${people.filter(u => !q || `${u.name} ${u.username} ${u.team || ''}`.toLowerCase().includes(q)).map(u => `
       <label class="dlv-person"><input type="checkbox" data-dlv-pick="${dlvEsc(u.username)}" ${(f.receivers || []).includes(u.username) ? 'checked' : ''}><span><b>${dlvEsc(u.name)}</b> <span class="muted small">${dlvEsc(u.designation || '')}${u.team ? ' · ' + dlvEsc(u.team) : ''}</span></span></label>`).join('')}</div>
 
     <div class="dlv-section">Transport <span class="muted small">— can be filled in later. The driver does not use this app: type in their details here.</span></div>
@@ -174,6 +185,7 @@ function deliveryCardHTML(d) {
       ${d.description ? `<div class="doc-note" style="margin-top:8px;">${dlvEsc(d.description)}</div>` : ''}
       ${proofs('attachment').length ? `<div class="dlv-files" style="margin-top:8px;">${proofs('attachment').map(f => fileBtn(f, `📎 ${dlvEsc(f.name)}`)).join('')}</div>` : ''}
       ${d.task_id ? `<div style="margin-top:8px;"><button type="button" class="btn btn-sm" data-dlv-open-task="${dlvEsc(d.task_id)}">Open task ${dlvEsc(d.task_id)} ›</button></div>` : ''}
+      ${d.last_followup_at ? `<div class="dlv-fu-note">📣 Followed up by <b>${dlvEsc(personName(d.last_followup_by))}</b> · ${dlvEsc(dlvTime(d.last_followup_at))}${d.followup_count > 1 ? ` · ${d.followup_count} times` : ''}${dlvMine(d) && ['scheduled', 'dispatched', 'delivered'].includes(d.status) ? ' — please update this delivery.' : ''}</div>` : ''}
       <div class="dlv-timeline">
         ${step(true, 'Added to deliveries', d.created_at, d.created_by)}
         ${d.status === 'cancelled' ? step(true, `Cancelled — ${dlvEsc(d.cancel_reason || '')}`, d.cancelled_at, d.cancelled_by) : `
@@ -186,9 +198,16 @@ function deliveryCardHTML(d) {
       <div class="dlv-actions">
         ${mine && ['scheduled', 'dispatched'].includes(d.status) && !(ui.deliveryProof && ui.deliveryProof.id === d.id) ? `<button class="btn btn-primary btn-sm" data-dlv-proof="${d.id}:delivered">📦 Confirm delivery (photos)</button>` : ''}
         ${mine && d.status === 'delivered' && !(ui.deliveryProof && ui.deliveryProof.id === d.id) ? `<button class="btn btn-primary btn-sm" data-dlv-proof="${d.id}:unloaded">🏗️ Confirm unloading (photos)</button>` : ''}
+        ${manage && ['scheduled', 'dispatched', 'delivered'].includes(d.status) ? `<button class="btn btn-sm dlv-fu ${d.last_followup_at ? 'done' : ''}" data-dlv-followup="${d.id}" title="Remind the site team to update this delivery">📣 ${d.last_followup_at ? 'Follow up again' : 'Follow up'}</button>` : ''}
         ${manage && d.status === 'scheduled' ? `<button class="btn btn-sm" data-dlv-dispatch="${d.id}">🚚 Mark on the way</button>` : ''}
         ${manage && !['unloaded', 'cancelled'].includes(d.status) ? `<button class="btn btn-sm" data-dlv-edit="${d.id}">✏️ Edit details</button><button class="btn btn-sm btn-danger" data-dlv-cancel="${d.id}">Cancel</button>` : ''}
+        ${manage && ui.deliveryDelete !== d.id ? `<button class="btn btn-sm btn-danger" data-dlv-delete="${d.id}">🗑 Delete</button>` : ''}
       </div>
+      ${ui.deliveryDelete === d.id ? `<div class="dlv-proof dlv-delete-box">
+        <div><b>Delete ${dlvEsc(d.ref)}?</b> The delivery, its photos and attachments are removed for everyone. This cannot be undone.</div>
+        ${d.task_id && d.closed_task && d.task_status === 'closed' ? `<label class="small" style="display:flex;gap:8px;align-items:center;margin-top:8px;"><input type="checkbox" id="dlv-delete-reopen" checked> Re-open task ${dlvEsc(d.task_id)} (it was closed when it was added to Deliveries)</label>` : ''}
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-danger btn-sm" data-dlv-delete-confirm="${d.id}">Yes, delete</button><button class="btn btn-sm" data-dlv-act="delete-cancel">Keep it</button></div>
+      </div>` : ''}
     </div>
   </details>`;
 }
@@ -214,9 +233,61 @@ function renderDeliveriesView() {
     <input type="text" id="delivery-search" placeholder="Search by material, DLV number, driver, vehicle, Porter order ID…" value="${dlvEsc(ui.deliverySearch || '')}" style="margin:10px 0;">
     ${list.length ? list.map(deliveryCardHTML).join('') : `<div class="empty">${q ? 'No delivery matches your search.' : tab === 'pending' ? (dlvCanManage() ? 'No deliveries to receive. Open a material task and tap "🚚 Add to delivery", or add one here.' : 'Nothing to receive right now.') : 'Nothing here yet.'}</div>`}
   </div>
+  ${deliveryPerformanceHTML()}
   ${ui.deliveryPhoto ? `<div class="dlv-viewer" data-dlv-act="close-photo"><img src="${ui.deliveryPhoto.data}" alt="${dlvEsc(ui.deliveryPhoto.name)}"><div class="dlv-viewer-bar"><span>${dlvEsc(ui.deliveryPhoto.name)}</span><button class="btn btn-sm" data-dlv-act="download-photo">Download</button><button class="btn btn-sm" data-dlv-act="close-photo">Close</button></div></div>` : ''}`;
 }
 
+// ---- Site team performance (tagged people only — the task's own people are not counted here) ----
+function dlvIstDay(iso) { try { return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }); } catch (e) { return ''; } }
+function deliveryPerformance(period) {
+  const today = dlvIstDay(new Date().toISOString());
+  const from = period === 'month' ? today.slice(0, 8) + '01' : period === '30d' ? dlvIstDay(new Date(Date.now() - 30 * 864e5).toISOString()) : '';
+  const rows = new Map();
+  for (const d of deliveriesData.items || []) {
+    if (d.status === 'cancelled') continue;
+    const due = String(d.expected_at || '').slice(0, 10);
+    if (from && due < from) continue;
+    const deliveredDay = d.delivered_at ? dlvIstDay(d.delivered_at) : null;
+    const onTime = deliveredDay && deliveredDay <= due;
+    const late = (deliveredDay && deliveredDay > due) || (!deliveredDay && due && due < today);
+    for (const u of d.receivers || []) {
+      const r = rows.get(u) || { username: u, tagged: 0, confirmed: 0, onTime: 0, late: 0, pending: 0, unloaded: 0, uploads: 0, unloadHours: [] };
+      r.tagged++;
+      if (deliveredDay) r.confirmed++;
+      if (onTime) r.onTime++;
+      if (late) r.late++;
+      if (!deliveredDay || d.status === 'delivered') r.pending++;
+      if (d.status === 'unloaded') { r.unloaded++; if (d.delivered_at && d.unloaded_at) r.unloadHours.push((new Date(d.unloaded_at) - new Date(d.delivered_at)) / 36e5); }
+      if (d.delivered_by === u) r.uploads++;
+      if (d.unloaded_by === u) r.uploads++;
+      rows.set(u, r);
+    }
+  }
+  return [...rows.values()].map(r => ({ ...r, avgUnload: r.unloadHours.length ? r.unloadHours.reduce((a, b) => a + b, 0) / r.unloadHours.length : null,
+    pct: r.onTime + r.late ? Math.round(r.onTime / (r.onTime + r.late) * 100) : null }))
+    .filter(r => dlvCanManage() || r.username === session.username)
+    .sort((a, b) => b.tagged - a.tagged || personName(a.username).localeCompare(personName(b.username)));
+}
+function deliveryPerformanceHTML() {
+  const period = ['month', '30d', 'all'].includes(ui.dlvPerfPeriod) ? ui.dlvPerfPeriod : 'month';
+  const rows = deliveryPerformance(period);
+  const hrs = h => h == null ? '—' : h < 1 ? `${Math.round(h * 60)} min` : h < 48 ? `${h.toFixed(1)} h` : `${(h / 24).toFixed(1)} days`;
+  return `
+  <div class="card" id="dlv-performance">
+    <div class="flex-between" style="flex-wrap:wrap;gap:10px;">
+      <div><div class="card-title" style="margin:0;">Site team performance</div>
+        <div class="small muted">How the people tagged to receive deliveries are doing — by delivery date. "On time" = delivery confirmed with photos on or before the delivery date. ${dlvCanManage() ? '' : 'You see your own numbers.'}</div></div>
+      <select id="dlv-perf-period" style="width:auto;"><option value="month" ${period === 'month' ? 'selected' : ''}>This month</option><option value="30d" ${period === '30d' ? 'selected' : ''}>Last 30 days</option><option value="all" ${period === 'all' ? 'selected' : ''}>All time</option></select>
+    </div>
+    ${rows.length ? `<div class="dlv-perf-wrap"><table class="dlv-perf">
+      <thead><tr><th>Person</th><th>Tagged</th><th>Confirmed</th><th>On time</th><th>Late / overdue</th><th>Still pending</th><th>Photos uploaded</th><th>Avg. delivery → unloading</th></tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td><b>${dlvEsc(personName(r.username))}</b></td><td>${r.tagged}</td><td>${r.confirmed}</td>
+        <td>${r.pct == null ? '—' : `<span class="dlv-pct ${r.pct >= 80 ? 'good' : r.pct >= 50 ? 'mid' : 'bad'}">${r.pct}%</span> <span class="muted small">(${r.onTime})</span>`}</td>
+        <td>${r.late ? `<span class="dlv-late">${r.late}</span>` : '0'}</td><td>${r.pending}</td><td>${r.uploads}</td><td>${hrs(r.avgUnload)}</td></tr>`).join('')}</tbody>
+    </table></div>` : '<div class="empty">No deliveries in this period yet.</div>'}
+  </div>`;
+}
 // Writes the date/time, delivery number and person onto the photo itself — proof that survives a download.
 function dlvStampPhoto(dataUrl, text) {
   return new Promise((resolve) => {
@@ -244,9 +315,22 @@ function bindDeliveriesView() {
   act('cancel-form', () => { ui.deliveryForm = null; ui.deliveryErr = ''; render(); });
   act('proof-cancel', () => { ui.deliveryProof = null; render(); });
   act('cancel-cancel', () => { ui.deliveryCancel = null; render(); });
+  act('delete-cancel', () => { ui.deliveryDelete = null; render(); });
+  document.querySelectorAll('[data-dlv-delete]').forEach(b => b.onclick = () => { ui.deliveryDelete = Number(b.dataset.dlvDelete); render(); });
+  document.querySelectorAll('[data-dlv-delete-confirm]').forEach(b => b.onclick = async () => {
+    if (b.disabled) return; b.disabled = true; b.textContent = 'Deleting…';
+    const reopenEl = document.getElementById('dlv-delete-reopen');
+    try {
+      const r = await api(`/api/deliveries/${b.dataset.dlvDeleteConfirm}/delete`, { method: 'POST', body: JSON.stringify({ reopenTask: !!(reopenEl && reopenEl.checked) }) });
+      ui.deliveryDelete = null;
+      setBanner(`Delivery deleted${r.reopened ? ' and its task re-opened' : ''}. The site team has been told.`, 'ok');
+      await refreshData();
+    } catch (e) { b.disabled = false; b.textContent = 'Yes, delete'; setBanner(e.message); render(); }
+  });
   act('close-photo', () => { ui.deliveryPhoto = null; render(); });
   act('download-photo', () => { const p = ui.deliveryPhoto; if (p) downloadDataUrl(p.data, p.name); });
   document.querySelectorAll('[data-dlv-tab]').forEach(b => b.onclick = () => { ui.deliveryTab = b.dataset.dlvTab; render(); });
+  const perf = document.getElementById('dlv-perf-period'); if (perf) perf.onchange = () => { ui.dlvPerfPeriod = perf.value; render(); };
   const search = document.getElementById('delivery-search');
   if (search) search.oninput = () => { ui.deliverySearch = search.value; clearTimeout(window.__dlvSearchT); window.__dlvSearchT = setTimeout(render, 250); };
   document.querySelectorAll('[data-dlv-open-task]').forEach(b => b.onclick = () => openTaskOnMyTasks(b.dataset.dlvOpenTask));
@@ -291,7 +375,8 @@ function bindDeliveriesView() {
           : await api('/api/deliveries', { method: 'POST', body: JSON.stringify(body) });
         const id = f.mode === 'edit' ? f.id : r.id;
         ui.deliveryForm = null; ui.deliverySaving = false;
-        setBanner(f.mode === 'edit' ? 'Delivery updated — the site team has been told about any new details.' : `Added to deliveries as ${r.ref}. The site team has been notified.`, 'ok');
+        setBanner(f.mode === 'edit' ? 'Delivery updated — the site team has been told about any new details.'
+          : `Added to deliveries as ${r.ref}. The site team has been notified.${r.closedTask ? ' The task is now closed — only the delivery is tracked.' : (r.keptOpenWhy ? ` The task was kept open because ${r.keptOpenWhy}.` : '')}`, 'ok');
         await refreshData();
         openDeliveryOnPage(id);
       } catch (e) { ui.deliverySaving = false; ui.deliveryErr = e.message; render(); }
@@ -307,6 +392,11 @@ function bindDeliveriesView() {
       porter_order_id: d.porter_order_id, delivery_ref: d.delivery_ref, vehicle_no: d.vehicle_no, driver_name: d.driver_name, driver_phone: d.driver_phone, description: d.description,
       expected_date: date || '', expected_time: time || '', receivers: (d.receivers || []).slice(), files: [], search: '' };
     ui.deliveryErr = ''; render(); window.scrollTo(0, 0);
+  });
+  document.querySelectorAll('[data-dlv-followup]').forEach(b => b.onclick = async () => {
+    if (b.disabled) return; b.disabled = true; const label = b.textContent; b.textContent = '📣 Sending…';
+    try { const r = await api(`/api/deliveries/${b.dataset.dlvFollowup}/followup`, { method: 'POST' }); setBanner(`Follow-up sent to ${r.sent.map(personName).join(', ')}.`, 'ok'); await refreshData(); }
+    catch (e) { b.disabled = false; b.textContent = label; setBanner(e.message); render(); }
   });
   document.querySelectorAll('[data-dlv-dispatch]').forEach(b => b.onclick = async () => {
     if (b.disabled) return; b.disabled = true;

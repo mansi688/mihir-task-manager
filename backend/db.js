@@ -448,6 +448,10 @@ async function init() {
     unloaded_at TEXT, unloaded_by TEXT, unloaded_note TEXT,
     cancelled_at TEXT, cancelled_by TEXT, cancel_reason TEXT)`);
   await run('CREATE INDEX IF NOT EXISTS idx_deliveries_task ON deliveries(task_id)');
+  await ensureColumn('deliveries', 'closed_task', 'INTEGER DEFAULT 0'); // 1 = adding it to Deliveries closed its task
+  await ensureColumn('deliveries', 'last_followup_at', 'TEXT');
+  await ensureColumn('deliveries', 'last_followup_by', 'TEXT');
+  await ensureColumn('deliveries', 'followup_count', 'INTEGER DEFAULT 0');
   await run('CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status, expected_at)');
   await run(`CREATE TABLE IF NOT EXISTS delivery_files(
     id SERIAL PRIMARY KEY, delivery_id INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
@@ -1292,12 +1296,12 @@ module.exports = {
   async getDelivery(id) { const n = Number(id); if (!Number.isInteger(n)) return null; return get('SELECT * FROM deliveries WHERE id=?', [n]); },
   async listDeliveriesFor(username, everything) {
     const rows = everything
-      ? await all('SELECT * FROM deliveries ORDER BY (status IN (\'scheduled\',\'dispatched\')) DESC, COALESCE(expected_at, created_at) DESC LIMIT 500')
-      : await all(`SELECT d.* FROM deliveries d WHERE d.created_by = ? OR (',' || d.receivers || ',') LIKE ?
+      ? await all('SELECT d.*, t.status AS task_status FROM deliveries d LEFT JOIN tasks t ON t.id = d.task_id ORDER BY (d.status IN (\'scheduled\',\'dispatched\')) DESC, COALESCE(d.expected_at, d.created_at) DESC LIMIT 2000')
+      : await all(`SELECT d.*, (SELECT status FROM tasks WHERE id = d.task_id) AS task_status FROM deliveries d WHERE d.created_by = ? OR (',' || d.receivers || ',') LIKE ?
           OR (d.task_id IS NOT NULL AND (EXISTS (SELECT 1 FROM task_assignees ta WHERE ta.task_id = d.task_id AND ta.username = ?)
             OR EXISTS (SELECT 1 FROM tasks t WHERE t.id = d.task_id AND t.created_by_username = ?)
             OR EXISTS (SELECT 1 FROM task_followups tf WHERE tf.task_id = d.task_id AND tf.username = ?)))
-          ORDER BY (d.status IN ('scheduled','dispatched')) DESC, COALESCE(d.expected_at, d.created_at) DESC LIMIT 500`,
+          ORDER BY (d.status IN ('scheduled','dispatched')) DESC, COALESCE(d.expected_at, d.created_at) DESC LIMIT 2000`,
           [username, `%,${username},%`, username, username, username]);
     if (!rows.length) return [];
     const files = await all('SELECT id, delivery_id, kind, name, taken_at, uploaded_by, created_at FROM delivery_files WHERE delivery_id = ANY(?::int[]) ORDER BY id', [rows.map(r => r.id)]);
@@ -1312,6 +1316,15 @@ module.exports = {
     const now = new Date().toISOString();
     for (const f of files || []) await run('INSERT INTO delivery_files(delivery_id,kind,name,data,taken_at,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)', [Number(id), kind, f.name, f.data, f.taken_at || null, uploadedBy, now]);
   },
+  async listOpenDeliveriesForReminders() { return all("SELECT * FROM deliveries WHERE status IN ('scheduled','dispatched','delivered') AND receivers <> ''"); },
+  // One delivery reminder card per person per delivery: the new slot's reminder replaces the last one.
+  async removeEarlierDeliveryReminders(username, ref) {
+    await run("DELETE FROM notifications WHERE username=? AND type='delivery_reminder' AND message LIKE ?", [username, `%(${ref})%`]);
+  },
+  async markDeliveryFollowUp(id, by) {
+    return get('UPDATE deliveries SET last_followup_at=?, last_followup_by=?, followup_count=COALESCE(followup_count,0)+1 WHERE id=? RETURNING *', [new Date().toISOString(), by, Number(id)]);
+  },
+  async deleteDelivery(id) { const r = await run('DELETE FROM deliveries WHERE id=?', [Number(id)]); return r.rowCount > 0; },
   async getDeliveryFile(fileId) { const n = Number(fileId); if (!Number.isInteger(n)) return null; return get('SELECT * FROM delivery_files WHERE id=?', [n]); },
   async addTaskFiles(taskId, replyId, files, uploadedBy, tx) {
     const runner = tx ? tx.run : run;

@@ -10,7 +10,7 @@ const TEXT_FIELDS = { title: 200, quantity: 120, description: 2000, vendor: 160,
   porter_order_id: 80, delivery_ref: 80, driver_name: 120, driver_phone: 30, vehicle_no: 30 };
 
 function mountDeliveries(app, deps) {
-  const { db, auth, ALL_ROLES, auditFromReq, taskEvent, collectUploads, MAX_FILE_CHARS, displayName, str } = deps;
+  const { db, auth, ALL_ROLES, auditFromReq, taskEvent, collectUploads, MAX_FILE_CHARS, displayName, str, releaseDependentsOf } = deps;
   const isPurchase = (team) => /purchase/i.test(String(team || ''));
   // Admin, the Purchase Department, and anyone Admin has given delivery access (Accounts → "Can manage
   // deliveries" — e.g. the purchase head's assistant who sits in another department).
@@ -83,12 +83,28 @@ function mountDeliveries(app, deps) {
     }
     const up = collectUploads(b, MAX_FILE_CHARS); if (up.error) return res.status(400).json({ error: up.error });
     const d = await db.createDelivery({ ...out, receivers: rec.names, task_id: task ? task.id : null, created_by: req.user.username, created_by_name: req.user.name }, up.files);
+    // The task's own work is finished — only delivery is pending — so the task is closed here and from
+    // now on only the delivery (the site team) is tracked. Nobody on the task is marked late for the wait.
+    let closedTask = false, keptOpenWhy = null;
+    if (task && task.status === 'open' && b.closeTask !== false) {
+      const openSubs = await db.listOpenSubtasks(task.id);
+      if (await db.isTaskBlocked(task.id)) keptOpenWhy = 'it depends on another task that is not closed yet';
+      else if (openSubs.length) keptOpenWhy = `it has ${openSubs.length} open subtask${openSubs.length > 1 ? 's' : ''}`;
+      else if (await db.closeTask(task.id, req.user.name)) {
+        closedTask = true;
+        await db.updateDelivery(d.id, { closed_task: 1 });
+        if (releaseDependentsOf) await releaseDependentsOf(task);
+        await taskEvent(req, task.id, 'COMPLETED', `Task closed — work done, moved to Deliveries as ${d.ref}`, { old: 'open', new: 'closed' });
+        await db.settleClosureRequests(task.id, req.user.username);
+        await auditFromReq(req, 'task_closed', `Closed "${task.title}" (${task.id}) — moved to Deliveries as ${d.ref}.`);
+      }
+    }
     await keepInformedOnTask(d, rec.names, req.user.username);
     await notifyMany(rec.names, req.user.username, 'delivery_scheduled',
       `Delivery coming: ${label(d)} — ${whenText(d.expected_at)}${d.project ? ` · ${d.project}` : ''}. Please receive it and upload proof of delivery and unloading.`, d.task_id);
     if (task) await taskEvent(req, task.id, 'DELIVERY_ADDED', `Added to Deliveries as ${d.ref} — expected ${whenText(d.expected_at)}; site team: ${(await Promise.all(rec.names.map(displayName))).join(', ')}`, { meta: { delivery: d.ref } });
     await auditFromReq(req, 'delivery_created', `Created delivery ${label(d)}${task ? ` from task ${task.id}` : ''}.`);
-    res.json({ ok: true, id: d.id, ref: d.ref });
+    res.json({ ok: true, id: d.id, ref: d.ref, closedTask, keptOpenWhy });
   });
 
   // Edit details (add the driver, vehicle, Porter order… later), re-tag the site team, change the date.
@@ -168,6 +184,42 @@ function mountDeliveries(app, deps) {
       `${stage === 'delivered' ? 'Delivered' : 'Unloaded'}: ${label(d)} — ${req.user.name} uploaded ${photos.length} photo${photos.length > 1 ? 's' : ''} at ${time}${note ? `: ${note.slice(0, 120)}` : ''}.${stage === 'unloaded' && t && t.status === 'open' ? ' The task can now be closed.' : ''}`, d.task_id);
     if (d.task_id) await taskEvent(req, d.task_id, stage === 'delivered' ? 'DELIVERY_DELIVERED' : 'DELIVERY_UNLOADED', `Delivery ${d.ref}: ${stage === 'delivered' ? 'delivered' : 'unloaded'} — ${photos.length} photo proof${note ? ` · ${note}` : ''}`, { meta: { delivery: d.ref } });
     res.json({ ok: true });
+  });
+
+  // Follow up: remind the tagged site team about this delivery. They see who followed up and when.
+  app.post('/api/deliveries/:id/followup', auth(ALL_ROLES), async (req, res) => {
+    const d = await db.getDelivery(req.params.id); if (!d) return res.status(404).json({ error: 'Delivery not found.' });
+    if (!(await canManage(req.user))) return res.status(403).json({ error: 'Only the purchase team (and Admin) can follow up on deliveries.' });
+    if (['unloaded', 'cancelled'].includes(d.status)) return res.status(400).json({ error: 'This delivery is already finished.' });
+    if (d.last_followup_at && Date.now() - new Date(d.last_followup_at).getTime() < 10 * 60000) {
+      return res.status(429).json({ error: 'You followed up less than 10 minutes ago — give the site team a moment.' });
+    }
+    const step = d.status === 'delivered' ? 'please upload the unloading photos' : 'please confirm the delivery with photos when it arrives';
+    await notifyMany(receiversOf(d), req.user.username, 'delivery_followup', `Follow-up from ${req.user.name}: ${label(d)} — ${step}.`, d.task_id);
+    const nd = await db.markDeliveryFollowUp(d.id, req.user.username);
+    if (d.task_id) await taskEvent(req, d.task_id, 'FOLLOW_UP_SENT', `Delivery ${d.ref}: follow-up sent to the site team`, { meta: { delivery: d.ref } });
+    res.json({ ok: true, sent: receiversOf(d), followup_count: nd.followup_count });
+  });
+
+  // Delete a delivery (Admin / purchase team). If adding it to Deliveries closed its task, the task can be
+  // re-opened at the same time (e.g. it was added by mistake).
+  app.post('/api/deliveries/:id/delete', auth(ALL_ROLES), async (req, res) => {
+    const d = await db.getDelivery(req.params.id); if (!d) return res.status(404).json({ error: 'Delivery not found.' });
+    if (!(await canManage(req.user))) return res.status(403).json({ error: 'Only Admin, the Purchase Department and people given delivery access can delete deliveries.' });
+    const reopen = !!(req.body || {}).reopenTask;
+    let reopened = false;
+    if (reopen && d.task_id && d.closed_task) {
+      const t = await db.getTask(d.task_id);
+      if (t && t.status === 'closed' && await db.reopenTask(t.id)) {
+        reopened = true;
+        await taskEvent(req, t.id, 'REOPENED', `Re-opened — delivery ${d.ref} was deleted`, { old: 'closed', new: 'open' });
+      }
+    }
+    await db.deleteDelivery(d.id);
+    await notifyMany(receiversOf(d), req.user.username, 'delivery_update', `Removed: delivery ${label(d)} was deleted by ${req.user.name} — nothing to receive.`, null);
+    if (d.task_id && !reopened) await taskEvent(req, d.task_id, 'DELIVERY_UPDATED', `Delivery ${d.ref} deleted`, { meta: { delivery: d.ref } });
+    await auditFromReq(req, 'delivery_deleted', `Deleted delivery ${label(d)}${reopened ? ` and re-opened task ${d.task_id}` : ''}.`);
+    res.json({ ok: true, reopened });
   });
 
   // Admin: let a specific person manage deliveries even though they are not in the Purchase Department.

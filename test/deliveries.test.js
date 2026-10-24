@@ -25,6 +25,11 @@ test('deliveries: Purchase/Admin add them from a task; site team gets access, pr
   const c = await P(buyer, '/api/deliveries', { title: 'Tiles — 400 boxes, Tower B', expected_at: futureDate(2), receivers: ['sachin.s'], task_id: taskId, project: 'Mihir Amara' });
   assert.equal(c.status, 200, JSON.stringify(c.data));
   const did = c.data.id; assert.match(c.data.ref, /^DLV-/);
+  assert.equal(c.data.closedTask, true, 'adding the task to Deliveries closes it');
+  assert.equal((await G(buyer, `/api/tasks/${taskId}`)).data.status, 'closed');
+  // nothing nags the task's own people any more (no reminders for a closed task)
+  await P(admin, '/api/tasks/send-reminders-now');
+  assert.ok(!(await G(eng, '/api/notifications')).data.items.some(n => n.task_id === taskId && /reminder|overdue|warning/i.test(n.type)), 'no reminders for the closed task');
   // date + time also accepted
   assert.equal((await P(admin, '/api/deliveries', { title: 'Cement 50 bags', expected_at: `${futureDate(1)}T15:30`, receivers: ['sachin.s'] })).status, 200);
 
@@ -54,7 +59,7 @@ test('deliveries: Purchase/Admin add them from a task; site team gets access, pr
   assert.equal(d.status, 'unloaded'); assert.ok(d.delivered_at && d.unloaded_at);
   assert.deepEqual(d.files.map(f => f.kind).sort(), ['delivery_proof', 'unloading_proof']);
   assert.equal(d.files.find(f => f.kind === 'delivery_proof').taken_at, '2026-10-26T10:15:00+05:30');
-  assert.ok((await G(buyer, '/api/notifications')).data.items.some(n => n.type === 'delivery_unloaded' && /task can now be closed/.test(n.message)));
+  assert.ok((await G(buyer, '/api/notifications')).data.items.some(n => n.type === 'delivery_unloaded' && /^Unloaded: "Tiles/.test(n.message)), 'whoever added it is told it was unloaded');
   const hist = (await G(buyer, `/api/tasks/${taskId}/events`)).data.events.map(e => e.event_type || e.type);
   assert.ok(hist.includes('DELIVERY_ADDED') && hist.includes('DELIVERY_UNLOADED'), JSON.stringify(hist));
   // Files: people on it can open, others cannot
@@ -72,6 +77,22 @@ test('deliveries: Purchase/Admin add them from a task; site team gets access, pr
   assert.equal((await G(admin, '/api/users')).data.find(u => u.username === 'asst.d').manage_deliveries, 1);
   assert.equal((await P(admin, '/api/users/asst.d/delivery-access', { allowed: false })).status, 200);
   assert.equal((await mk()).status, 403, 'removed again');
+  // A task with an open subtask is kept open (and told why)
+  const parent = (await P(buyer, '/api/tasks', { title: 'Plumbing material', priority: 'medium', deadline: futureDate(6), assignedToList: ['eng.d'] })).data.id;
+  await P(buyer, '/api/tasks', { title: 'Sub: fittings', priority: 'low', deadline: futureDate(5), assignedToList: ['eng.d'], parentTaskId: parent });
+  const kept = await P(buyer, '/api/deliveries', { title: 'Plumbing material', expected_at: futureDate(2), receivers: ['sachin.s'], task_id: parent });
+  assert.equal(kept.status, 200); assert.equal(kept.data.closedTask, false); assert.match(kept.data.keptOpenWhy, /subtask/);
+  // Delete: only the purchase side; can re-open the task it closed
+  const t3 = (await P(buyer, '/api/tasks', { title: 'Doors — 40 nos', priority: 'medium', deadline: futureDate(6), assignedToList: ['eng.d'] })).data.id;
+  const d3 = (await P(buyer, '/api/deliveries', { title: 'Doors — 40 nos', expected_at: futureDate(2), receivers: ['sachin.s'], task_id: t3 })).data;
+  assert.equal((await G(buyer, `/api/tasks/${t3}`)).data.status, 'closed');
+  assert.equal((await P(site, `/api/deliveries/${d3.id}/delete`, {})).status, 403);
+  const del = await P(buyer, `/api/deliveries/${d3.id}/delete`, { reopenTask: true });
+  assert.equal(del.status, 200); assert.equal(del.data.reopened, true);
+  assert.equal((await G(buyer, `/api/tasks/${t3}`)).data.status, 'open', 'task re-opened');
+  assert.ok(!(await G(buyer, '/api/deliveries')).data.items.some(x => x.id === d3.id), 'gone');
+  assert.ok((await G(site, '/api/notifications')).data.items.some(n => n.type === 'delivery_update' && /deleted/.test(n.message)), 'site team told');
+  assert.equal((await P(buyer, `/api/deliveries/${d3.id}/delete`, {})).status, 404);
   // Finished deliveries cannot be edited
   assert.equal((await P(buyer, `/api/deliveries/${did}/update`, { driver_name: 'Y' })).status, 400);
 });

@@ -4,6 +4,41 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Delivery reminders and follow-up
+### Added
+- **Delivery reminders** for the tagged site team at the same 9 AM / 3 PM / 6 PM slots, under Notifications →
+  Deliveries: "Delivery due today", "Late delivery" (date passed, no proof yet) and "Unloading pending"
+  (delivered, not unloaded). One card per person per delivery — each slot's reminder replaces the last one.
+- **📣 Follow up on a delivery** (purchase side / Admin): reminds the tagged site team ("please confirm the delivery
+  with photos" / "please upload the unloading photos"). Everyone on the delivery sees "Followed up by … · time
+  · n times"; the button turns grey ("Follow up again") and can be used again after 10 minutes.
+  `POST /api/deliveries/:id/followup`. New columns `deliveries.last_followup_at/_by`, `followup_count`.
+### Changed
+- Vendor / supplier suggestion is only **Kratex Tradetech India** (any vendor can still be typed in).
+
+## [Unreleased] — Deliveries: task closes when added; delete; site team performance; full name list
+### Changed
+- **Adding a task to Deliveries closes the task.** Its own work is done (vendor decided etc.), so the task is
+  closed and only the delivery is tracked from then on — the site team tagged on it, not the people who did the
+  task (no reminders or warnings about the task, nobody marked late for the delivery wait). If the task has an
+  open subtask or depends on an unfinished task it is kept open and the reason is shown. The form says the task
+  will be closed and warns if anyone's submitted part is still waiting for approval (approve first if they
+  should get credit). Recorded in the task history and the Audit Log.
+- Deliveries menu badge: for the purchase side, every delivery not yet unloaded; for the site team, the ones
+  waiting for their proof.
+### Added
+- **Delete a delivery** (Admin / purchase side), with confirmation; photos and attachments are removed, the site
+  team is told, and if adding it had closed its task you can re-open the task in the same step.
+  `POST /api/deliveries/:id/delete {reopenTask}`. New column `deliveries.closed_task`.
+- **Site team performance** on the Deliveries page (This month / Last 30 days / All time): per tagged person —
+  deliveries tagged on, confirmed, on time (delivery confirmed with photos on or before the delivery date, %),
+  late / overdue, still pending, photos they uploaded, average time from delivery to unloading. The purchase side
+  sees everyone; a site person sees their own row.
+- Vendor / supplier field suggests **Kratex Tradetech India** (also the example text) plus every vendor used before.
+### Fixed
+- The "site team to receive it" list stopped at about 40 names (around "M"); it now lists everyone, in a
+  scrolling box with search.
+
 ## [Unreleased] — Deliveries tab; one reminder card per task; Follow up from notifications; mentions can open the task
 ### Added
 - **Deliveries tab** (Tasks → Deliveries). For material whose task work is done (vendor decided etc.) and only

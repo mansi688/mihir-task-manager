@@ -3186,7 +3186,36 @@ async function runReminderEngine(now = new Date(), opts = {}) {
       }
     }
   }
-  return flushReminderOutbox(out, now);
+  const stats = await flushReminderOutbox(out, now);
+  try { stats.deliveryReminders = await runDeliveryReminders(now, win); } catch (e) { log('ERROR', 'delivery reminders failed', { error: e.message }); }
+  return stats;
+}
+// Deliveries due today (or late) and deliveries waiting for unloading remind the tagged site team at the
+// same 9 AM / 3 PM / 6 PM slots — one card per person per delivery, replaced at each slot.
+async function runDeliveryReminders(now, win) {
+  const today = localDateStr(now);
+  const slot = win ? win.label : `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+  let sent = 0;
+  for (const d of await db.listOpenDeliveriesForReminders()) {
+    const due = String(d.expected_at || '').slice(0, 10);
+    if (!due) continue;
+    let message = null;
+    if (d.status === 'delivered') message = `Unloading pending: "${d.title}" (${d.ref}) — upload the unloading photos once it is unloaded.`;
+    else if (due < today) message = `Late delivery: "${d.title}" (${d.ref}) was due ${fmtDue(d.expected_at)} — upload the delivery photos when it arrives, or tell the purchase team.`;
+    else if (due === today) message = `Delivery due today: "${d.title}" (${d.ref})${String(d.expected_at).includes('T') ? ` at ${String(d.expected_at).slice(11, 16)}` : ''} — upload the delivery photos when it arrives.`;
+    if (!message) continue;
+    for (const u of String(d.receivers || '').split(',').filter(Boolean)) {
+      const id = await db.claimDelivery({ key: `dlvrem:${d.id}:${u}:${today}:${slot}`, recipient: u, taskId: d.task_id, type: 'delivery_reminder' });
+      if (!id) continue;
+      try {
+        await db.removeEarlierDeliveryReminders(u, d.ref);
+        const notificationId = await db.createNotification({ username: u, type: 'delivery_reminder', message, task_id: d.task_id || null });
+        await db.finishDelivery(id, { status: 'sent', notificationId, sentAt: now.toISOString() });
+        sent++;
+      } catch (e) { await db.finishDelivery(id, { status: 'failed', reason: e.message.slice(0, 300) }); }
+    }
+  }
+  return sent;
 }
 
 async function flushReminderOutbox(out, now) {
@@ -3705,7 +3734,7 @@ app.post('/api/meetings/:id/retry', auth(ALL_ROLES), async (req, res) => {
 /* ============ DELIVERIES ============
    backend/deliveries.js — material to be delivered and unloaded on site, with photo proof. */
 const { mountDeliveries } = require('./deliveries');
-mountDeliveries(app, { db, auth, ALL_ROLES, auditFromReq, taskEvent, collectUploads, MAX_FILE_CHARS, displayName, str });
+mountDeliveries(app, { db, auth, ALL_ROLES, auditFromReq, taskEvent, collectUploads, MAX_FILE_CHARS, displayName, str, releaseDependentsOf });
 
 /* ============ EMPLOYEE LOCATION TRACKING ============
    backend/location/* — off unless ENABLE_LOCATION_TRACKING=true (docs/LOCATION_TRACKING.md). */
