@@ -5,6 +5,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Client } = require('pg');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
+// Every send is in the delivery log; the notification list keeps one card per task (newest replaces older).
+const sentLog = async (baseUrl, adminToken, user, types) => (await api(baseUrl, '/api/notifications/deliveries?limit=500', { token: adminToken })).data.filter(d => d.recipient_username === user && d.status === 'sent' && types.includes(d.notification_type));
 
 test('hour-based escalation: 6hr recurring reminder, 48hr urgent warning, 60hr admin+HR flag', async (t) => {
   const { baseUrl, getRawClient, stop } = await startTestServer();
@@ -34,9 +36,10 @@ test('hour-based escalation: 6hr recurring reminder, 48hr urgent warning, 60hr a
     await raw.query("UPDATE notification_deliveries SET sent_at = sent_at - interval '6.5 hours' WHERE sent_at IS NOT NULL");
     await raw.end();
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
-    const notifs = (await api(baseUrl, '/api/notifications', { token: lateToken })).data.items;
-    const recurring = notifs.filter(n => n.type === 'task_reminder_recurring');
+    const recurring = (await sentLog(baseUrl, adminToken, 'late_hour_person', ['task_reminder_recurring'])).filter(d => d.task_id === id);
     assert.equal(recurring.length, 2, 'a second recurring reminder must fire once another 6 hours have passed since the last one');
+    const cards = (await api(baseUrl, '/api/notifications', { token: lateToken })).data.items.filter(n => n.type === 'task_reminder_recurring' && n.task_id === id);
+    assert.equal(cards.length, 1, 'shown as one card — the new one replaced the earlier one');
   });
 
   await t.test('at 49 hours: the urgent 48-hour warning fires, explicitly mentioning the coming admin flag', async () => {

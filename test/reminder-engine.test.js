@@ -55,15 +55,23 @@ test('Phase 2 — reminder engine: windows, due today, overdue days, combining, 
   });
 
   await t.test('15:05 — the next slot sends again (3 a day); 17:30 — nothing (outside any slot); 18:05 — third', async () => {
+    // The delivery log keeps every send; the notification list keeps only the latest one per task
+    // (a new slot's reminder replaces the earlier card instead of stacking copies).
+    const sentFor = async (taskId, type) => (await api(baseUrl, '/api/notifications/deliveries?limit=500', { token: admin })).data
+      .filter(d => d.task_id === taskId && d.recipient_username === 'eng.x' && d.status === 'sent' && (!type || d.notification_type === type)).length;
     await run(at(D, '15:05'));
-    assert.equal((await mine(tA)).length, 2);
+    assert.equal(await sentFor(tA), 2, 'second slot sent');
+    assert.equal((await mine(tA)).length, 1, 'but it replaced the 9 AM card — one card per task');
+    assert.match((await mine(tA))[0].message, /3 days remain/);
     const outside = await run(at(D, '17:30'));
     assert.equal(outside.outsideSlot, true, '17:30 is outside the 9 AM / 3 PM / 6 PM slots');
-    assert.equal((await mine(tA)).length, 2, 'nothing is sent between slots');
+    assert.equal(await sentFor(tA), 2, 'nothing is sent between slots');
     await run(at(D, '18:05'));
-    assert.equal((await mine(tA)).length, 3, 'three window reminders on a T-3 day');
-    assert.equal((await mine(tD)).filter(n => /^Due today:/.test(n.message)).length, 1, '"due today" is sent once, not every window');
-    assert.ok((await mine(tD)).some(n => /about 6 hours/.test(n.message)), 'the 6-hour warning still goes out after "due today" was sent');
+    assert.equal(await sentFor(tA), 3, 'three slot reminders on a T-3 day');
+    assert.equal((await mine(tA)).length, 1, 'still one card for the task');
+    assert.equal(await sentFor(tD, 'deadline_due_today'), 1, '"due today" is sent once, not every slot');
+    assert.ok(await sentFor(tD, 'deadline_soon') >= 1, 'the 6-hour warning still goes out after "due today" was sent');
+    assert.equal((await mine(tD)).length, 1, 'each new one replaced the earlier card — one card for the task');
   });
 
   await t.test('catch-up: a window missed while the server slept is sent within 2 h, not later', async () => {

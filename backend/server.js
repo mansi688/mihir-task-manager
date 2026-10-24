@@ -2332,6 +2332,8 @@ app.get('/api/tasks/open-titles', auth(ALL_ROLES), async (req, res) => {
   res.json(await db.listOpenTaskTitles());
 });
 app.get('/api/tasks/mine', auth(ALL_ROLES), async (req, res) => res.json(await db.listTasksFullLight('user', req.user.username)));
+// Tasks this person is only "kept informed" on (not creator, not assigned) — shown under My Tasks → Kept informed.
+app.get('/api/tasks/watching', auth(ALL_ROLES), async (req, res) => res.json(await db.listTasksFullLight('watch', req.user.username)));
 app.get('/api/tasks/:id', auth(ALL_ROLES), async (req, res) => {
   const task = await db.getTaskFull(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
@@ -2424,11 +2426,16 @@ app.post('/api/tasks/:id/reply', auth(ALL_ROLES), async (req, res) => {
   const mentionedUsernames = new Set();
   const mentionMatches = message.matchAll(/@([a-zA-Z0-9._-]{3,40})/g);
   for (const m of mentionMatches) { if (await db.getUser(m[1])) mentionedUsernames.add(m[1]); }
+  // Someone @mentioned who is not on the task yet is added to "Keep informed", so the task opens for them
+  // (they can read it and reply) — before, they got a notification for a task they could not open.
+  const addedByMention = [];
   for (const u of mentionedUsernames) {
     if (u !== req.user.username && !notifyTargets.has(u)) {
+      if (u !== task.created_by_username) { await db.addFollowup(task.id, u, req.user.username); addedByMention.push(u); }
       await db.createNotification({ username: u, type: 'mentioned_in_comment', message: `${req.user.name} mentioned you in a comment on "${task.title}".`, task_id: task.id });
     }
   }
+  if (addedByMention.length) await taskEvent(req, task.id, 'FOLLOW_UP', `Kept informed (mentioned in a comment): ${(await Promise.all(addedByMention.map(displayName))).join(', ')}`, { meta: { usernames: addedByMention, via: 'mention' } });
   await taskEvent(req, task.id, attachmentName ? 'ATTACHMENT_ADDED' : 'COMMENTED', message || (attachmentName ? `Attached ${attachmentName}` : ''), { meta: { reply_id: replyId, ...(attachmentName ? { attachment_name: attachmentName } : {}) } });
   res.json({ ok: true });
 });
@@ -2561,7 +2568,7 @@ app.delete('/api/tasks/:id/assignees/:username', auth(ALL_ROLES), async (req, re
 // "Follow up": anyone involved in the task (its creator, anyone assigned at any level, anyone tagged to be
 // kept informed — and Admin/Director) can ask everyone else involved to look into it. People whose part
 // is still open are told so; everyone else is asked to look into the task. Each person gets at most one
-// follow-up per task every FOLLOW_UP_COOLDOWN_HOURS (default 5), whoever presses it. It is recorded in the
+// follow-up per task every FOLLOW_UP_COOLDOWN_HOURS (default 2), whoever presses it. It is recorded in the
 // task history and never changes the task itself (no close/reopen/reassign/deadline).
 app.post('/api/tasks/:id/nudge', auth(ALL_ROLES), async (req, res) => {
   const task = await db.getTask(req.params.id);
@@ -3004,7 +3011,8 @@ app.delete('/api/tasks/:id/checklist/:itemId', auth(['admin']), async (req, res)
 
 /* ============ NOTIFICATIONS ============ */
 app.get('/api/notifications', auth(ALL_ROLES), async (req, res) => {
-  res.json({ items: await db.listNotifications(req.user.username), unread: await db.countUnreadNotifications(req.user.username) });
+  const items = await db.listNotifications(req.user.username);
+  res.json({ items, unread: await db.countUnreadNotifications(req.user.username), tasks: await db.notificationTaskInfo(req.user.username, items.map(n => n.task_id)) });
 });
 app.post('/api/notifications/:id/read', auth(ALL_ROLES), async (req, res) => {
   await db.markNotificationRead(req.params.id, req.user.username);
@@ -3051,8 +3059,12 @@ const REMINDER_WINDOWS = String(process.env.REMINDER_WINDOWS || '09:00,15:00,18:
 const REMINDER_CATCHUP_HOURS = Number(process.env.REMINDER_CATCHUP_HOURS) || 2;
 // Slots are 3 hours apart (15:00 → 18:00), so the routine-nudge gap must be shorter than that.
 const AUTO_REMINDER_MIN_GAP_HOURS = process.env.AUTO_REMINDER_MIN_GAP_HOURS !== undefined ? Number(process.env.AUTO_REMINDER_MIN_GAP_HOURS) : 2;
-const FOLLOW_UP_COOLDOWN_HOURS = Number(process.env.FOLLOW_UP_COOLDOWN_HOURS) || 5;
+// Short enough that a task still open at the next reminder slot (slots are 3 h apart) can be followed up again.
+const FOLLOW_UP_COOLDOWN_HOURS = Number(process.env.FOLLOW_UP_COOLDOWN_HOURS) || 2;
 const REMINDER_INTERVAL_HOURS = 24;
+// Automatic (engine-sent) types — the ones that replace each other per person per task. Follow-ups are
+// sent by people and are left alone.
+const AUTO_REMINDER_TYPES = ['task_reminder', 'task_reminder_recurring', 'deadline_window', 'deadline_soon', 'deadline_due_today', 'deadline_passed', 'task_overdue_days', 'task_warning_urgent', 'task_warning_creator', 'task_flagged', 'admin_late_flag'];
 const REMINDER_TYPES = ['task_reminder', 'task_reminder_recurring', 'deadline_window', 'deadline_soon', 'deadline_due_today', 'deadline_passed', 'task_overdue_days', 'task_warning_urgent', 'task_warning_creator', 'task_flagged', 'admin_late_flag', 'follow_up'];
 const pad2 = n => String(n).padStart(2, '0');
 const localDateStr = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -3202,6 +3214,8 @@ async function flushReminderOutbox(out, now) {
     }
     if (!primary) continue; // everything for this person + task was already handled
     try {
+      // Replace this person's earlier automatic reminder/warning about the same task (one card per task).
+      await db.removeEarlierAutoNotifications(primary.to, primary.taskId, AUTO_REMINDER_TYPES);
       const notificationId = await db.createNotification({ username: primary.to, type: primary.type, message: primary.message, task_id: primary.taskId });
       await db.finishDelivery(deliveryId, { status: 'sent', notificationId, sentAt: now.toISOString() });
       lastSent.set(gk, now.getTime());
@@ -3687,6 +3701,11 @@ app.post('/api/meetings/:id/retry', auth(ALL_ROLES), async (req, res) => {
   setImmediate(() => jobs.tick().catch(() => {}));
   res.json({ ok: true });
 });
+
+/* ============ DELIVERIES ============
+   backend/deliveries.js — material to be delivered and unloaded on site, with photo proof. */
+const { mountDeliveries } = require('./deliveries');
+mountDeliveries(app, { db, auth, ALL_ROLES, auditFromReq, taskEvent, collectUploads, MAX_FILE_CHARS, displayName, str });
 
 /* ============ EMPLOYEE LOCATION TRACKING ============
    backend/location/* — off unless ENABLE_LOCATION_TRACKING=true (docs/LOCATION_TRACKING.md). */

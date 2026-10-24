@@ -20,3 +20,10 @@ All under the existing `/api`, Bearer token unless noted. Existing endpoints are
 | POST /api/integrations/email/inbound | forwarder (X-Inbound-Secret) | email inbound |
 | POST /api/meetings · GET /api/meetings · GET /api/meetings/:id · GET …/recording · POST …/retry | organiser/participants/Admin | meetings |
 | GET /api/chat/rooms · GET /api/chat/unread · GET/POST /api/chat/rooms/:room/messages · POST …/read · DELETE /api/chat/messages/:id | any (delete: own / Admin) | company chat (docs/CHAT.md) |
+| GET /api/tasks/watching | everyone | Tasks you are only "kept informed" on |
+| GET /api/deliveries | everyone (Admin/Purchase/Director see all) | Deliveries you are on, with file list |
+| POST /api/deliveries | Admin, Purchase Department | Add a delivery (optionally from a task) |
+| POST /api/deliveries/:id/update | Admin, Purchase Department | Edit details, re-tag site team, add files |
+| POST /api/deliveries/:id/status | Admin, Purchase Department | `dispatched` or `cancelled` (with reason) |
+| POST /api/deliveries/:id/proof | tagged site team, Admin, Purchase | `delivered` then `unloaded`, photos required |
+| GET /api/deliveries/:id/files/:fileId | people on the delivery | Attachment / proof photo |

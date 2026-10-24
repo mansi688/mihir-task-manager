@@ -4,6 +4,8 @@ process.env.REMINDER_WINDOWS = 'none';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate, localDateTime } = require('../testlib/helpers');
+// Every send is in the delivery log; the notification list keeps one card per task (newest replaces older).
+const sentLog = async (baseUrl, adminToken, user, types) => (await api(baseUrl, '/api/notifications/deliveries?limit=500', { token: adminToken })).data.filter(d => d.recipient_username === user && d.status === 'sent' && types.includes(d.notification_type));
 
 test('individual deadlines: correctly set, retrievable, and reset the reminder cycle when reassigned', async (t) => {
   const { baseUrl, getRawClient, stop } = await startTestServer();
@@ -86,8 +88,10 @@ test('deadline-approaching reminders: tiers fire once each; tiers crossed togeth
     await raw.query("UPDATE task_assignees SET individual_deadline=$1 WHERE task_id=$2 AND username='bob_tiers'", [fiveHoursOut, id]);
     await raw.end();
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken });
+    const sent = await sentLog(baseUrl, adminToken, 'bob_tiers', ['deadline_soon']);
+    assert.equal(sent.length, 2, 'the 6-hour tier fires as a new message in addition to the earlier one');
     const notifs = (await api(baseUrl, '/api/notifications', { token: bobToken })).data.items.filter(n => n.type === 'deadline_soon');
-    assert.equal(notifs.length, 2, 'the 6-hour tier fires as a new message in addition to the earlier one');
+    assert.equal(notifs.length, 1, 'shown as one card — the 6-hour message replaced the earlier one');
     assert.ok(notifs.some(n => n.message.includes('6 hours')));
   });
 });

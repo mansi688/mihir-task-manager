@@ -20,6 +20,7 @@ let token = safeStorage.getItem('ls_token') || null;
 let session = null;
 try { session = JSON.parse(safeStorage.getItem('ls_session') || 'null'); } catch (e) { session = null; token = null; }
 let myTasks = [];
+let watchTasks = []; // tasks I'm only "kept informed" on (My Tasks → Kept informed)
 let allTasks = [];       // Admin only
 let userDirectory = [];
 let teamsList = [];
@@ -46,7 +47,8 @@ let hrTotalTasksCompleted = 0;
 let reportsTaskList = []; // admin-only
 let currentTaskReport = null;
 let myNotifications = [];
-let closureData = { toDecide: [], mine: [], keptOpen: [] }; // closure requests (Task Closure page)
+let closureData = { toDecide: [], mine: [], keptOpen: [] };
+let notifTaskInfo = {}; // taskId → { status, followedUpAt } for the Notifications page // closure requests (Task Closure page)
 let unreadNotifCount = 0;
 let theme = safeStorage.getItem('ks_theme') || 'light';
 document.documentElement.setAttribute('data-theme', theme);
@@ -103,7 +105,7 @@ if (token) {
   if (safeStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [] };
+  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] };
   ui = defaultUiState(); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
   announcements = []; canPostAnnouncements = false; chat.rooms = []; chat.messages = {}; chat.hasOlder = {}; chat.lastVersion = null;
 }
@@ -213,6 +215,7 @@ const ICONS = {
   chat: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/>',
   megaphone: '<path d="M3 10v4h3l7 4V6L6 10z"/><path d="M16 9a4 4 0 010 6M18.5 6.5a7.5 7.5 0 010 11"/>',
   mapPin: '<path d="M12 21s-7-6.1-7-11.5a7 7 0 0114 0C19 14.9 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+  truck: '<path d="M3 6h11v10H3z"/><path d="M14 9h4l3 3v4h-7z"/><circle cx="7" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/>',
 };
 function icon(name, size) {
   return `<svg viewBox="0 0 24 24" width="${size || 17}" height="${size || 17}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
@@ -561,7 +564,7 @@ const CAD_DRAWING_EXTENSIONS = ['.dwg', '.dxf', '.rvt', '.rfa', '.skp', '.dgn', 
 
 /* ==================== ROLES / NAV ==================== */
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -672,7 +675,8 @@ function renderSidebar() {
     if (g.group === 'Tasks' && !g.items.some(i => i.key === 'approvals')) {
       const items = g.items.slice(); const at = items.findIndex(i => i.key === 'tasks');
       items.splice(at >= 0 ? at + 1 : items.length, 0, { key: 'approvals', label: 'Approvals', icon: 'clipboard', badge: () => approvalsNeedingMeCount() },
-        { key: 'closure', label: 'Task Closure', icon: 'checkCircle', badge: () => (closureData.toDecide || []).length });
+        { key: 'closure', label: 'Task Closure', icon: 'checkCircle', badge: () => (closureData.toDecide || []).length },
+        { key: 'deliveries', label: 'Deliveries', icon: 'truck', badge: () => (typeof deliveriesNeedingMeCount === 'function' ? deliveriesNeedingMeCount() : 0) });
       groups[gi] = { ...g, items };
     }
   });
@@ -719,6 +723,7 @@ const NOTIF_CATS = [
   { key: 'task', label: 'Task updates', icon: 'checkCircle', hint: 'New tasks, replies, mentions, level changes, re-opened or closed tasks.' },
   { key: 'approval', label: 'Approvals', icon: 'clipboard', hint: 'Approval requests and decisions, and task closure requests.' },
   { key: 'message', label: 'Messages', icon: 'chat', hint: 'Chat mentions and announcements.' },
+  { key: 'delivery', label: 'Deliveries', icon: 'truck', hint: 'Material coming to site, driver details, and delivery / unloading confirmations.' },
   { key: 'location', label: 'Location', icon: 'mapPin', hint: 'Site visits, place links and location alerts.' },
   { key: 'other', label: 'Other', icon: 'bell', hint: 'Everything else.' },
 ];
@@ -729,13 +734,15 @@ const NOTIF_TYPE_CAT = {
   task_submitted: 'approval', approval_requested: 'approval', approval_rejected: 'approval', approval_approved: 'approval', closure_requested: 'approval', closure_approved: 'approval', closure_declined: 'approval',
   chat_mention: 'message', announcement: 'message',
   location: 'location', location_alert: 'location', site_visit: 'location', place_linked: 'location',
+  delivery_scheduled: 'delivery', delivery_update: 'delivery', delivery_delivered: 'delivery', delivery_unloaded: 'delivery',
 };
 const notifCat = n => NOTIF_TYPE_CAT[n.type] || 'other';
-const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin' };
-const NOTIF_TYPE_LABEL = { task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked' };
+const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin', delivery_scheduled: 'truck', delivery_update: 'truck', delivery_delivered: 'truck', delivery_unloaded: 'checkCircle' };
+const NOTIF_TYPE_LABEL = { task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked', delivery_scheduled: 'Delivery coming', delivery_update: 'Delivery update', delivery_delivered: 'Delivered at site', delivery_unloaded: 'Unloaded at site' };
 // Where tapping a notification takes you.
 function notifTarget(n) {
   if (/^closure_/.test(n.type)) return 'data-notif-goto-tab="closure"';
+  if (/^delivery_/.test(n.type)) return 'data-notif-goto-tab="deliveries"';
   if (n.task_id) return `data-notif-goto-task="${esc(n.task_id)}"`;
   if (n.type === 'chat_mention') return `data-notif-goto-tab="chat"${n.chat_room ? ` data-notif-chat-room="${esc(n.chat_room)}"` : ''}`;
   if (n.type === 'announcement') return 'data-notif-goto-tab="announcements"';
@@ -783,6 +790,18 @@ function notifBehindPeople(list) {
   }
   const nameOf = u => ((userDirectory || []).find(x => x.username === u) || {}).name || u;
   return [...byUser.values()].map(e => ({ ...e, name: nameOf(e.username), count: e.tasks.size })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+// Follow up from the notification itself, for any notification about a task that is still open.
+// After it is used the button turns grey (with the time), but can be pressed again — e.g. when the same
+// task comes back at the next reminder slot because it is still incomplete.
+function notifFollowUpHTML(n) {
+  const info = n.task_id ? notifTaskInfo[n.task_id] : null;
+  if (!info || info.status !== 'open' || /^closure_/.test(n.type)) return '';
+  const at = info.followedUpAt;
+  const when = at ? new Date(at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit' }) : '';
+  const day = at && istDayKey(at) !== istDayKey(new Date().toISOString()) ? ` ${new Date(at).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short' })}` : '';
+  return `<div class="notif-fu-row"><button type="button" class="notif-fu ${at ? 'done' : ''}" data-notif-followup="${esc(n.task_id)}"
+    title="${at ? 'You already followed up — tap to remind everyone on the task again' : 'Ask everyone else on this task to look into it'}">📣 ${at ? `Followed up${day} ${esc(when)} · Follow up again` : 'Follow up'}</button></div>`;
 }
 function renderNotificationsView() {
   const all = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -850,6 +869,7 @@ function renderNotificationsView() {
             <div class="notif-title-row"><span class="notif-title">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')}</span>${cat === 'all' ? `<span class="notif-pill">${esc(cInfo.label)}</span>` : ''}</div>
             <div class="notif-msg">${esc(n.message)}</div>
             <div class="notif-meta"><span title="${esc(fmtTime(n.created_at))}">${esc(notifAgo(n.created_at))}</span>${target ? ' · <span class="notif-open">Open ›</span>' : ''}</div>
+            ${notifFollowUpHTML(n)}
             ${n.read ? `<div class="notif-seen">✓ ${esc(seenTimeText(n))}</div>` : ''}
           </div>
           <button type="button" class="notif-seen-btn ${n.read ? 'done' : ''}" data-notif-seen="${n.id}" ${n.read ? 'disabled' : ''} title="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}" aria-label="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}">${n.read ? '✓' : ''}</button>
@@ -918,6 +938,17 @@ function bindNotificationsView() {
     refreshData();
   };
   document.querySelectorAll('[data-notif-seen]').forEach(b => b.onclick = (e) => { e.stopPropagation(); markNotifSeen(Number(b.dataset.notifSeen)); });
+  document.querySelectorAll('[data-notif-followup]').forEach(b => b.onclick = async (e) => {
+    e.stopPropagation(); e.preventDefault();
+    const id = b.dataset.notifFollowup;
+    if (b.disabled) return; b.disabled = true; const label = b.textContent; b.textContent = '📣 Sending…';
+    try {
+      const r = await api(`/api/tasks/${encodeURIComponent(id)}/nudge`, { method: 'POST' });
+      notifTaskInfo[id] = { ...(notifTaskInfo[id] || {}), followedUpAt: new Date().toISOString() };
+      setBanner(`Follow-up sent to ${r.sent.map(u => personName(u)).join(', ')}.${r.skipped.length ? ` Not re-sent to ${r.skipped.map(x => personName(x.username)).join(', ')} (followed up recently).` : ''}`, 'ok');
+      render();
+    } catch (err) { b.disabled = false; b.textContent = label; setBanner(err.message); render(); }
+  });
   const undo = document.querySelector('[data-act="notif-undo"]'); if (undo) undo.onclick = () => undoNotifSeen();
   const view = document.querySelector('[data-act="notif-view-seen"]'); if (view) view.onclick = () => { ui.notifUndo = null; ui.notifFilter = 'seen'; render(); window.scrollTo(0, 0); };
 }
@@ -1633,10 +1664,11 @@ function dataRequests() {
   const isAdminOrDirector = isAdmin || session.role === 'director';
   const isHR = isHRTeamName(session.team);
   const core = {
-    myTasks: '/api/tasks/mine', userDirectory: '/api/users/directory', teamsList: '/api/teams', projectsList: '/api/projects',
+    myTasks: '/api/tasks/mine', watchTasks: '/api/tasks/watching', userDirectory: '/api/users/directory', teamsList: '/api/teams', projectsList: '/api/projects',
     sectionsList: '/api/drawing-sections', phasesList: '/api/task-phases', openTaskTitles: '/api/tasks/open-titles', me: '/api/auth/me',
     notif: '/api/notifications', myApprovalRequests: '/api/approvals/mine', announcementsResp: '/api/announcements',
     features: '/api/features', suggestions: '/api/suggestions',
+    deliveriesResp: '/api/deliveries',
     closureData: `/api/closure-requests${session.role === 'admin' && ui.closureScope === 'all' ? '?scope=all' : ''}`,
   };
   if (isAdmin) { core.allTasks = '/api/tasks'; core.allApprovalRequests = '/api/approvals'; }
@@ -1663,6 +1695,7 @@ function dataRequests() {
 function applyData(key, v) {
   switch (key) {
     case 'myTasks': myTasks = v; break;
+    case 'watchTasks': watchTasks = Array.isArray(v) ? v : []; break;
     case 'allTasks': allTasks = v; break;
     case 'userDirectory': userDirectory = v; break;
     case 'teamsList': teamsList = v; break;
@@ -1676,8 +1709,9 @@ function applyData(key, v) {
         needsGuide: typeof v.needsGuide === 'boolean' ? (v.needsGuide && Date.now() - (typeof guideCompletedAt === 'number' ? guideCompletedAt : 0) > 120000) : !!session.needsGuide };
       safeStorage.setItem('ls_session', JSON.stringify(session));
       break;
-    case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; break;
+    case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; notifTaskInfo = v.tasks || {}; break;
     case 'closureData': closureData = v || { toDecide: [], mine: [], keptOpen: [] }; break;
+    case 'deliveriesResp': if (typeof deliveriesData !== 'undefined') deliveriesData = v && Array.isArray(v.items) ? v : { canManage: false, items: [] }; break;
     case 'myApprovalRequests': myApprovalRequests = v; break;
     case 'announcementsResp': announcements = v.items || []; canPostAnnouncements = !!v.canPost; break;
     case 'allApprovalRequests': allApprovalRequests = v; break;
@@ -2155,6 +2189,7 @@ function renderTaskItem(t) {
           ${overdue ? '<span class="row-flag row-flag-bad">Overdue</span>' : ''}
           ${t.blocked ? '<span class="row-flag row-flag-warn">Blocked</span>' : ''}
           ${t.closureKeptOpen ? `<span class="row-flag row-flag-kept" title="Closing was asked for and declined — the task stays open">🔓 Kept open</span>` : ''}
+          ${t.created_by_username !== session.username && !(t.assignees || []).some(a => a.username === session.username) && (t.followups || []).some(f => f.username === session.username) ? '<span class="row-flag row-flag-me" title="You are kept informed — you can read and reply, no work is assigned to you">👀 Kept informed</span>' : ''}
           ${myTurn ? '<span class="row-flag row-flag-me">Your turn</span>' : ''}
           ${pendingApproval.length && canApproveHere ? `<span class="row-flag row-flag-me">${pendingApproval.length} to approve</span>` : ''}
           ${taggedSummary}
@@ -2339,9 +2374,11 @@ function renderTaskItem(t) {
       <button class="btn btn-sm btn-primary" data-act="nudge-task" data-task-id="${t.id}" title="Notify everyone involved in this task to look into it (at most once every few hours per person)">📣 Follow up</button>
       <button class="btn btn-sm" data-act="toggle-followup-form" data-task-id="${t.id}" title="Add people who should be kept informed — they are not assigned work">👀 Keep someone informed</button>
       <button class="btn btn-sm" data-act="toggle-subtask-form" data-task-id="${t.id}">➕ Add Subtask</button>
+      ${typeof dlvCanManage === 'function' && dlvCanManage() ? `<button class="btn btn-sm" data-add-delivery="${t.id}" title="Work is done and only delivery to site is pending — move it to the Deliveries tab (only the title is copied)">🚚 Add to delivery</button>` : ''}
       ${iAmTagged && !isCreator && !myPendingClosure(t.id) ? `<button class="btn btn-sm" data-act="toggle-closure-form" data-task-id="${t.id}" title="Ask ${esc(t.created_by || 'the creator')} to close this task">🔒 Ask to close</button>` : ''}
     </div>
     ${closureKeptOpenNoticeHTML(t)}
+    ${typeof deliveriesForTask === 'function' && deliveriesForTask(t.id).length ? `<div class="dlv-on-task">${deliveriesForTask(t.id).map(d => `<button type="button" class="dlv-on-task-item" data-open-delivery="${d.id}">🚚 <b>${esc(d.ref)}</b> · ${esc((DLV_STATUS[d.status] || {}).label || d.status)} · ${esc(dlvWhen(d.expected_at))} — Open delivery ›</button>`).join('')}</div>` : ''}
     ${closureRequestBlockHTML(t, iAmTagged && !isCreator)}
     <div id="followup-form-box-${t.id}">${ui.followupFormTaskId === t.id ? followupFormHTML(t.id) : ''}</div>
     <div id="subtask-form-box-${t.id}">${ui.subtaskFormTaskId === t.id ? subtaskFormHTML(t.id) : ''}</div>
@@ -2408,10 +2445,12 @@ const OWNER_FILTERS = [
   { key: 'self', label: 'Self-assigned' },
   { key: 'byothers', label: 'Assigned to me' },
   { key: 'forothers', label: 'Assigned by me' },
+  { key: 'informed', label: '👀 Kept informed' },
 ];
 function applyMyOwnerFilter(tasks) {
   const f = ui.myOwnerFilter || 'all';
   if (f === 'all') return tasks;
+  if (f === 'informed') return watchTasks || [];
   const me = session.username;
   const p = ui.myOwnerPerson;
   return tasks.filter(t => {
@@ -2436,6 +2475,7 @@ function myOwnerFilterHTML() {
     if (b.byothers) counts.byothers[k]++;
     if (b.forothers) counts.forothers[k]++;
   }
+  for (const t of watchTasks || []) counts.informed[isOpen(t) ? 'open' : 'closed']++;
   // "Who" picker: for tasks assigned to me → who assigned them; for tasks I assigned → to whom.
   let people = [];
   if (f === 'byothers') {
@@ -2447,7 +2487,7 @@ function myOwnerFilterHTML() {
   people.sort((a, b) => personName(a).localeCompare(personName(b)));
   return `
     <div class="owner-filter" role="group" aria-label="Filter by who created the task">
-      ${OWNER_FILTERS.map(o => `
+      ${OWNER_FILTERS.filter(o => o.key !== 'informed' || (watchTasks || []).length || f === 'informed').map(o => `
         <button class="owner-chip${f === o.key ? ' active' : ''}" data-owner-filter="${o.key}" aria-pressed="${f === o.key}">
           <span class="owner-chip-label">${esc(o.label)}</span>
           <span class="owner-chip-counts"><span class="oc-open">${counts[o.key].open} open</span> · <span class="oc-closed">${counts[o.key].closed} closed</span></span>
@@ -3445,9 +3485,27 @@ function renderApprovalsView() {
   ${renderApprovalsSection()}`;
 }
 // Open a task on My Tasks: switch page, find it by its ID and expand it.
-function openTaskOnMyTasks(taskId) {
-  const t = (myTasks || []).find(x => x.id === taskId);
-  const inAll = !t && session.role === 'admin' && (allTasks || []).some(x => x.id === taskId);
+function openTaskOnMyTasks(taskId, retried) {
+  const w = (watchTasks || []).find(x => x.id === taskId);
+  const t = (myTasks || []).find(x => x.id === taskId) || null;
+  const inAll = !t && !w && session.role === 'admin' && (allTasks || []).some(x => x.id === taskId);
+  // Not loaded yet (e.g. you were just added to it): refresh once, then try again.
+  if (!t && !w && !inAll) {
+    if (!retried) { refreshData().then(() => openTaskOnMyTasks(taskId, true)); return; }
+    setBanner('This task could not be opened — it may have been closed, removed, or you are no longer on it.');
+    render(); return;
+  }
+  if (w) {
+    collapseTaskCards();
+    ui.adminTab = 'tasks'; safeStorage.setItem('ls_last_tab', 'tasks');
+    ui.taskSearchQuery = taskId; ui.taskFilterProject = ''; ui.taskFilterPhase = ''; ui.taskFilterTagging = '';
+    ui.myOwnerFilter = 'informed'; ui.myOwnerPerson = '';
+    ui.myTasksTab = w.status !== 'open' ? 'closed' : 'open';
+    openDetails.add(`task-card-${taskId}`);
+    render();
+    requestAnimationFrame(() => { const el = document.getElementById(`task-card-${taskId}`); if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' }); });
+    return;
+  }
   collapseTaskCards();
   ui.adminTab = inAll ? 'alltasks' : 'tasks'; safeStorage.setItem('ls_last_tab', ui.adminTab);
   ui.taskSearchQuery = taskId; ui.taskFilterProject = ''; ui.taskFilterPhase = ''; ui.taskFilterTagging = '';
@@ -5811,6 +5869,8 @@ function renderAccountsView() {
             : u.guide_done_at ? `<span class="badge received" title="Welcome guide finished ${esc(fmtTime(u.guide_done_at))}">Guide ✓ ${esc(({ en: 'EN', hi: 'HI', mr: 'MR' })[u.guide_lang] || '')} ${u.guide_score != null ? `${u.guide_score}/${u.guide_total}` : ''}</span>`
             : u.needs_guide ? '<span class="badge po_pending" title="Will see the welcome guide on their next login">Guide pending</span>' : ''}
           ${u.guide_done_at || !u.needs_guide ? `<button class="btn btn-sm" data-guide-again="${esc(u.username)}" title="Show them the welcome guide (video + questions) again on their next visit">Guide again</button>` : ''}
+          ${u.role === 'admin' ? '' : /purchase/i.test(u.team || '') ? '<span class="badge received" title="Everyone in the Purchase Department can manage deliveries">🚚 Deliveries (Purchase)</span>'
+            : `<label class="small dlv-access" title="Let this person add and edit deliveries (e.g. the purchase head's assistant)"><input type="checkbox" data-delivery-access-for="${esc(u.username)}" ${u.manage_deliveries ? 'checked' : ''}> 🚚 Can manage deliveries</label>`}
           ${u.username === session.username ? '' : `<button class="btn btn-sm btn-danger" data-remove-user="${esc(u.username)}">Remove</button>`}
         </td>
       </tr>
@@ -6023,6 +6083,7 @@ function renderInner() {
   else if (ui.adminTab === 'notifications') body = renderNotificationsView();
   else if (ui.adminTab === 'approvals') body = renderApprovalsView();
   else if (ui.adminTab === 'closure') body = renderClosureView();
+  else if (ui.adminTab === 'deliveries' && typeof renderDeliveriesView === 'function') body = renderDeliveriesView();
   else if (ui.adminTab === 'alltasks' && session.role === 'admin') body = renderAllTasksCard();
   else if (ui.adminTab === 'accounts' && session.role === 'admin') body = renderAccountsView();
   else if (ui.adminTab === 'performance' && session.role === 'admin') body = renderPerformanceView();
@@ -6060,6 +6121,7 @@ function renderInner() {
   if (ui.adminTab === 'approvals') { bindApprovalForm(); bindApprovalsSection(); bindApprovalsView(); bindMyTasks(); }
   if (ui.adminTab === 'notifications') bindNotificationsView();
   if (ui.adminTab === 'closure') bindClosureView();
+  if (ui.adminTab === 'deliveries' && typeof bindDeliveriesView === 'function') bindDeliveriesView();
   bindClosureForms();
   if (ui.adminTab === 'tasks') bindApprovalsHint();
   if (ui.adminTab === 'calendar') bindCalendarView();
@@ -6242,6 +6304,11 @@ function bindMyTasks() {
   if (filterPhaseSelect) filterPhaseSelect.onchange = () => { ui.taskFilterPhase = filterPhaseSelect.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; ui.myOpenShown = OPEN_PAGE_SIZE; ui.allOpenShown = OPEN_PAGE_SIZE; render(); };
   const filterTaggingSelect = document.getElementById('task-filter-tagging');
   if (filterTaggingSelect) filterTaggingSelect.onchange = () => { ui.taskFilterTagging = filterTaggingSelect.value; ui.myOpenShown = OPEN_PAGE_SIZE; ui.allOpenShown = OPEN_PAGE_SIZE; render(); };
+  document.querySelectorAll('[data-add-delivery]').forEach(b => b.onclick = () => {
+    const t = (myTasks || []).concat(allTasks || [], watchTasks || []).find(x => x.id === b.dataset.addDelivery);
+    if (t && typeof openDeliveryFromTask === 'function') openDeliveryFromTask(t);
+  });
+  document.querySelectorAll('[data-open-delivery]').forEach(b => b.onclick = () => { if (typeof openDeliveryOnPage === 'function') openDeliveryOnPage(Number(b.dataset.openDelivery)); });
   document.querySelectorAll('[data-act="nudge-task"]').forEach(b => b.onclick = async () => {
     if (b.disabled) return;
     b.disabled = true;
@@ -6615,6 +6682,12 @@ function bindAccounts() {
       setBanner(`${impact.name}'s account and all related data were removed.`, 'ok');
       await refreshData();
     } catch (e) { setBanner(e.message); render(); }
+  });
+  document.querySelectorAll('[data-delivery-access-for]').forEach(cb => cb.onchange = async () => {
+    const u = cb.dataset.deliveryAccessFor; const allowed = cb.checked;
+    cb.disabled = true;
+    try { await api(`/api/users/${encodeURIComponent(u)}/delivery-access`, { method: 'POST', body: JSON.stringify({ allowed }) }); setBanner(`${personName(u)} ${allowed ? 'can now add and edit deliveries' : 'can no longer manage deliveries'}.`, 'ok'); await refreshData(); }
+    catch (e) { cb.checked = !allowed; cb.disabled = false; setBanner(e.message); render(); }
   });
   document.querySelectorAll('[data-guide-again]').forEach(btn => btn.onclick = async () => {
     const u = btn.dataset.guideAgain;

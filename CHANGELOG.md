@@ -4,6 +4,43 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Deliveries tab; one reminder card per task; Follow up from notifications; mentions can open the task
+### Added
+- **Deliveries tab** (Tasks → Deliveries). For material whose task work is done (vendor decided etc.) and only
+  delivery to site is pending: **🚚 Add to delivery** on the task copies only its title; tag the site team, set the
+  date (time optional). Transport details can be added now or later: transport (Porter / vendor vehicle / own /
+  courier), Porter order ID, delivery ID / challan / invoice no., driver name and phone (tap to call), vehicle
+  number, vendor, quantity, where on site, notes, attachments.
+  - Statuses: Scheduled → On the way → Delivered (unloading pending) → Unloaded, or Cancelled (with reason).
+  - The tagged site people confirm **delivery** with photos, then **unloading** with photos (photos required,
+    optional note). Every photo is stamped with the date, time, delivery number and person before upload, and the
+    server keeps the upload time too. The timeline on each delivery shows who did what and when, with the photos.
+  - Only **Admin, the Purchase Department, and people Admin gives delivery access** (Accounts → "🚚 Can manage
+    deliveries" — e.g. the purchase head's assistant who sits in another department) add, edit, mark on the way
+    or cancel deliveries. The driver does not use the app — the purchase side types in the driver's name, phone
+    and vehicle. Anyone can be tagged; everyone tagged is added to the linked task's "Keep informed" list, so
+    they can open the task. New column `users.manage_deliveries`; `POST /api/users/:username/delivery-access` (Admin).
+  - Notifications (new **Deliveries** tab in Notifications): delivery coming, driver details added, on the way,
+    cancelled, delivered and unloaded (to whoever added it, the site team and the task creator — "the task can
+    now be closed"). Task history records it; the task shows "🚚 DLV-… · status — Open delivery".
+  - Menu badge: deliveries waiting for your proof. New tables `deliveries`, `delivery_files` (created on start).
+- **Follow up from notifications**: every notification about an open task has a 📣 **Follow up** button. After it
+  is used it turns grey ("Followed up 11:15 am · Follow up again") and can be pressed again — e.g. when the same
+  task comes back at the next reminder slot because it is still incomplete. Follow-up gap per person lowered
+  from 5 h to 2 h (`FOLLOW_UP_COOLDOWN_HOURS`) so a re-follow-up at the next slot goes through.
+### Changed
+- **One reminder card per task.** A new slot's automatic reminder or warning (9 AM → 3 PM → 6 PM) now replaces
+  the earlier one for the same person and task instead of adding another copy, so the notification count stays
+  small. The delivery log still records every send. On start-up the server also removes old stacked copies
+  (keeps the newest per person per task) in the background — the live database had about 261,000 such copies.
+### Fixed
+- **"Open task" showed nothing** for people who were only @mentioned in a comment or kept informed. Mentioning
+  someone who is not on the task now adds them to "Keep informed", and tasks you are kept informed on are listed
+  under My Tasks → **👀 Kept informed** (they do not count as your own work on Today). Open task finds them, and if
+  a task was just added it refreshes once before giving a clear message.
+- New endpoints: `GET /api/tasks/watching`; `/api/deliveries` (+ `/:id/update`, `/:id/status`, `/:id/proof`,
+  `/:id/files/:fileId`). `GET /api/notifications` also returns `tasks` (status + your last follow-up per task).
+
 ## [Unreleased] — Welcome guide (language → video → questions → login); stability fixes
 ### Added
 - **Welcome guide for first-time logins.** The first time a new account logs in, before anything else, the app

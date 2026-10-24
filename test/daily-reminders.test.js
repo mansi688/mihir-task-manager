@@ -4,6 +4,8 @@ process.env.REMINDER_WINDOWS = 'none';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');
+// Every send is in the delivery log; the notification list keeps one card per task (newest replaces older).
+const sentLog = async (baseUrl, adminToken, user, types) => (await api(baseUrl, '/api/notifications/deliveries?limit=500', { token: adminToken })).data.filter(d => d.recipient_username === user && d.status === 'sent' && types.includes(d.notification_type));
 
 test('daily reminders fire for an ongoing task, and stop the moment the person completes their part', async (t) => {
   const { baseUrl, getRawClient, stop } = await startTestServer();
@@ -35,10 +37,11 @@ test('daily reminders fire for an ongoing task, and stop the moment the person c
     await raw.end();
     // Run the engine as of 25 hours later (a real "fresh day" — new date, anti-spam gap long passed).
     await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: adminToken, body: { at: new Date(Date.now() + 25 * 3600000).toISOString() } });
-    const notifs = (await api(baseUrl, '/api/notifications', { token: bobToken })).data.items;
     // Phase 2 combines the daily nudge with the 3-hourly nudge that is also due → one reminder (either wording).
-    const reminderCount = notifs.filter(n => ['task_reminder', 'task_reminder_recurring'].includes(n.type) && n.task_id === id).length;
-    assert.equal(reminderCount, 2, 'a full day later, still incomplete, should get a second reminder');
+    const sent = (await sentLog(baseUrl, adminToken, 'bob', ['task_reminder', 'task_reminder_recurring'])).filter(d => d.task_id === id);
+    assert.equal(sent.length, 2, 'a full day later, still incomplete, should get a second reminder');
+    const cards = (await api(baseUrl, '/api/notifications', { token: bobToken })).data.items.filter(n => ['task_reminder', 'task_reminder_recurring'].includes(n.type) && n.task_id === id);
+    assert.equal(cards.length, 1, 'shown as one card — the new reminder replaced yesterday\'s');
   });
 
   await t.test('once the person completes their part, reminders stop immediately — even the same day', async () => {

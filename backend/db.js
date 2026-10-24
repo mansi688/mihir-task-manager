@@ -346,6 +346,8 @@ async function init() {
   await ensureColumn('users', 'failed_login_count', 'INTEGER DEFAULT 0');
   await ensureColumn('users', 'locked_until', 'TEXT');
   // Welcome guide (language → video → questions): new accounts must finish it once.
+  // Admin can let anyone (e.g. the purchase head's assistant in another department) manage deliveries.
+  await ensureColumn('users', 'manage_deliveries', 'INTEGER DEFAULT 0');
   await ensureColumn('users', 'needs_guide', 'INTEGER DEFAULT 0');
   await ensureColumn('users', 'guide_done_at', 'TEXT');
   await ensureColumn('users', 'guide_lang', 'TEXT');
@@ -433,6 +435,25 @@ async function init() {
     reply_id INTEGER REFERENCES task_replies(id) ON DELETE CASCADE,
     name TEXT NOT NULL, data TEXT NOT NULL, uploaded_by TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_task_files_task ON task_files(task_id)');
+  // Deliveries: material coming to a site — who is bringing it (Porter order, driver, vehicle), who receives
+  // it, and photo proof of delivery and of unloading, each with its time. Optionally linked to a task.
+  await run(`CREATE TABLE IF NOT EXISTS deliveries(
+    id SERIAL PRIMARY KEY, ref TEXT UNIQUE NOT NULL, title TEXT NOT NULL, quantity TEXT, description TEXT,
+    vendor TEXT, project TEXT, site_location TEXT, transport TEXT, porter_order_id TEXT, delivery_ref TEXT,
+    driver_name TEXT, driver_phone TEXT, vehicle_no TEXT, expected_at TEXT, receivers TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'scheduled', task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    created_by TEXT NOT NULL, created_by_name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    dispatched_at TEXT, dispatched_by TEXT,
+    delivered_at TEXT, delivered_by TEXT, delivered_note TEXT,
+    unloaded_at TEXT, unloaded_by TEXT, unloaded_note TEXT,
+    cancelled_at TEXT, cancelled_by TEXT, cancel_reason TEXT)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_deliveries_task ON deliveries(task_id)');
+  await run('CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status, expected_at)');
+  await run(`CREATE TABLE IF NOT EXISTS delivery_files(
+    id SERIAL PRIMARY KEY, delivery_id INTEGER NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL DEFAULT 'attachment', name TEXT NOT NULL, data TEXT NOT NULL,
+    taken_at TEXT, uploaded_by TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_delivery_files_delivery ON delivery_files(delivery_id)');
   // Chat: 'general' (everyone) or 'team:<department>' rooms; files hang off a message.
   await run(`CREATE TABLE IF NOT EXISTS chat_messages(
     id SERIAL PRIMARY KEY, room TEXT NOT NULL DEFAULT 'general',
@@ -465,6 +486,10 @@ async function init() {
   // Versioned migrations (backend/migrations.js) — after the legacy schema code above.
   schemaVersion = await require('./migrations').runMigrations(pool, (m) => console.log(m));
   startPoolWarmer();
+  // Older builds stacked a new copy of the same automatic reminder at every slot (9 AM, 3 PM, 6 PM...).
+  // Keep only the newest automatic reminder/warning per person per task. Runs in the background after
+  // start-up, in batches, so a large backlog never delays the server; safe to run on every start.
+  setTimeout(() => module.exports.dedupeAutoNotifications().catch(e => console.error('Reminder de-duplication skipped:', e.message)), 5000).unref();
   // Starter accounts are created ONLY on a brand-new, empty database. They used to be re-created
   // on EVERY server start whenever missing — and Render's free plan restarts the server many times
   // a day (it sleeps when idle), so accounts Admin deliberately removed kept coming back, with the
@@ -538,12 +563,13 @@ module.exports = {
     await run('UPDATE users SET needs_guide=0, guide_done_at=?, guide_lang=?, guide_score=?, guide_total=?, guide_attempts=? WHERE username=?',
       [new Date().toISOString(), lang, score, total, attempts, username]);
   },
+  async setDeliveryAccess(username, allowed) { await run('UPDATE users SET manage_deliveries=? WHERE username=?', [allowed ? 1 : 0, username]); },
   async requireGuideAgain(username) { await run('UPDATE users SET needs_guide=1, guide_done_at=NULL WHERE username=?', [username]); },
   async getUserFresh(username) { return get('SELECT * FROM users WHERE username=?', [username]); },
   async listUsers() {
     if (userListCache && Date.now() - userListCache.at < USER_CACHE_TTL_MS) return userListCache.rows.map(r => ({ ...r }));
     const version = usersVersion;
-    const rows = await all('SELECT username,role,name,email,phone,team,designation,is_team_lead,visible_departments,must_change_password,created_at,needs_guide,guide_done_at,guide_lang,guide_score,guide_total FROM users ORDER BY name');
+    const rows = await all('SELECT username,role,name,email,phone,team,designation,is_team_lead,visible_departments,must_change_password,created_at,needs_guide,guide_done_at,guide_lang,guide_score,guide_total,manage_deliveries FROM users ORDER BY name');
     if (version === usersVersion) userListCache = { at: Date.now(), rows };
     return rows.map(r => ({ ...r }));
   },
@@ -989,6 +1015,11 @@ module.exports = {
       ? await all(`SELECT ${cols}, (t.attachment IS NOT NULL) AS has_attachment FROM tasks t
           WHERE t.archived_at IS NULL AND (t.created_by_username = ? OR EXISTS (SELECT 1 FROM task_assignees ta WHERE ta.task_id = t.id AND ta.username = ?))
           ORDER BY t.created_at DESC`, [username, username])
+      : scope === 'watch'
+      ? await all(`SELECT ${cols}, (t.attachment IS NOT NULL) AS has_attachment FROM tasks t
+          WHERE t.archived_at IS NULL AND EXISTS (SELECT 1 FROM task_followups tf WHERE tf.task_id = t.id AND tf.username = ?)
+            AND t.created_by_username IS DISTINCT FROM ? AND NOT EXISTS (SELECT 1 FROM task_assignees ta WHERE ta.task_id = t.id AND ta.username = ?)
+          ORDER BY t.created_at DESC LIMIT 1000`, [username, username, username])
       : await all(`SELECT ${cols}, (t.attachment IS NOT NULL) AS has_attachment FROM tasks t WHERE t.archived_at IS NULL ORDER BY t.created_at DESC LIMIT 5000`);
     if (tasks.length === 0) return [];
     const ids = tasks.map(t => t.id);
@@ -1239,6 +1270,49 @@ module.exports = {
     return r ? r.id : null;
   },
   // ---- multiple attachments ----
+  // ---- deliveries ----
+  async createDelivery(d, files) {
+    return runInTransaction(async (tx) => {
+      const now = new Date().toISOString();
+      let row = null;
+      for (let i = 0; i < 5 && !row; i++) {
+        const ref = 'DLV-' + Math.random().toString(36).slice(2, 7).toUpperCase();
+        const r = await tx.run(`INSERT INTO deliveries(ref,title,quantity,description,vendor,project,site_location,transport,porter_order_id,delivery_ref,
+            driver_name,driver_phone,vehicle_no,expected_at,receivers,status,task_id,created_by,created_by_name,created_at,updated_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'scheduled',?,?,?,?,?) ON CONFLICT (ref) DO NOTHING RETURNING *`,
+          [ref, d.title, d.quantity, d.description, d.vendor, d.project, d.site_location, d.transport, d.porter_order_id, d.delivery_ref,
+           d.driver_name, d.driver_phone, d.vehicle_no, d.expected_at, d.receivers.join(','), d.task_id || null, d.created_by, d.created_by_name, now, now]);
+        row = r.rows && r.rows[0];
+      }
+      if (!row) throw new Error('Could not create the delivery — please try again.');
+      for (const f of files || []) await tx.run('INSERT INTO delivery_files(delivery_id,kind,name,data,uploaded_by,created_at) VALUES(?,?,?,?,?,?)', [row.id, 'attachment', f.name, f.data, d.created_by, now]);
+      return row;
+    });
+  },
+  async getDelivery(id) { const n = Number(id); if (!Number.isInteger(n)) return null; return get('SELECT * FROM deliveries WHERE id=?', [n]); },
+  async listDeliveriesFor(username, everything) {
+    const rows = everything
+      ? await all('SELECT * FROM deliveries ORDER BY (status IN (\'scheduled\',\'dispatched\')) DESC, COALESCE(expected_at, created_at) DESC LIMIT 500')
+      : await all(`SELECT d.* FROM deliveries d WHERE d.created_by = ? OR (',' || d.receivers || ',') LIKE ?
+          OR (d.task_id IS NOT NULL AND (EXISTS (SELECT 1 FROM task_assignees ta WHERE ta.task_id = d.task_id AND ta.username = ?)
+            OR EXISTS (SELECT 1 FROM tasks t WHERE t.id = d.task_id AND t.created_by_username = ?)
+            OR EXISTS (SELECT 1 FROM task_followups tf WHERE tf.task_id = d.task_id AND tf.username = ?)))
+          ORDER BY (d.status IN ('scheduled','dispatched')) DESC, COALESCE(d.expected_at, d.created_at) DESC LIMIT 500`,
+          [username, `%,${username},%`, username, username, username]);
+    if (!rows.length) return [];
+    const files = await all('SELECT id, delivery_id, kind, name, taken_at, uploaded_by, created_at FROM delivery_files WHERE delivery_id = ANY(?::int[]) ORDER BY id', [rows.map(r => r.id)]);
+    return rows.map(r => ({ ...r, receivers: r.receivers ? r.receivers.split(',').filter(Boolean) : [], files: files.filter(f => f.delivery_id === r.id) }));
+  },
+  async updateDelivery(id, fields) {
+    const keys = Object.keys(fields); if (!keys.length) return null;
+    const vals = keys.map(k => k === 'receivers' ? fields[k].join(',') : fields[k]);
+    return get(`UPDATE deliveries SET ${keys.map(k => `${k}=?`).join(', ')}, updated_at=? WHERE id=? RETURNING *`, [...vals, new Date().toISOString(), Number(id)]);
+  },
+  async addDeliveryFiles(id, kind, files, uploadedBy) {
+    const now = new Date().toISOString();
+    for (const f of files || []) await run('INSERT INTO delivery_files(delivery_id,kind,name,data,taken_at,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)', [Number(id), kind, f.name, f.data, f.taken_at || null, uploadedBy, now]);
+  },
+  async getDeliveryFile(fileId) { const n = Number(fileId); if (!Number.isInteger(n)) return null; return get('SELECT * FROM delivery_files WHERE id=?', [n]); },
   async addTaskFiles(taskId, replyId, files, uploadedBy, tx) {
     const runner = tx ? tx.run : run;
     const now = new Date().toISOString();
@@ -1784,6 +1858,41 @@ module.exports = {
       VALUES (?,?,?,?,?,?,?, CASE WHEN ?='sent' THEN now() ELSE NULL END, 1)`, [notificationId || null, recipient, taskId || null, channel, type || null, status, reason || null, status]);
   },
   // Last time each person was sent a reminder-type message about each task (anti-spam gap).
+  // One automatic reminder per person per task: a new slot's reminder (9 AM → 3 PM → 6 PM) replaces the
+  // earlier one instead of stacking a copy, so the count stays small. The delivery log keeps the history.
+  async dedupeAutoNotifications(batch = 20000) {
+    const types = ['task_reminder', 'task_reminder_recurring', 'deadline_window', 'deadline_soon', 'deadline_due_today', 'deadline_passed', 'task_overdue_days', 'task_warning_urgent', 'task_warning_creator', 'task_flagged', 'admin_late_flag'];
+    let total = 0;
+    for (let pass = 0; pass < 100; pass++) {
+      const r = await run(`DELETE FROM notifications WHERE id IN (
+        SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY username, task_id ORDER BY created_at DESC, id DESC) AS rn
+          FROM notifications WHERE task_id IS NOT NULL AND type = ANY(?::text[])) x WHERE rn > 1 LIMIT ?)`, [types, batch]);
+      const n = r && r.changes != null ? r.changes : (r && r.rowCount) || 0;
+      total += n;
+      if (n < batch) break;
+      await new Promise(res => setTimeout(res, 300));
+    }
+    if (total) console.log(`Removed ${total} duplicate automatic reminders (kept the newest per person per task).`);
+    return total;
+  },
+  // For the Notifications page: each task's status, and when this person last pressed Follow up on it.
+  async notificationTaskInfo(username, taskIds) {
+    const ids = Array.from(new Set((taskIds || []).filter(Boolean)));
+    if (!ids.length) return {};
+    const [tasks, fu] = await Promise.all([
+      all('SELECT id, status FROM tasks WHERE id = ANY(?::text[])', [ids]),
+      all("SELECT task_id, MAX(created_at) AS last FROM task_activity_events WHERE event_type='FOLLOW_UP_SENT' AND actor_username=? AND task_id = ANY(?::text[]) GROUP BY task_id", [username, ids]),
+    ]);
+    const out = {};
+    for (const t of tasks) out[t.id] = { status: t.status, followedUpAt: null };
+    for (const f of fu) if (out[f.task_id]) out[f.task_id].followedUpAt = f.last ? new Date(f.last).toISOString() : null;
+    return out;
+  },
+  async removeEarlierAutoNotifications(username, taskId, types) {
+    if (!taskId || !types.length) return 0;
+    const r = await run('DELETE FROM notifications WHERE username=? AND task_id=? AND type = ANY(?::text[])', [username, taskId, types]);
+    return r && r.changes != null ? r.changes : 0;
+  },
   async lastReminderSentMap(types, sinceIso) {
     const rows = await all(`SELECT recipient_username, task_id, MAX(sent_at) AS last FROM notification_deliveries
       WHERE channel='in_app' AND status='sent' AND notification_type = ANY(?::text[]) AND sent_at >= ? GROUP BY 1, 2`, [types, sinceIso]);
