@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node backend/server.js",
     "dev": "nodemon backend/server.js",
+    "build": "vite build",
     "test": "node --test",
     "e2e": "playwright test",
     "backup": "node scripts/backup-database.js",
