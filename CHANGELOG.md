@@ -4,6 +4,78 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Accounts Department: vendor bills, credit period, payment reminders
+### Added
+- **Vendor bills (accounts payable)** on the Accounts Dept page (Accounts, Purchase, Admin, Directors, Senior management).
+  - **Purchase sends the bill** (Admin, Purchase Department, people with delivery access): vendor, bill no. and date,
+    amount, project, the delivery it is for and **delivery done on** (required), notes, the **vendor bill photo / PDF**
+    (required) and the **credit period** (Immediate / 7 / 15 / 30 / 45 / 60 / 90 days or any number, or a due date).
+    Due date = bill date (or delivery date) + credit days. Also from a delivery card: **💳 Send bill to Accounts**
+    (vendor, project and delivery date filled in). Accounts is notified.
+  - **Reminders to the Accounts Department** at the reminder slots, once a day per bill (one card per bill, replaced
+    each day): **15, 5 and 2 days before** the due date ("payment due in N days — overdue in N days"), **on the due
+    date**, and **every day once overdue** ("overdue by N days"). Bills on hold or paid are not reminded.
+  - **Accounts responds on the bill**: ❓ ask Purchase, 💬 note, 🗓 schedule payment (date), 💸 part payment and ✅ mark
+    paid (amount, date, mode, UTR / cheque no., proof), ⏸ hold (reason) / ▶ take off hold. Purchase (whoever sent it)
+    and Admin are notified of every update. **Purchase replies** (with files) and Accounts is notified; questions
+    waiting for Purchase are flagged and counted on their menu badge.
+  - **Documents with the bill**: besides the vendor bill, attach delivery challan, PO, GRN, e-way bill, LR / transport
+    receipt, weighbridge slip, quotation, credit / debit note or other — when sending, or later with "+ Add document"
+    (Purchase and Accounts; the other side is told). Shown grouped by type on the bill, with the linked delivery's own
+    documents (challan, signed challan…) listed alongside.
+  - **📣 Follow up** (Purchase / Admin → Accounts), at most once every 2 hours per bill; shows who followed up, when,
+    and how many times.
+  - Tabs: Overdue · Due in 15 days · Not yet due · On hold · Paid · All · **By vendor** (ageing: not due, 1–30, 31–60,
+    61–90, 90+ days overdue) · Contractors & site (the earlier overview). Tiles: outstanding, overdue, due in 15 days,
+    paid this month. Search, project filter, CSV. Menu badge: overdue bills (Accounts) / questions (Purchase).
+  - **Import bills from Excel / CSV** — outstanding bills already on record: Vendor / Party, Bill no., Bill date,
+    Amount (or Balance), Paid, Credit days or Due date, Project / Site, Delivery / PO, Remarks; preview with problems
+    listed; fully paid rows come in as paid. Template download.
+### API
+- `GET /api/payables`, `GET /api/payables/summary`, `POST /api/payables`, `/:id/update`, `/:id/respond`
+  `{action: note|query|reply|schedule|partial|paid|hold|resume, …}`, `/:id/followup`, `/:id/delete`, `/:id/files`,
+  `GET /api/payables/files/:id`, `POST /api/payables/import/preview`, `POST /api/payables/import`,
+  `GET /api/payables/template`.
+### Database
+- New tables `ap_bills`, `ap_bill_events`, `ap_files`. Additive.
+
+## [Unreleased] — Estimation & Billing (JMR, reconciliation) and Accounts Department pages
+### Added
+- **Estimation** page (menu → Departments) for the Estimation & Billing Department:
+  - **JMR (Joint Measurement Record)** — project, location, work item, BOQ item, contractor, unit, rate, RA bill no.,
+    measured on / work period, both representatives, and measurement lines (Description · Nos × L × B × H, or a typed
+    quantity; "Less" lines for deductions). Live total and amount; **up to previous (approved) / this JMR / cumulative**
+    for the same project + work item + contractor. Print layout with signature blocks; CSV.
+  - **Material reconciliation** — material issued to a contractor, returned, balance at site → actual consumption;
+    work done × norm → theoretical; wastage allowed % → allowed; excess (recoverable × rate = recovery) or saving;
+    "use approved JMR quantity as work done". Print; CSV.
+  - **Workflow**: draft → send for approval → approved, or returned with a note (then edit and send again). Approved
+    entries are locked (files such as the signed copy can still be added). Approvers: Admin, Directors, Senior
+    management and the project's heads; they are notified and see a menu badge; the writer is told the decision.
+  - **Import JMR from Excel** (.xlsx / .csv): every sheet is read — details above the table (Project, Location,
+    Contractor, Work item, Unit, Rate, BOQ item, RA bill, Date), a measurement table with Description and Nos / L / B /
+    H and/or Qty (Particulars, No., Length, Width, Thk… are recognised), section-heading rows start a new work item,
+    "Less …" rows / negative numbers are deductions, Total rows skipped; when a row's Qty differs from Nos × L × B × H
+    the sheet's Qty is kept and the row is flagged. Preview first (pick project / contractor / location, units, which
+    JMRs), then create drafts or open one in the form; the Excel is attached (or used as the HighRise document).
+    Downloadable template. `POST /api/estimation/jmr/import/preview`, `GET /api/estimation/jmr/template`.
+  - **The HighRise / estimation document (Excel, PDF or any format) is required** to send a JMR or reconciliation for
+    approval; it is shown separately from other attachments.
+  - **Summary**: approved JMR value, value waiting for approval, recoveries; work done to date by work item and
+    contractor.
+  - Writers: Estimation & Billing Department and Admin. Viewers also: Accounts, Store, Contracting, Execution, project
+    heads, management.
+- **Accounts Dept** page (Accounts Department, Admin, Directors, Senior management) — a starting point bringing
+  together contractor billing from approved JMRs (by contractor, less reconciliation recoveries, CSV), site payments
+  from Budget, and invoices received with material from site. The Accounts workflow will be added as described.
+### API
+- `GET /api/estimation`, `GET /api/estimation/summary`; `POST /api/estimation/{jmr|recon}` (with `lines`,
+  `attachments`, `source_files`, `submit`); `/:id/update`, `/:id/submit`, `/:id/decide` `{decision: approve|return,
+  note}`, `/:id/delete`, `/:id/files` `{attachments, kind: source|attachment}`; `GET /api/estimation/files/:id`,
+  `POST /api/estimation/files/:id/delete`.
+### Database
+- New tables `est_jmr`, `est_jmr_lines`, `est_recon`, `est_files` (created on start). Additive.
+
 ## [Unreleased] — Notifications: act from them, Flagged tab, who has seen; project required
 ### Added
 - **Approve right from a notification.** Any notification about a task where someone's part waits for your approval shows

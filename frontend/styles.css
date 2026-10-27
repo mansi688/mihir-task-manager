@@ -1552,3 +1552,34 @@ button.notif-person:hover,button.notif-person.active{border-color:var(--nc-warni
 .na-done{font-size:12.5px;color:var(--muted);margin-top:6px;}
 .nr-unseen td{background:color-mix(in srgb,var(--nc-warning) 5%,transparent);}
 select.field-err,input.field-err{border-color:var(--danger);box-shadow:0 0 0 2px color-mix(in srgb,var(--danger) 20%,transparent);}
+
+/* ---- Estimation & Accounts Dept ---- */
+.est-list{display:flex;flex-direction:column;gap:8px;margin-top:10px;}
+.est-item{border:1px solid var(--line);border-radius:12px;background:var(--panel);overflow:hidden;}
+.est-item.open{border-color:color-mix(in srgb,var(--c-blue) 45%,var(--line));}
+.est-row{font:inherit;color:var(--ink);width:100%;display:flex;gap:12px;align-items:center;padding:10px 12px;border:0;background:none;text-align:left;cursor:pointer;}
+.est-row-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.est-row-num{display:flex;flex-direction:column;align-items:flex-end;gap:2px;white-space:nowrap;font-family:var(--mono);font-size:13px;}
+.est-detail{padding:4px 12px 12px;border-top:1px solid var(--line);}
+.est-lines td{vertical-align:middle;}
+.est-deduct td{color:var(--danger);}
+.est-edit input{margin:0;padding:6px 8px;font-size:13px;min-width:70px;}
+.est-edit input.est-n{width:80px;min-width:0;}
+.est-edit td input[type="checkbox"]{width:auto;min-width:0;margin:0 4px 0 0;}
+.est-edit td:nth-child(2) input{min-width:160px;}
+.est-form .row{margin-top:2px;}
+.est-src{margin-top:10px;padding:8px 10px;border-radius:10px;border:1px solid color-mix(in srgb,var(--c-teal) 40%,transparent);background:color-mix(in srgb,var(--c-teal) 6%,var(--panel));font-size:13px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.est-src.missing{border-color:color-mix(in srgb,var(--c-amber) 55%,transparent);background:color-mix(in srgb,var(--c-amber) 7%,var(--panel));}
+@media (max-width:640px){.est-row{flex-wrap:wrap;} .est-row-num{align-items:flex-start;}}
+
+/* ---- Vendor bills (Accounts Dept) ---- */
+.est-item.ap-overdue{border-left:3px solid var(--danger);}
+.ap-timeline{display:flex;flex-direction:column;gap:8px;margin-top:6px;}
+.ap-ev{display:flex;gap:10px;font-size:13px;padding:8px 10px;border-radius:10px;background:color-mix(in srgb,var(--ink) 4%,var(--panel));}
+.ap-ev-ic{width:20px;text-align:center;}
+.ap-ev.ap-query{background:color-mix(in srgb,var(--c-amber) 9%,var(--panel));}
+.ap-ev.ap-paid,.ap-ev.ap-partial{background:color-mix(in srgb,var(--c-teal) 9%,var(--panel));}
+.ap-ev.ap-hold{background:color-mix(in srgb,var(--danger) 7%,var(--panel));}
+.ap-credit{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.ap-doc{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px;font-size:13px;}
+.ap-doc-type{font-weight:700;min-width:170px;}

@@ -114,7 +114,7 @@ if (token) {
   if (safeStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] };
+  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; if (typeof estData !== 'undefined') { estData = null; estSummary = { canView: false }; } if (typeof apData !== 'undefined') { apData = null; apSummary = { canView: false }; }
   ui = defaultUiState(); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
   announcements = []; canPostAnnouncements = false; chat.rooms = []; chat.messages = {}; chat.hasOlder = {}; chat.lastVersion = null;
 }
@@ -574,7 +574,7 @@ const CAD_DRAWING_EXTENSIONS = ['.dwg', '.dxf', '.rvt', '.rfa', '.skp', '.dgn', 
 
 /* ==================== ROLES / NAV ==================== */
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries', budget: 'Budget' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries', budget: 'Budget', estimation: 'Estimation & Billing', accountsdept: 'Accounts Department' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -694,6 +694,11 @@ function renderSidebar() {
       groups[gi] = { ...g, items };
     }
   });
+  // Departments: Estimation & Billing (JMR, reconciliation) and the Accounts Department page.
+  const deptItems = [];
+  if (typeof estimationTabVisible === 'function' && estimationTabVisible()) deptItems.push({ key: 'estimation', label: 'Estimation', icon: 'clipboard', badge: () => estimationBadge() });
+  if (typeof accountsDeptTabVisible === 'function' && accountsDeptTabVisible()) deptItems.push({ key: 'accountsdept', label: 'Accounts Dept', icon: 'wallet', badge: () => (typeof accountsDeptBadge === 'function' ? accountsDeptBadge() : 0) });
+  if (deptItems.length) { const ti = groups.findIndex(g => g.group === 'Tasks'); groups.splice(ti >= 0 ? ti + 1 : groups.length, 0, { group: 'Departments', items: deptItems }); }
   if (window.LocationUI) window.LocationUI.navGroups(groups); // frontend/location.js (only when switched on)
   const active = currentTabKey();
   return `
@@ -746,18 +751,20 @@ const NOTIF_TYPE_CAT = {
   task_reminder: 'reminder', task_reminder_recurring: 'reminder', task_reminder_3day: 'reminder', deadline_window: 'reminder', deadline_soon: 'reminder', deadline_due_today: 'reminder', follow_up: 'reminder',
   deadline_passed: 'warning', task_overdue_days: 'warning', task_warning: 'warning', task_warning_urgent: 'warning', task_warning_creator: 'warning', task_flagged: 'flagged', admin_late_flag: 'flagged', weekly_warning_digest: 'warning',
   task_assigned: 'task', task_reply: 'task', task_closed: 'task', task_reopened: 'task', task_deleted: 'task', task_rejected: 'task', individual_deadline_set: 'task', level_changed: 'task', mentioned_in_comment: 'task', followup_tagged: 'task', meeting_summary: 'task',
-  task_submitted: 'approval', approval_requested: 'approval', approval_rejected: 'approval', approval_approved: 'approval', closure_requested: 'approval', closure_approved: 'approval', closure_declined: 'approval',
+  task_submitted: 'approval', approval_requested: 'approval', approval_rejected: 'approval', approval_approved: 'approval', closure_requested: 'approval', closure_approved: 'approval', closure_declined: 'approval', est_submitted: 'approval', est_decided: 'approval', ap_bill_added: 'approval', ap_reminder: 'reminder', ap_update: 'approval', ap_reply: 'approval', ap_followup: 'approval',
   chat_mention: 'message', announcement: 'message',
   location: 'location', location_alert: 'location', site_visit: 'location', place_linked: 'location',
   delivery_scheduled: 'delivery', delivery_update: 'delivery', delivery_delivered: 'delivery', delivery_unloaded: 'delivery', delivery_reminder: 'delivery', delivery_followup: 'delivery', delivery_document: 'delivery', delivery_payment: 'delivery', budget_verify: 'delivery', budget_allotted: 'delivery', budget_verified: 'delivery', budget_topup: 'delivery',
 };
 const notifCat = n => NOTIF_TYPE_CAT[n.type] || 'other';
-const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin', delivery_scheduled: 'truck', delivery_update: 'truck', delivery_delivered: 'truck', delivery_unloaded: 'checkCircle', delivery_reminder: 'clock', delivery_followup: 'truck', delivery_document: 'clipboard', delivery_payment: 'clipboard', budget_verify: 'wallet', budget_allotted: 'wallet', budget_verified: 'wallet', budget_topup: 'wallet' };
-const NOTIF_TYPE_LABEL = { task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked', delivery_scheduled: 'Delivery coming', delivery_update: 'Delivery update', delivery_delivered: 'Delivered at site', delivery_unloaded: 'Unloaded at site', delivery_reminder: 'Delivery reminder', delivery_followup: 'Delivery follow-up', delivery_document: 'Delivery document', delivery_payment: 'Delivery payment', budget_verify: 'Payment to verify', budget_allotted: 'Money allotted', budget_verified: 'Payment checked', budget_topup: 'Top-up requested' };
+const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin', delivery_scheduled: 'truck', delivery_update: 'truck', delivery_delivered: 'truck', delivery_unloaded: 'checkCircle', delivery_reminder: 'clock', delivery_followup: 'truck', delivery_document: 'clipboard', delivery_payment: 'clipboard', budget_verify: 'wallet', budget_allotted: 'wallet', budget_verified: 'wallet', budget_topup: 'wallet', est_submitted: 'clipboard', est_decided: 'checkCircle', ap_bill_added: 'wallet', ap_reminder: 'clock', ap_update: 'wallet', ap_reply: 'chat', ap_followup: 'wallet' };
+const NOTIF_TYPE_LABEL = { task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked', delivery_scheduled: 'Delivery coming', delivery_update: 'Delivery update', delivery_delivered: 'Delivered at site', delivery_unloaded: 'Unloaded at site', delivery_reminder: 'Delivery reminder', delivery_followup: 'Delivery follow-up', delivery_document: 'Delivery document', delivery_payment: 'Delivery payment', budget_verify: 'Payment to verify', budget_allotted: 'Money allotted', budget_verified: 'Payment checked', budget_topup: 'Top-up requested', est_submitted: 'Estimation to approve', est_decided: 'Estimation decision', ap_bill_added: 'New vendor bill', ap_reminder: 'Payment due', ap_update: 'Bill update from Accounts', ap_reply: 'Reply from Purchase', ap_followup: 'Payment follow-up' };
 // Where tapping a notification takes you.
 function notifTarget(n) {
   if (/^closure_/.test(n.type)) return 'data-notif-goto-tab="closure"';
   if (/^budget_/.test(n.type)) return 'data-notif-goto-tab="budget"';
+  if (/^est_/.test(n.type)) return 'data-notif-goto-tab="estimation"';
+  if (/^ap_/.test(n.type)) return 'data-notif-goto-tab="accountsdept"';
   if (/^delivery_/.test(n.type)) return 'data-notif-goto-tab="deliveries"';
   if (n.task_id) return `data-notif-goto-task="${esc(n.task_id)}"`;
   if (n.type === 'chat_mention') return `data-notif-goto-tab="chat"${n.chat_room ? ` data-notif-chat-room="${esc(n.chat_room)}"` : ''}`;
@@ -1834,6 +1841,8 @@ let lastDataFingerprint = null;
    good data instead of blanking the screen, and refreshes never overlap (a slow server used to
    get a new full round of ~22 requests every 8 seconds stacked on top of the unfinished ones). */
 const TAB_EXTRAS = {
+  estimation: ['estimationResp'],
+  accountsdept: ['estimationResp', 'payablesResp'],
   today: ['monthlyLeaderboard', 'weeklyLeaderboard'],
   performance: ['completionStats', 'approvalStats', 'ratingsResp', 'approvalDecisionsDetail', 'quarterAwardsResp', 'yearAwardsResp'],
   reports: ['reportsTaskList'],
@@ -1853,12 +1862,14 @@ function dataRequests() {
     sectionsList: '/api/drawing-sections', phasesList: '/api/task-phases', openTaskTitles: '/api/tasks/open-titles', me: '/api/auth/me',
     notif: '/api/notifications', myApprovalRequests: '/api/approvals/mine', announcementsResp: '/api/announcements',
     features: '/api/features', suggestions: '/api/suggestions',
-    deliveriesResp: '/api/deliveries', budgetResp: '/api/budget',
+    deliveriesResp: '/api/deliveries', budgetResp: '/api/budget', estSummaryResp: '/api/estimation/summary', apSummaryResp: '/api/payables/summary',
     closureData: `/api/closure-requests${session.role === 'admin' && ui.closureScope === 'all' ? '?scope=all' : ''}`,
   };
   if (isAdmin) { core.allTasks = '/api/tasks'; core.allApprovalRequests = '/api/approvals'; }
   const extras = {
     meetingsList: '/api/meetings',
+    ...(typeof estSummary !== 'undefined' && estSummary.canView ? { estimationResp: '/api/estimation' } : {}),
+    ...(typeof apSummary !== 'undefined' && apSummary.canView ? { payablesResp: '/api/payables' } : {}),
     ...(isAdmin ? { systemInfo: '/api/admin/system' } : {}),
     myDashboardData: `/api/reports/my-dashboard${isAdmin && ui.dashboardViewUser && ui.dashboardViewUser !== session.username ? `?username=${encodeURIComponent(ui.dashboardViewUser)}` : ''}`,
   };
@@ -1896,6 +1907,10 @@ function applyData(key, v) {
       break;
     case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; notifTaskInfo = v.tasks || {}; notifRefs = v.refs || { approval: {}, payment: {} }; if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items); break;
     case 'closureData': closureData = v || { toDecide: [], mine: [], keptOpen: [] }; break;
+    case 'apSummaryResp': if (typeof apSummary !== 'undefined') apSummary = v || { canView: false }; break;
+    case 'payablesResp': if (typeof apData !== 'undefined') apData = v && Array.isArray(v.bills) ? v : apData; break;
+    case 'estSummaryResp': if (typeof estSummary !== 'undefined') estSummary = v || { canView: false }; break;
+    case 'estimationResp': if (typeof estData !== 'undefined') estData = v && Array.isArray(v.jmr) ? v : estData; break;
     case 'budgetResp': if (typeof budgetData !== 'undefined') budgetData = v && Array.isArray(v.payments) ? v : { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; break;
     case 'deliveriesResp': if (typeof deliveriesData !== 'undefined') deliveriesData = v && Array.isArray(v.items) ? v : { canManage: false, items: [] }; break;
     case 'myApprovalRequests': myApprovalRequests = v; break;
@@ -6293,6 +6308,8 @@ function renderInner() {
   else if (ui.adminTab === 'closure') body = renderClosureView();
   else if (ui.adminTab === 'deliveries' && typeof renderDeliveriesView === 'function') body = renderDeliveriesView();
   else if (ui.adminTab === 'budget' && typeof renderBudgetView === 'function') body = renderBudgetView();
+  else if (ui.adminTab === 'estimation' && typeof renderEstimationView === 'function') body = renderEstimationView();
+  else if (ui.adminTab === 'accountsdept' && typeof renderAccountsDeptView === 'function') body = renderAccountsDeptView();
   else if (ui.adminTab === 'alltasks' && session.role === 'admin') body = renderAllTasksCard();
   else if (ui.adminTab === 'accounts' && session.role === 'admin') body = renderAccountsView();
   else if (ui.adminTab === 'performance' && session.role === 'admin') body = renderPerformanceView();
@@ -6332,6 +6349,8 @@ function renderInner() {
   if (ui.adminTab === 'closure') bindClosureView();
   if (ui.adminTab === 'deliveries' && typeof bindDeliveriesView === 'function') bindDeliveriesView();
   if (ui.adminTab === 'budget' && typeof bindBudgetView === 'function') bindBudgetView();
+  if (ui.adminTab === 'estimation' && typeof bindEstimationView === 'function') bindEstimationView();
+  if (ui.adminTab === 'accountsdept' && typeof bindAccountsDeptView === 'function') bindAccountsDeptView();
   bindClosureForms();
   if (ui.adminTab === 'tasks') bindApprovalsHint();
   if (ui.adminTab === 'calendar') bindCalendarView();

@@ -34,6 +34,18 @@ All under the existing `/api`, Bearer token unless noted. Existing endpoints are
 | POST /api/deliveries/:id/files/:fileId/delete | uploader or Admin/Purchase | Remove a document or attachment (not proof photos or bills) |
 | POST /api/deliveries/:id/payments | tagged site team, Admin/Purchase | `{amount, purpose, mode, paid_to, paid_at, note, attachments}` — bill photo required unless `no_bill_reason` (≥5 chars). Returns `{paid, balance, overBudget}` |
 | POST /api/deliveries/:id/payments/:pid/delete | payer within 48 h, or Admin/Purchase | Removes the payment and its bill |
+| GET /api/payables | Accounts, Purchase, Admin, Directors, Senior mgmt | Vendor bills with balance, days left / overdue, conversation, files |
+| GET /api/payables/summary | everyone | `canView`, `canAdd`, `canPay`, `overdue`, `dueSoon`, `questions` |
+| POST /api/payables | Purchase, Admin | Send a bill: vendor, bill_no, bill_date, amount, credit_days or due_date, project, delivery_id, delivery_done_on, attachments (bill required) |
+| POST /api/payables/:id/respond | Accounts (schedule/partial/paid/hold/resume/query), Purchase (reply), all (note) | Conversation and payments; the other side is notified |
+| POST /api/payables/:id/followup | Purchase, Admin | Reminds Accounts (once per 2 h per bill) |
+| POST /api/payables/import/preview · /import | Purchase, Accounts, Admin | Outstanding bills from Excel / CSV |
+| GET /api/estimation | Estimation & Billing, Admin, Directors, Senior mgmt, project heads, Accounts, Store, Contracting, Execution | JMRs (lines, previous / cumulative qty, files) and reconciliations (with calculations) |
+| GET /api/estimation/summary | everyone | `canView`, `canEdit`, `toApprove`, `returned` (menu + badge) |
+| POST /api/estimation/jmr · /recon | Estimation & Billing, Admin | Create (draft, or `submit: true`); `source_files` = HighRise / estimation document (required to submit) |
+| POST /api/estimation/{jmr,recon}/:id/update · /submit · /delete | writer / Admin | Edit (draft or returned), send for approval, remove |
+| POST /api/estimation/{jmr,recon}/:id/decide | Admin, Directors, Senior mgmt, project heads | `{decision: approve\|return, note}` |
+| POST /api/estimation/{jmr,recon}/:id/files | writers, approvers | `{attachments, kind: source\|attachment}` |
 | GET /api/budget | everyone (Director/Admin/Accounts/Purchase see all) | Allotted money, payments with bills and status, per-person totals; `canAllot`, `canVerify`, `seesAll` |
 | POST /api/budget/allot | Director, Admin | `{username, kind: allot\|return, amount, mode, reference, note}` → `{balance}` |
 | POST /api/budget/allotments/:id/delete | Director, Admin | Remove an allotted / returned entry |

@@ -264,6 +264,7 @@ function deliveryCardHTML(d) {
       <div class="dlv-actions">
         ${mine && ['scheduled', 'dispatched'].includes(d.status) && !(ui.deliveryProof && ui.deliveryProof.id === d.id) ? `<button class="btn btn-primary btn-sm" data-dlv-proof="${d.id}:delivered">📦 Confirm delivery (photos)</button>` : ''}
         ${mine && d.status === 'delivered' && !(ui.deliveryProof && ui.deliveryProof.id === d.id) ? `<button class="btn btn-primary btn-sm" data-dlv-proof="${d.id}:unloaded">🏗️ Confirm unloading (photos)</button>` : ''}
+        ${manage && ['delivered', 'unloaded'].includes(d.status) && typeof openBillFromDelivery === 'function' ? `<button class="btn btn-sm" data-dlv-bill="${d.id}" title="Send the vendor bill for this delivery to Accounts, with the credit period">💳 Send bill to Accounts</button>` : ''}
         ${manage && ['scheduled', 'dispatched', 'delivered'].includes(d.status) ? `<button class="btn btn-sm dlv-fu ${d.last_followup_at ? 'done' : ''}" data-dlv-followup="${d.id}" title="Remind the site team to update this delivery">📣 ${d.last_followup_at ? 'Follow up again' : 'Follow up'}</button>` : ''}
         ${manage && d.status === 'scheduled' ? `<button class="btn btn-sm" data-dlv-dispatch="${d.id}">🚚 Mark on the way</button>` : ''}
         ${manage && !['unloaded', 'cancelled'].includes(d.status) ? `<button class="btn btn-sm" data-dlv-edit="${d.id}">✏️ Edit details</button><button class="btn btn-sm btn-danger" data-dlv-cancel="${d.id}">Cancel</button>` : ''}
@@ -597,6 +598,7 @@ function bindDeliveriesView() {
     try { const r = await api(`/api/deliveries/${b.dataset.dlvFollowup}/followup`, { method: 'POST' }); setBanner(`Follow-up sent to ${r.sent.map(personName).join(', ')}.`, 'ok'); await refreshData(); }
     catch (e) { b.disabled = false; b.textContent = label; setBanner(e.message); render(); }
   });
+  document.querySelectorAll('[data-dlv-bill]').forEach(btn => btn.onclick = (e) => { e.preventDefault(); const d = (deliveriesData.items || []).find(x => x.id === Number(btn.dataset.dlvBill)); if (d) openBillFromDelivery(d); });
   document.querySelectorAll('[data-dlv-dispatch]').forEach(b => b.onclick = async () => {
     if (b.disabled) return; b.disabled = true;
     try { await api(`/api/deliveries/${b.dataset.dlvDispatch}/status`, { method: 'POST', body: JSON.stringify({ status: 'dispatched' }) }); setBanner('Marked as on the way — the site team has been told.', 'ok'); await refreshData(); }

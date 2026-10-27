@@ -486,6 +486,48 @@ async function init() {
     kind TEXT NOT NULL DEFAULT 'attachment', name TEXT NOT NULL, data TEXT NOT NULL,
     taken_at TEXT, uploaded_by TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_delivery_files_delivery ON delivery_files(delivery_id)');
+  // ---- Accounts payable: vendor bills sent by Purchase, credit period, payment by Accounts ----
+  await run(`CREATE TABLE IF NOT EXISTS ap_bills(
+    id SERIAL PRIMARY KEY, ref TEXT UNIQUE NOT NULL, vendor TEXT NOT NULL, bill_no TEXT, bill_date TEXT, amount NUMERIC(16,2) NOT NULL,
+    credit_days INTEGER, due_date TEXT NOT NULL, project TEXT, delivery_id INTEGER, delivery_ref TEXT, delivery_done_on TEXT, description TEXT,
+    status TEXT NOT NULL DEFAULT 'open', paid_amount NUMERIC(16,2) NOT NULL DEFAULT 0, scheduled_for TEXT, hold_reason TEXT,
+    source TEXT NOT NULL DEFAULT 'manual', created_by TEXT NOT NULL, created_by_name TEXT, created_at TEXT NOT NULL, updated_at TEXT,
+    last_followup_at TEXT, last_followup_by TEXT, followup_count INTEGER NOT NULL DEFAULT 0, paid_at TEXT)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_ap_bills_status ON ap_bills(status, due_date)');
+  await run(`CREATE TABLE IF NOT EXISTS ap_bill_events(
+    id SERIAL PRIMARY KEY, bill_id INTEGER NOT NULL REFERENCES ap_bills(id) ON DELETE CASCADE, kind TEXT NOT NULL, message TEXT,
+    amount NUMERIC(16,2), pay_date TEXT, pay_mode TEXT, pay_ref TEXT, by_username TEXT, by_name TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_ap_bill_events ON ap_bill_events(bill_id)');
+  await run(`CREATE TABLE IF NOT EXISTS ap_files(
+    id SERIAL PRIMARY KEY, bill_id INTEGER NOT NULL REFERENCES ap_bills(id) ON DELETE CASCADE, event_id INTEGER, kind TEXT NOT NULL DEFAULT 'bill',
+    name TEXT NOT NULL, data TEXT NOT NULL, uploaded_by TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_ap_files_bill ON ap_files(bill_id)');
+  // ---- Estimation & Billing: JMR (joint measurement records) and material reconciliation ----
+  await run(`CREATE TABLE IF NOT EXISTS est_jmr(
+    id SERIAL PRIMARY KEY, ref TEXT UNIQUE NOT NULL, project TEXT NOT NULL, location TEXT, work_item TEXT NOT NULL, boq_item TEXT,
+    contractor TEXT, unit TEXT NOT NULL, rate NUMERIC(14,2), measured_on TEXT, period_from TEXT, period_to TEXT, ra_bill_no TEXT,
+    client_rep TEXT, contractor_rep TEXT, notes TEXT, total_qty NUMERIC(16,3) NOT NULL DEFAULT 0, amount NUMERIC(16,2),
+    status TEXT NOT NULL DEFAULT 'draft', created_by TEXT NOT NULL, created_by_name TEXT, created_at TEXT NOT NULL, updated_at TEXT,
+    submitted_at TEXT, decided_by TEXT, decided_by_name TEXT, decided_at TEXT, decision_note TEXT)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_est_jmr_key ON est_jmr(project, work_item, contractor)');
+  await run(`CREATE TABLE IF NOT EXISTS est_jmr_lines(
+    id SERIAL PRIMARY KEY, jmr_id INTEGER NOT NULL REFERENCES est_jmr(id) ON DELETE CASCADE, sort INTEGER NOT NULL DEFAULT 0,
+    description TEXT, nos NUMERIC(14,3), length NUMERIC(14,3), breadth NUMERIC(14,3), height NUMERIC(14,3),
+    qty NUMERIC(16,3) NOT NULL DEFAULT 0, manual INTEGER NOT NULL DEFAULT 0, deduct INTEGER NOT NULL DEFAULT 0, remarks TEXT)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_est_jmr_lines ON est_jmr_lines(jmr_id)');
+  await run(`CREATE TABLE IF NOT EXISTS est_recon(
+    id SERIAL PRIMARY KEY, ref TEXT UNIQUE NOT NULL, project TEXT NOT NULL, material TEXT NOT NULL, unit TEXT NOT NULL, contractor TEXT,
+    work_item TEXT, period_from TEXT, period_to TEXT,
+    issued NUMERIC(16,3) NOT NULL DEFAULT 0, returned NUMERIC(16,3) NOT NULL DEFAULT 0, balance_at_site NUMERIC(16,3) NOT NULL DEFAULT 0,
+    work_qty NUMERIC(16,3) NOT NULL DEFAULT 0, work_unit TEXT, norm NUMERIC(16,6) NOT NULL DEFAULT 0, wastage_pct NUMERIC(8,3) NOT NULL DEFAULT 0,
+    rate NUMERIC(14,2), notes TEXT,
+    status TEXT NOT NULL DEFAULT 'draft', created_by TEXT NOT NULL, created_by_name TEXT, created_at TEXT NOT NULL, updated_at TEXT,
+    submitted_at TEXT, decided_by TEXT, decided_by_name TEXT, decided_at TEXT, decision_note TEXT)`);
+  await run(`CREATE TABLE IF NOT EXISTS est_files(
+    id SERIAL PRIMARY KEY, parent_type TEXT NOT NULL, parent_id INTEGER NOT NULL, name TEXT NOT NULL, data TEXT NOT NULL,
+    uploaded_by TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_est_files_parent ON est_files(parent_type, parent_id)');
+  await ensureColumn('est_files', 'kind', "TEXT NOT NULL DEFAULT 'attachment'"); // 'source' = the HighRise / estimation document
   await run('ALTER TABLE delivery_files ALTER COLUMN delivery_id DROP NOT NULL'); // bills of payments not tied to a delivery
   await ensureColumn('delivery_files', 'doc_type', 'TEXT');
   await ensureColumn('delivery_files', 'note', 'TEXT');

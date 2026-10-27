@@ -3229,6 +3229,7 @@ async function runReminderEngine(now = new Date(), opts = {}) {
   }
   const stats = await flushReminderOutbox(out, now);
   try { stats.deliveryReminders = await runDeliveryReminders(now, win); } catch (e) { log('ERROR', 'delivery reminders failed', { error: e.message }); }
+  try { stats.billReminders = await payables.runPayableReminders(now); } catch (e) { log('ERROR', 'bill reminders failed', { error: e.message }); }
   return stats;
 }
 // Deliveries due today (or late) and deliveries waiting for unloading remind the tagged site team at the
@@ -3782,6 +3783,12 @@ app.post('/api/meetings/:id/retry', auth(ALL_ROLES), async (req, res) => {
 const { mountDeliveries, DOC_TYPES: DELIVERY_DOC_TYPES } = require('./deliveries');
 const DELIVERY_DOC = Object.fromEntries(DELIVERY_DOC_TYPES.map(d => [d.key, d]));
 mountDeliveries(app, { db, auth, ALL_ROLES, auditFromReq, taskEvent, collectUploads, MAX_FILE_CHARS, displayName, str, releaseDependentsOf });
+/* backend/estimation.js — Estimation & Billing: JMR (joint measurement records) and material reconciliation. */
+const { mountEstimation } = require('./estimation');
+mountEstimation(app, { db, auth, ALL_ROLES, auditFromReq, collectUploads, MAX_FILE_CHARS, str, PROJECT_OPTIONS, PROJECT_HEADS });
+/* backend/payables.js — vendor bills: Purchase sends them to Accounts with a credit period; reminders before / after the due date. */
+const { mountPayables } = require('./payables');
+const payables = mountPayables(app, { db, auth, ALL_ROLES, auditFromReq, collectUploads, MAX_FILE_CHARS, str, PROJECT_OPTIONS, localDateStr });
 
 /* ============ EMPLOYEE LOCATION TRACKING ============
    backend/location/* — off unless ENABLE_LOCATION_TRACKING=true (docs/LOCATION_TRACKING.md). */
