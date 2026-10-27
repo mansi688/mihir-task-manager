@@ -262,6 +262,9 @@ function compChip(i) {
   return `<span class="bud-chip">${d} days left</span>`;
 }
 const compOrd = (n) => { const v = n % 100; return n + (v >= 11 && v <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th')); };
+function compFileChip(x, canDel) {
+  return `<span class="comp-file"><button type="button" class="dlv-file" data-comp-file="${x.id}" title="${apEsc(`${x.uploaded_by_name || x.uploaded_by || ''} · ${apDay(x.created_at)}`)}">📎 ${apEsc(x.name)}</button>${canDel ? `<button type="button" class="dlv-x" data-comp-fdel="${x.id}" aria-label="Remove file">✕</button>` : ''}</span>`;
+}
 function compHTML() {
   if (!compData) return '<div class="small muted" style="margin-top:10px;">Loading compliance dates…</div>';
   const c = compState(); const can = compData.me && compData.me.canEdit;
@@ -286,15 +289,18 @@ function compHTML() {
           <div><b>${apEsc(i.name)}</b> <span class="small muted">· by the ${compOrd(i.due_day)} of every month</span></div>
           <div class="small">${apEsc(i.period_label)}: due <b>${apDay(i.due)}</b>${i.override ? ' <span class="muted">(date set for this month)</span>' : ''} ${compChip(i)}</div>
           ${i.notes ? `<div class="small muted">${apEsc(i.notes)}</div>` : ''}
-          ${last ? `<div class="small muted">Last done: ${apEsc(last.period_label)} — ${apEsc(last.done_by_name || last.done_by)}, ${apDay(last.done_at)}${last.note ? ` · ${apEsc(last.note)}` : ''}${can ? ` <button type="button" class="linklike" data-comp-undo="${i.id}:${last.period}">undo</button>` : ''}</div>` : ''}
+          ${(i.files || []).length ? `<div class="dlv-files">${i.files.map(x => compFileChip(x, can)).join('')}</div>` : ''}
+          ${last ? `<div class="small muted">Last done: ${apEsc(last.period_label)} — ${apEsc(last.done_by_name || last.done_by)}, ${apDay(last.done_at)}${last.note ? ` · ${apEsc(last.note)}` : ''}${can ? ` <button type="button" class="linklike" data-comp-undo="${i.id}:${last.period}">undo</button>` : ''}</div>
+            ${(last.files || []).length ? `<div class="dlv-files">${last.files.map(x => compFileChip(x, false)).join('')}</div>` : ''}` : ''}
         </div>
         ${can ? `<div class="comp-btns">
           <button class="btn btn-sm btn-primary" data-comp-done="${i.id}">✓ Done for ${apEsc(i.period_label)}</button>
+          <label class="btn btn-sm" title="Upload the bill / challan for ${apEsc(i.period_label)}">📎 Upload bill<input type="file" data-comp-upload="${i.id}:${i.period}" accept="image/*,application/pdf,.pdf,.xlsx,.xls,.doc,.docx" multiple hidden></label>
           <button class="btn btn-sm" data-comp-date="${i.id}">📅 Date this month</button>
           <button class="btn btn-sm" data-comp-edit="${i.id}">✏️</button>
           <button class="btn btn-sm" data-comp-del="${i.id}" title="Remove">✕</button>
         </div>` : ''}
-        ${doneOpen ? `<div class="comp-inline"><input type="text" id="comp-done-note" value="${apEsc(c.done.note || '')}" placeholder="Note (optional) — e.g. challan no., amount"><button class="btn btn-sm btn-primary" data-comp-act="done-save">Mark done</button><button class="btn btn-sm" data-comp-act="inline-cancel">Cancel</button></div>` : ''}
+        ${doneOpen ? `<div class="comp-inline"><input type="text" id="comp-done-note" value="${apEsc(c.done.note || '')}" placeholder="Note (optional) — e.g. challan no., amount"><label class="btn btn-sm">📎 ${(c.done.files || []).length ? `${c.done.files.length} file${c.done.files.length > 1 ? 's' : ''}` : 'Attach bill / challan'}<input type="file" id="comp-done-files" accept="image/*,application/pdf,.pdf,.xlsx,.xls,.doc,.docx" multiple hidden></label><button class="btn btn-sm btn-primary" data-comp-act="done-save">Mark done</button><button class="btn btn-sm" data-comp-act="inline-cancel">Cancel</button></div>` : ''}
         ${dateOpen ? `<div class="comp-inline"><label class="small" for="comp-date-in">Due date for ${apEsc(i.period_label)}</label><input type="date" id="comp-date-in" value="${apEsc(c.date.value || '')}"><button class="btn btn-sm btn-primary" data-comp-act="date-save">Save</button>${i.override ? '<button class="btn btn-sm" data-comp-act="date-clear">Use the usual day</button>' : ''}<button class="btn btn-sm" data-comp-act="inline-cancel">Cancel</button></div>` : ''}
       </div>`;
     }).join('')}</div>` : '<div class="small muted">No compliance dates yet.</div>'}
@@ -321,7 +327,15 @@ function bindCompliance() {
   on('[data-comp-act="inline-cancel"]', () => { c.date = null; c.done = null; render(); });
   const dn = document.getElementById('comp-done-note'); if (dn && c.done) dn.oninput = () => { c.done.note = dn.value; };
   const di = document.getElementById('comp-date-in'); if (di && c.date) di.oninput = di.onchange = () => { c.date.value = di.value; };
-  on('[data-comp-act="done-save"]', b => post(b, `/api/compliance/${c.done.id}/done`, { period: c.done.period, note: c.done.note }, 'Marked done — the reminders for this month stop.'));
+  const readFiles = (input, cb) => { const list = Array.from(input.files || []).slice(0, 10); const out = []; let left = list.length; if (!left) return; list.forEach(file => readAnyFile(file, d => { if (d) out.push({ name: file.name, data: d }); if (--left === 0) cb(out); })); };
+  const dfi = document.getElementById('comp-done-files'); if (dfi && c.done) dfi.onchange = () => readFiles(dfi, out => { c.done.files = out; render(); });
+  on('[data-comp-act="done-save"]', b => post(b, `/api/compliance/${c.done.id}/done`, { period: c.done.period, note: c.done.note, attachments: c.done.files || [] }, 'Marked done — the reminders for this month stop.'));
+  document.querySelectorAll('[data-comp-upload]').forEach(inp => inp.onchange = () => {
+    const [id, period] = inp.dataset.compUpload.split(':');
+    readFiles(inp, out => post(null, `/api/compliance/${id}/files`, { period, attachments: out }, `${out.length} file${out.length > 1 ? 's' : ''} uploaded.`));
+  });
+  on('[data-comp-file]', async b => { try { const r = await api(`/api/compliance/files/${b.dataset.compFile}`); if (/^data:image\//.test(r.data)) { ui.deliveryPhoto = r; render(); } else downloadDataUrl(r.data, r.name); } catch (e) { setBanner(e.message); render(); } });
+  on('[data-comp-fdel]', b => { if (confirm('Remove this file?')) post(b, `/api/compliance/files/${b.dataset.compFdel}/delete`, {}, 'File removed.'); });
   on('[data-comp-act="date-save"]', b => post(b, `/api/compliance/${c.date.id}/due-date`, { period: c.date.period, due_date: c.date.value }, 'Due date set for this month.'));
   on('[data-comp-act="date-clear"]', b => post(b, `/api/compliance/${c.date.id}/due-date`, { period: c.date.period, due_date: '' }, 'Back to the usual day.'));
   on('[data-comp-undo]', b => { const [id, period] = b.dataset.compUndo.split(':'); post(b, `/api/compliance/${id}/undone`, { period }, 'Marked not done.'); });

@@ -74,6 +74,19 @@ test('Compliance due dates: seeded list, access, reminders 10 and 2 days before 
   assert.equal((await P(acc, `/api/compliance/${elec.id}/due-date`, { period: next.period, due_date: `${next.period}-25` })).status, 200);
   const e2 = (await G(acc, '/api/compliance')).data.items.find(i => i.id === elec.id);
   assert.equal(e2.due, `${next.period}-25`); assert.equal(e2.override, true);
+  // bill / challan upload for the month, and with Done
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  assert.equal((await P(acc, `/api/compliance/${elec.id}/files`, { period: next.period, attachments: [] })).status, 400);
+  assert.equal((await P(pur, `/api/compliance/${elec.id}/files`, { period: next.period, attachments: [{ name: 'x.png', data: PNG }] })).status, 403);
+  assert.equal((await P(acc, `/api/compliance/${elec.id}/files`, { period: next.period, attachments: [{ name: 'msedcl-bill.png', data: PNG }] })).status, 200);
+  const e3 = (await G(acc, '/api/compliance')).data.items.find(i => i.id === elec.id);
+  assert.equal(e3.files.length, 1); assert.equal(e3.files[0].name, 'msedcl-bill.png'); assert.equal(e3.files[0].data, undefined);
+  assert.equal((await G(admin, `/api/compliance/files/${e3.files[0].id}`)).data.data, PNG);
+  assert.equal((await G(pur, `/api/compliance/files/${e3.files[0].id}`)).status, 403);
+  assert.equal((await P(acc, `/api/compliance/${gst.id}/done`, { period: M, note: 'Challan 123', attachments: [{ name: 'gst-challan.png', data: PNG }] })).status, 200);
+  const g2 = (await G(acc, '/api/compliance')).data.items.find(i => i.id === gst.id);
+  assert.equal(g2.history[0].files[0].name, 'gst-challan.png');
+  assert.equal((await P(acc, `/api/compliance/files/${e3.files[0].id}/delete`)).status, 200);
   // undo done
   assert.equal((await P(acc, `/api/compliance/${gst.id}/undone`, { period: M })).status, 200);
 });

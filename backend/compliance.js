@@ -6,12 +6,13 @@
 
    Reminders go to the Accounts Department and Admin at the 9 AM / 3 PM / 6 PM reminder slots, once a day per item:
    10 days before the due date, 2 days before, on the due date, and every day after it until someone marks that
-   month done. Marking it done stops the reminders and tells the others. */
+   month done. Marking it done stops the reminders and tells the others.
+   The bill / challan for a month can be uploaded on the item (any time, or with "Done"). */
 
 const REMIND_BEFORE = [10, 2];
 
 function mountCompliance(app, deps) {
-  const { db, auth, ALL_ROLES, auditFromReq, str, localDateStr } = deps;
+  const { db, auth, ALL_ROLES, auditFromReq, str, localDateStr, collectUploads, MAX_FILE_CHARS } = deps;
   const q = (sql, params = []) => db.pool.query(sql, params);
   const rows = async (sql, params) => (await q(sql, params)).rows;
   const one = async (sql, params) => (await q(sql, params)).rows[0] || null;
@@ -58,12 +59,14 @@ function mountCompliance(app, deps) {
     const items = await rows('SELECT * FROM compliance_items WHERE active ORDER BY due_day, id');
     if (!items.length) return [];
     const per = await rows('SELECT * FROM compliance_periods WHERE item_id = ANY($1::int[]) ORDER BY period DESC', [items.map(i => i.id)]);
+    const files = await rows('SELECT id, item_id, period, name, uploaded_by, uploaded_by_name, created_at FROM compliance_files WHERE item_id = ANY($1::int[]) ORDER BY id', [items.map(i => i.id)]);
+    const filesOf = (id, p) => files.filter(f => f.item_id === id && f.period === p);
     const today = localDateStr(new Date());
     return items.map(i => {
       const mine = per.filter(p => p.item_id === i.id);
       const c = current(i, mine, today);
-      return { ...i, ...c, period_label: fmtMonth(c.period),
-        history: mine.filter(p => p.done_at).slice(0, 6).map(p => ({ period: p.period, period_label: fmtMonth(p.period), done_at: p.done_at, done_by: p.done_by, done_by_name: p.done_by_name, note: p.note })) };
+      return { ...i, ...c, period_label: fmtMonth(c.period), files: filesOf(i.id, c.period),
+        history: mine.filter(p => p.done_at).slice(0, 6).map(p => ({ period: p.period, period_label: fmtMonth(p.period), done_at: p.done_at, done_by: p.done_by, done_by_name: p.done_by_name, note: p.note, files: filesOf(i.id, p.period) })) };
     }).sort((a, b) => a.days_left - b.days_left || a.name.localeCompare(b.name));
   }
   const notify = async (users, except, type, message, itemId) => {
@@ -76,6 +79,12 @@ function mountCompliance(app, deps) {
     if (!name) return { error: 'Write what is due (e.g. GST deposit).' };
     if (!Number.isInteger(due_day) || due_day < 1 || due_day > 31) return { error: 'Due day must be a day of the month (1 to 31).' };
     return { f: { name, due_day, notes } };
+  }
+  async function saveFiles(item, period, body, m) {
+    const up = collectUploads({ attachments: (body || {}).attachments }, MAX_FILE_CHARS);
+    if (up.error) return up;
+    for (const f of up.files) await q('INSERT INTO compliance_files(item_id, period, name, data, uploaded_by, uploaded_by_name, created_at) VALUES($1,$2,$3,$4,$5,$6,$7)', [item.id, period, f.name, f.data, m.username, m.name, now()]);
+    return { count: up.files.length };
   }
   const getItem = async (id, res) => { const x = await one('SELECT * FROM compliance_items WHERE id=$1 AND active', [Number(id) || 0]); if (!x) res.status(404).json({ error: 'Not found.' }); return x; };
   const guard = async (req, res) => { const m = await me(req.user); if (!m.canEdit) { res.status(403).json({ error: 'Only the Accounts Department and Admin can change compliance dates.' }); return null; } return m; };
@@ -125,11 +134,12 @@ function mountCompliance(app, deps) {
     const x = await getItem(req.params.id, res); if (!x) return;
     const period = validPeriod((req.body || {}).period); if (!period) return res.status(400).json({ error: 'Pick the month.' });
     const note = str((req.body || {}).note).trim().slice(0, 500) || null;
+    const up = await saveFiles(x, period, req.body, m); if (up.error) return res.status(400).json({ error: up.error });
     await q(`INSERT INTO compliance_periods(item_id, period, done_at, done_by, done_by_name, note) VALUES($1,$2,$3,$4,$5,$6)
       ON CONFLICT(item_id, period) DO UPDATE SET done_at=EXCLUDED.done_at, done_by=EXCLUDED.done_by, done_by_name=EXCLUDED.done_by_name, note=EXCLUDED.note`,
     [x.id, period, now(), m.username, m.name, note]);
     await q("DELETE FROM notifications WHERE type='compliance_due' AND ref_type='compliance' AND ref_id=$1", [x.id]);
-    await notify(await recipients(), m.username, 'compliance_done', `✅ ${m.name} marked ${x.name} for ${fmtMonth(period)} as done.${note ? ` ${note}` : ''}`, x.id);
+    await notify(await recipients(), m.username, 'compliance_done', `✅ ${m.name} marked ${x.name} for ${fmtMonth(period)} as done.${note ? ` ${note}` : ''}${up.count ? ` (${up.count} file${up.count > 1 ? 's' : ''} attached)` : ''}`, x.id);
     await auditFromReq(req, 'compliance_done', `${x.name} for ${fmtMonth(period)} marked done.`);
     res.json({ ok: true });
   });
@@ -139,6 +149,31 @@ function mountCompliance(app, deps) {
     const period = validPeriod((req.body || {}).period); if (!period) return res.status(400).json({ error: 'Pick the month.' });
     await q('UPDATE compliance_periods SET done_at=NULL, done_by=NULL, done_by_name=NULL, note=NULL WHERE item_id=$1 AND period=$2', [x.id, period]);
     await auditFromReq(req, 'compliance_undone', `${x.name} for ${fmtMonth(period)} marked not done.`);
+    res.json({ ok: true });
+  });
+
+  // Upload the bill / challan for a month.
+  app.post('/api/compliance/:id/files', auth(ALL_ROLES), async (req, res) => {
+    const m = await guard(req, res); if (!m) return;
+    const x = await getItem(req.params.id, res); if (!x) return;
+    const period = validPeriod((req.body || {}).period); if (!period) return res.status(400).json({ error: 'Pick the month.' });
+    if (!Array.isArray((req.body || {}).attachments) || !req.body.attachments.length) return res.status(400).json({ error: 'Choose the bill / document to upload.' });
+    const up = await saveFiles(x, period, req.body, m); if (up.error) return res.status(400).json({ error: up.error });
+    await auditFromReq(req, 'compliance_file', `${up.count} file(s) uploaded for ${x.name}, ${fmtMonth(period)}.`);
+    res.json({ ok: true, count: up.count });
+  });
+  app.get('/api/compliance/files/:fid', auth(ALL_ROLES), async (req, res) => {
+    const m = await me(req.user); if (!m.canView) return res.status(403).json({ error: 'Not allowed.' });
+    const f = await one('SELECT name, data FROM compliance_files WHERE id=$1', [Number(req.params.fid) || 0]);
+    if (!f) return res.status(404).json({ error: 'File not found.' });
+    res.json(f);
+  });
+  app.post('/api/compliance/files/:fid/delete', auth(ALL_ROLES), async (req, res) => {
+    const m = await guard(req, res); if (!m) return;
+    const f = await one('SELECT id, uploaded_by FROM compliance_files WHERE id=$1', [Number(req.params.fid) || 0]);
+    if (!f) return res.status(404).json({ error: 'File not found.' });
+    if (!(m.admin || f.uploaded_by === m.username)) return res.status(403).json({ error: 'Only whoever uploaded it (or Admin) can remove it.' });
+    await q('DELETE FROM compliance_files WHERE id=$1', [f.id]);
     res.json({ ok: true });
   });
 

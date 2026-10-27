@@ -11,6 +11,8 @@ previous deploy → Rollback (all migrations are additive).
   seeded on first start; add / edit / remove more. Reminders to Accounts + Admin **10 days and 2 days before**, on the
   due date and every day once overdue, until "Done for <month>" is pressed (Admin and Accounts are told; undo kept).
   New `backend/compliance.js`, notification types `compliance_due` / `compliance_done`.
+  **Upload the bill / challan** for the month on each item ("📎 Upload bill", or with "Done"); files show on the item
+  and with "Last done". Table `compliance_files`.
 - **Notification sound** for every new notification (`/sounds/notification.mp3`) and a **cheerful announcement chime**
   (`/sounds/announcement.mp3`) for announcements (also for whoever posts one). Sound on / off button on Notifications.
   Phone push notifications still use the phone's own notification sound.

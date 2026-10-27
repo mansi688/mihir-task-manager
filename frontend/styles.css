@@ -1608,3 +1608,5 @@ select.field-err,input.field-err{border-color:var(--danger);box-shadow:0 0 0 2px
 .comp-inline input{flex:1;min-width:180px;width:auto;}
 .comp-form{border:1px dashed var(--line);border-radius:12px;padding:10px 12px;margin-bottom:10px;}
 .linklike{background:none;border:0;padding:0;color:var(--accent,#2563eb);text-decoration:underline;cursor:pointer;font:inherit;}
+.comp-file{display:inline-flex;align-items:center;gap:2px;margin:2px 6px 2px 0;}
+.comp-main .dlv-files{margin-top:2px;}

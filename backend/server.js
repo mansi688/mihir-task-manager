@@ -3792,7 +3792,7 @@ const { mountPayables } = require('./payables');
 const payables = mountPayables(app, { db, auth, ALL_ROLES, auditFromReq, collectUploads, MAX_FILE_CHARS, str, PROJECT_OPTIONS, localDateStr });
 /* backend/compliance.js — monthly compliance due dates (TDS, GST, PT, PF …): reminders 10 and 2 days before to Accounts + Admin. */
 const { mountCompliance } = require('./compliance');
-const compliance = mountCompliance(app, { db, auth, ALL_ROLES, auditFromReq, str, localDateStr });
+const compliance = mountCompliance(app, { db, auth, ALL_ROLES, auditFromReq, str, localDateStr, collectUploads, MAX_FILE_CHARS });
 
 /* ============ EMPLOYEE LOCATION TRACKING ============
    backend/location/* — off unless ENABLE_LOCATION_TRACKING=true (docs/LOCATION_TRACKING.md). */

@@ -494,6 +494,11 @@ async function init() {
   await run(`CREATE TABLE IF NOT EXISTS compliance_periods(
     item_id INTEGER NOT NULL REFERENCES compliance_items(id) ON DELETE CASCADE, period TEXT NOT NULL, due_override TEXT,
     done_at TEXT, done_by TEXT, done_by_name TEXT, note TEXT, PRIMARY KEY(item_id, period))`);
+  // Bills / challans uploaded for an item's month (electricity bill, GST / TDS challan, …)
+  await run(`CREATE TABLE IF NOT EXISTS compliance_files(
+    id SERIAL PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES compliance_items(id) ON DELETE CASCADE, period TEXT NOT NULL,
+    name TEXT NOT NULL, data TEXT NOT NULL, uploaded_by TEXT, uploaded_by_name TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_compliance_files ON compliance_files(item_id, period)');
   if (!Number(((await pool.query('SELECT COUNT(*) AS n FROM compliance_items')).rows[0] || {}).n)) {
     const seed = [['TDS deposit', 7, null], ['GST deposit', 20, null], ['Sales invoices', 5, null],
       ['Electricity bill', 10, 'Or as per the due date on the bill — set it for the month.'], ['PT (Professional Tax)', 15, null], ['PF (Provident Fund)', 15, null]];
