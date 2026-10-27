@@ -48,6 +48,15 @@ let reportsTaskList = []; // admin-only
 let currentTaskReport = null;
 let myNotifications = [];
 let closureData = { toDecide: [], mine: [], keptOpen: [] };
+// The firm's projects — every new task picks one (also checked on the server).
+const PROJECT_OPTIONS = ['Mihir Amara', 'Nyati Equinox', 'Sierra (Tathawade)', 'Mihir Projects'];
+// Project heads — added automatically to "Keep informed" on every new task of their project (server does it too).
+const PROJECT_HEADS = { 'Mihir Amara': ['suraj.k', 'rahul.p'], 'Nyati Equinox': ['anil.w', 'siddheshwar.p'], 'Sierra (Tathawade)': ['dnyaneshwar.k'] };
+function projectHeadsNote(project) {
+  const heads = (PROJECT_HEADS[project] || []).filter(u => u !== session.username);
+  return heads.length ? `👁 Kept informed automatically (project head${heads.length > 1 ? 's' : ''}): <b>${heads.map(u => esc(personName(u))).join(', ')}</b>` : '';
+}
+let notifRefs = { approval: {}, payment: {} }; // approval requests / payments that notifications point to
 let notifTaskInfo = {}; // taskId → { status, followedUpAt } for the Notifications page // closure requests (Task Closure page)
 let unreadNotifCount = 0;
 let theme = safeStorage.getItem('ks_theme') || 'light';
@@ -724,7 +733,8 @@ function renderSidebar() {
 const NOTIF_CATS = [
   { key: 'all', label: 'All', icon: 'bell', hint: 'Everything, newest first.' },
   { key: 'reminder', label: 'Reminders', icon: 'clock', hint: 'Alerts to finish your tasks — still-open nudges, "due in X hours", due today and the 3-day countdown.' },
-  { key: 'warning', label: 'Warnings', icon: 'alertTriangle', hint: 'Overdue tasks, and people who have not completed their part (48-hour warnings, 60-hour flags, weekly summary).' },
+  { key: 'warning', label: 'Warnings', icon: 'alertTriangle', hint: 'Overdue tasks, and people who have not completed their part (48-hour warnings, weekly summary). Tap a name to see their tasks.' },
+  { key: 'flagged', label: 'Flagged', icon: 'alertTriangle', hint: 'People flagged for not completing their part (60 hours and more) — with how long each task has been incomplete.' },
   { key: 'task', label: 'Task updates', icon: 'checkCircle', hint: 'New tasks, replies, mentions, level changes, re-opened or closed tasks.' },
   { key: 'approval', label: 'Approvals', icon: 'clipboard', hint: 'Approval requests and decisions, and task closure requests.' },
   { key: 'message', label: 'Messages', icon: 'chat', hint: 'Chat mentions and announcements.' },
@@ -734,7 +744,7 @@ const NOTIF_CATS = [
 ];
 const NOTIF_TYPE_CAT = {
   task_reminder: 'reminder', task_reminder_recurring: 'reminder', task_reminder_3day: 'reminder', deadline_window: 'reminder', deadline_soon: 'reminder', deadline_due_today: 'reminder', follow_up: 'reminder',
-  deadline_passed: 'warning', task_overdue_days: 'warning', task_warning: 'warning', task_warning_urgent: 'warning', task_warning_creator: 'warning', task_flagged: 'warning', admin_late_flag: 'warning', weekly_warning_digest: 'warning',
+  deadline_passed: 'warning', task_overdue_days: 'warning', task_warning: 'warning', task_warning_urgent: 'warning', task_warning_creator: 'warning', task_flagged: 'flagged', admin_late_flag: 'flagged', weekly_warning_digest: 'warning',
   task_assigned: 'task', task_reply: 'task', task_closed: 'task', task_reopened: 'task', task_deleted: 'task', task_rejected: 'task', individual_deadline_set: 'task', level_changed: 'task', mentioned_in_comment: 'task', followup_tagged: 'task', meeting_summary: 'task',
   task_submitted: 'approval', approval_requested: 'approval', approval_rejected: 'approval', approval_approved: 'approval', closure_requested: 'approval', closure_approved: 'approval', closure_declined: 'approval',
   chat_mention: 'message', announcement: 'message',
@@ -809,7 +819,187 @@ function notifFollowUpHTML(n) {
   return `<div class="notif-fu-row"><button type="button" class="notif-fu ${at ? 'done' : ''}" data-notif-followup="${esc(n.task_id)}"
     title="${at ? 'You already followed up — tap to remind everyone on the task again' : 'Ask everyone else on this task to look into it'}">📣 ${at ? `Followed up${day} ${esc(when)} · Follow up again` : 'Follow up'}</button></div>`;
 }
+// ---- How long a task has been incomplete (warnings / flagged) ----
+function notifDeadlineTime(d) {
+  if (!d) return null;
+  const v = String(d);
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T23:59:59+05:30` : /T\d\d:\d\d(:\d\d)?$/.test(v) ? `${v}+05:30` : v;
+  const t = new Date(iso).getTime();
+  return isFinite(t) ? t : null;
+}
+function notifDur(ms) {
+  const h = Math.max(0, Math.floor(ms / 3600000));
+  const d = Math.floor(h / 24), hh = h % 24;
+  if (d && hh) return `${d} day${d > 1 ? 's' : ''} ${hh} hour${hh > 1 ? 's' : ''}`;
+  if (d) return `${d} day${d > 1 ? 's' : ''}`;
+  if (h) return `${h} hour${h > 1 ? 's' : ''}`;
+  return `${Math.max(1, Math.round(ms / 60000))} min`;
+}
+// Whose work a warning is about: "<username> has not completed …" names them; otherwise it is about me.
+function notifPersonOf(n) {
+  const m = /^([A-Za-z0-9._-]+) has not completed/.exec(n.message || '');
+  return m ? m[1] : session.username;
+}
+function notifIncompleteText(taskId, username) {
+  const info = notifTaskInfo[taskId];
+  if (!info) return null;
+  if (info.status !== 'open') return { done: true, text: 'Task is closed' };
+  const p = (info.people || []).find(x => x.u === username);
+  if (p && p.done) return { done: true, text: `${username === session.username ? 'You have' : `${personName(username)} has`} completed it` };
+  const now = Date.now();
+  const dl = notifDeadlineTime((p && p.deadline) || info.deadline);
+  const since = new Date((p && p.since) || info.createdAt).getTime();
+  const parts = [];
+  if (dl && now > dl) parts.push(`<b>Incomplete for ${notifDur(now - dl)}</b> past the deadline`);
+  else if (dl) parts.push(`Due in ${notifDur(dl - now)}`);
+  if (isFinite(since)) parts.push(`open ${notifDur(now - since)}`);
+  if (p && p.submitted) parts.push('submitted — waiting for approval');
+  return { done: false, late: !!(dl && now > dl), text: parts.join(' · ') };
+}
+function notifIncompleteHTML(n) {
+  const c = notifCat(n);
+  if (!n.task_id || (c !== 'warning' && c !== 'flagged')) return '';
+  const r = notifIncompleteText(n.task_id, notifPersonOf(n));
+  if (!r) return '';
+  return `<div class="notif-dur ${r.done ? 'done' : r.late ? 'late' : ''}">${r.done ? '✓ ' : '⏱ '}${r.done ? esc(r.text) : r.text}</div>`;
+}
+function notifPersonTasksHTML(p) {
+  const ids = [...p.tasks].filter(id => notifTaskInfo[id]);
+  return `<div class="notif-person-tasks">
+    <div class="small"><b>${esc(p.name)}</b> — tasks not completed${p.flagged ? ' (flagged)' : ''}:</div>
+    ${ids.length ? ids.map(id => {
+      const info = notifTaskInfo[id]; const r = notifIncompleteText(id, p.username) || { text: '' };
+      return `<div class="notif-pt"><div style="min-width:0;flex:1;"><div class="notif-pt-title">${esc(info.title || id)} <span class="mono small muted">${esc(id)}</span></div>
+        <div class="notif-dur ${r.done ? 'done' : r.late ? 'late' : ''}">${r.done ? '✓ ' + esc(r.text) : '⏱ ' + r.text}</div></div>
+        <button type="button" class="btn btn-sm" data-na-open-task="${esc(id)}">Open ›</button></div>`;
+    }).join('') : '<div class="small muted">Task details not available.</div>'}
+  </div>`;
+}
+// ---- Approve / send back / close / verify — right on the notification ----
+function notifActionsHTML(n) {
+  const rows = [];
+  const act = ui.notifAct && ui.notifAct.nid === n.id ? ui.notifAct : null;
+  const form = (placeholder, sendLabel, danger) => `<div class="na-form"><input type="text" id="na-note" value="${esc(act.note || '')}" placeholder="${esc(placeholder)}">
+    <button type="button" class="btn btn-sm ${danger ? 'btn-danger' : 'btn-primary'}" data-na-send="${n.id}">${sendLabel}</button><button type="button" class="btn btn-sm" data-na-cancel="1">Cancel</button></div>`;
+  const info = n.task_id ? notifTaskInfo[n.task_id] : null;
+  if (info && info.status === 'open') {
+    for (const u of info.toApprove || []) {
+      const key = `${n.task_id}|${u}`;
+      rows.push(`<div class="na-row"><span class="na-what">${esc(personName(u))}'s part is waiting for your approval</span>
+        <span class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-na-approve="${esc(key)}" data-nid="${n.id}">✓ Approve</button>
+        <button type="button" class="btn btn-sm" data-na-open="sendback" data-key="${esc(key)}" data-nid="${n.id}">↩ Send back</button></span>
+        ${act && act.kind === 'sendback' && act.key === key ? form('What should they fix? (at least 5 characters)', 'Send back', true) : ''}</div>`);
+    }
+    if (info.closureId) {
+      const key = `${info.closureId}|${n.task_id}`;
+      rows.push(`<div class="na-row"><span class="na-what">Closure requested for this task</span>
+        <span class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-na-close="${esc(key)}" data-nid="${n.id}">✓ Close task</button>
+        <button type="button" class="btn btn-sm" data-na-open="keepopen" data-key="${esc(key)}" data-nid="${n.id}">Keep open</button></span>
+        ${act && act.kind === 'keepopen' && act.key === key ? form('Why does it stay open? (at least 5 characters)', 'Keep open', true) : ''}</div>`);
+    }
+  }
+  if (n.ref_type === 'approval' && n.ref_id) {
+    const r = (notifRefs.approval || {})[n.ref_id];
+    if (r && r.status === 'pending' && !r.mine) {
+      rows.push(`<div class="na-row"><span class="na-what">Your decision on “${esc(r.title)}”</span>
+        <span class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-na-apr="${esc(n.ref_id)}" data-nid="${n.id}">✓ Approve</button>
+        <button type="button" class="btn btn-sm" data-na-open="aprreject" data-key="${esc(n.ref_id)}" data-nid="${n.id}">✗ Reject</button></span>
+        ${act && act.kind === 'aprreject' && act.key === n.ref_id ? form('Why is it rejected? (at least 5 characters)', 'Reject', true) : ''}</div>`);
+    } else if (r && r.mine) rows.push(`<div class="na-done">${r.mine === 'approved' ? '✓ You approved this' : '✗ You rejected this'}</div>`);
+  }
+  if (n.ref_type === 'payment' && n.ref_id && typeof budgetData !== 'undefined' && budgetData.canVerify) {
+    const r = (notifRefs.payment || {})[n.ref_id];
+    if (r && (r.status === 'pending') && r.paidBy !== session.username) {
+      rows.push(`<div class="na-row"><span class="na-what">Payment of ₹${Number(r.amount).toLocaleString('en-IN')} to verify</span>
+        <span class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-na-pay="${esc(n.ref_id)}" data-nid="${n.id}">✓ Verify</button>
+        <button type="button" class="btn btn-sm" data-na-open="payreject" data-key="${esc(n.ref_id)}" data-nid="${n.id}">✗ Not accepted</button></span>
+        ${act && act.kind === 'payreject' && act.key === n.ref_id ? form('Why is it not accepted?', 'Not accepted', true) : ''}</div>`);
+    } else if (r && r.status !== 'pending') rows.push(`<div class="na-done">${r.status === 'verified' ? '✓ Verified' : r.status === 'rejected' ? '✗ Not accepted' : '❓ Question asked'}</div>`);
+  }
+  return rows.length ? `<div class="notif-actions">${rows.join('')}</div>` : '';
+}
+// ---- Admin / Director: who has seen their notifications ----
+function notifReadsViewHTML() {
+  const R = ui.notifReads || (ui.notifReads = { days: 7 });
+  const statusChip = (key, label) => `<button class="notif-status ${key === 'reads' ? 'active' : ''}" data-notif-filter="${key}">${label}</button>`;
+  const ago = iso => iso ? notifAgo(iso) : '—';
+  const people = (R.data && R.data.people) || [];
+  const q = (R.q || '').trim().toLowerCase();
+  const shown = people.filter(p => !q || `${p.name} ${p.username} ${p.team || ''} ${p.designation || ''}`.toLowerCase().includes(q));
+  const pd = R.personData && R.person === R.personData.username ? R.personData : null;
+  return `
+  <div class="card notif-head">
+    <div class="flex-between" style="flex-wrap:wrap;gap:10px;align-items:flex-start;">
+      <div><div class="card-title" style="margin:0;">Who has seen their notifications</div>
+        <div class="small muted">A notification counts as seen only when that person opens it or taps ◯ — there is no “mark all as seen”.</div></div>
+      <div class="notif-status-row">${statusChip('unread', 'New')}${statusChip('seen', 'Seen')}${statusChip('reads', '👁 Who has seen')}</div>
+    </div>
+    <div class="bud-filters" style="margin-top:10px;">
+      <div><label for="nr-days">Sent in the last</label><select id="nr-days">${[7, 30, 90].map(d => `<option value="${d}" ${R.days === d ? 'selected' : ''}>${d} days</option>`).join('')}</select></div>
+      <div class="bud-search"><label for="nr-q">Search</label><input type="text" id="nr-q" value="${esc(R.q || '')}" placeholder="Name, department…"></div>
+    </div>
+  </div>
+  ${pd ? `<div class="card">
+    <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">${esc(pd.name)} — latest notifications</div><button class="btn btn-sm" data-nr-close="1">Close</button></div>
+    <div class="dlv-perf-wrap"><table class="dlv-perf bud-table"><thead><tr><th>Sent</th><th>Type</th><th>Message</th><th>Seen</th></tr></thead><tbody>
+      ${pd.items.map(n => `<tr class="${n.read ? '' : 'nr-unseen'}"><td class="nowrap">${esc(fmtTime(n.created_at))}</td><td>${esc(NOTIF_TYPE_LABEL[n.type] || n.type)}</td><td>${esc(n.message)}</td>
+        <td class="nowrap">${n.read ? `✓ ${esc(n.read_at ? fmtTime(n.read_at) : 'Seen')}` : `<b class="txt-warn">Not seen</b> · ${esc(notifDur(Date.now() - new Date(n.created_at)))}`}</td></tr>`).join('')}
+    </tbody></table></div></div>` : (R.person ? '<div class="card"><div class="small muted">Loading…</div></div>' : '')}
+  <div class="card">
+    ${R.data ? `<div class="dlv-perf-wrap"><table class="dlv-perf bud-table"><thead><tr><th>Person</th><th style="text-align:right;">Sent (${R.data.days} d)</th><th style="text-align:right;">Seen</th><th>Seen %</th><th style="text-align:right;">Not seen now</th><th>Oldest not seen</th><th>Last opened one</th><th></th></tr></thead><tbody>
+      ${shown.map(p => { const pct = p.sent ? Math.round(p.seen / p.sent * 100) : null; return `<tr>
+        <td><b>${esc(p.name)}</b><div class="small muted">${esc([p.designation, p.team].filter(Boolean).join(' · '))}</div></td>
+        <td style="text-align:right;">${p.sent}</td><td style="text-align:right;">${p.seen}</td>
+        <td>${pct == null ? '—' : `<span class="dlv-pct ${pct >= 80 ? 'good' : pct >= 50 ? 'mid' : 'bad'}">${pct}%</span>`}</td>
+        <td style="text-align:right;">${p.unseen ? `<b class="txt-warn">${p.unseen}</b>` : '0'}</td>
+        <td class="nowrap">${p.oldest_unseen ? esc(notifDur(Date.now() - new Date(p.oldest_unseen))) + ' ago' : '—'}</td>
+        <td class="nowrap">${esc(ago(p.last_seen))}</td>
+        <td><button class="btn btn-sm" data-nr-person="${esc(p.username)}">View</button></td></tr>`; }).join('')}
+    </tbody></table></div>` : '<div class="small muted">Loading…</div>'}
+  </div>`;
+}
+function bindNotifExtras() {
+  const on = (sel, fn) => document.querySelectorAll(sel).forEach(b => b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(b); });
+  on('[data-notif-person]', b => { ui.notifPerson = ui.notifPerson === b.dataset.notifPerson ? null : b.dataset.notifPerson; render(); });
+  on('[data-na-open-task]', b => openTaskOnMyTasks(b.dataset.naOpenTask));
+  const seen = nid => { const id = Number(nid); if (id) { const n = myNotifications.find(x => x.id === id); if (n && !n.read) markNotifSeen(id, true); } };
+  const run = async (b, fn, ok) => {
+    if (b.disabled) return; b.disabled = true;
+    try { await fn(); setBanner(ok, 'ok'); ui.notifAct = null; seen(b.dataset.nid); await refreshData(); }
+    catch (err) { b.disabled = false; setBanner(err.message); render(); }
+  };
+  on('[data-na-approve]', b => { const [t, u] = b.dataset.naApprove.split('|'); run(b, () => api(`/api/tasks/${encodeURIComponent(t)}/approve/${encodeURIComponent(u)}`, { method: 'POST' }), `${personName(u)}'s part approved.`); });
+  on('[data-na-close]', b => { const [cid] = b.dataset.naClose.split('|'); run(b, () => api(`/api/closure-requests/${cid}/approve`, { method: 'POST', body: JSON.stringify({}) }), 'Task closed.'); });
+  on('[data-na-apr]', b => run(b, () => api(`/api/approvals/${encodeURIComponent(b.dataset.naApr)}/decide`, { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }), 'Approved.'));
+  on('[data-na-pay]', b => run(b, () => api(`/api/budget/payments/${b.dataset.naPay}/verify`, { method: 'POST', body: JSON.stringify({ status: 'verified' }) }), 'Payment verified.'));
+  on('[data-na-open]', b => { ui.notifAct = { kind: b.dataset.naOpen, key: b.dataset.key, nid: Number(b.dataset.nid), note: '' }; render(); const n = document.getElementById('na-note'); if (n) n.focus(); });
+  on('[data-na-cancel]', () => { ui.notifAct = null; render(); });
+  const note = document.getElementById('na-note');
+  if (note && ui.notifAct) { note.oninput = () => { ui.notifAct.note = note.value; }; note.onclick = e => e.stopPropagation(); }
+  on('[data-na-send]', b => {
+    const a = ui.notifAct; if (!a) return;
+    const txt = String(a.note || '').trim();
+    if (txt.length < (a.kind === 'payreject' ? 3 : 5)) { setBanner('Write a reason first.'); render(); return; }
+    b.dataset.nid = a.nid;
+    if (a.kind === 'sendback') { const [t, u] = a.key.split('|'); run(b, () => api(`/api/tasks/${encodeURIComponent(t)}/reject/${encodeURIComponent(u)}`, { method: 'POST', body: JSON.stringify({ reason: txt }) }), `Sent back to ${personName(u)}.`); }
+    else if (a.kind === 'keepopen') { const [cid] = a.key.split('|'); run(b, () => api(`/api/closure-requests/${cid}/decline`, { method: 'POST', body: JSON.stringify({ note: txt }) }), 'Task kept open — everyone on it has been told.'); }
+    else if (a.kind === 'aprreject') run(b, () => api(`/api/approvals/${encodeURIComponent(a.key)}/decide`, { method: 'POST', body: JSON.stringify({ decision: 'rejected', reason: txt }) }), 'Rejected.');
+    else if (a.kind === 'payreject') run(b, () => api(`/api/budget/payments/${a.key}/verify`, { method: 'POST', body: JSON.stringify({ status: 'rejected', note: txt }) }), 'Marked as not accepted.');
+  });
+  // Who has seen (Admin / Director)
+  if (ui.notifFilter === 'reads') {
+    const R = ui.notifReads || (ui.notifReads = { days: 7 });
+    const load = () => { R.loading = true; api(`/api/admin/notification-reads?days=${R.days}`).then(d => { R.data = d; R.loading = false; if (ui.notifFilter === 'reads') render(); }).catch(err => { R.loading = false; setBanner(err.message); render(); }); };
+    if (!R.data && !R.loading) load();
+    const days = document.getElementById('nr-days'); if (days) days.onchange = () => { R.days = Number(days.value); R.data = null; load(); render(); };
+    const q = document.getElementById('nr-q'); if (q) q.oninput = () => { R.q = q.value; clearTimeout(window.__nrQ); window.__nrQ = setTimeout(() => { render(); const n = document.getElementById('nr-q'); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 250); };
+    on('[data-nr-person]', b => { R.person = b.dataset.nrPerson; R.personData = null; render(); window.scrollTo(0, 0);
+      api(`/api/admin/notification-reads/${encodeURIComponent(R.person)}`).then(d => { R.personData = d; render(); }).catch(err => { setBanner(err.message); render(); }); });
+    on('[data-nr-close]', () => { R.person = null; R.personData = null; render(); });
+  }
+}
 function renderNotificationsView() {
+  if (ui.notifFilter === 'reads' && (session.role === 'admin' || session.role === 'director')) return notifReadsViewHTML();
   const all = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   const unread = all.filter(n => !n.read);
   // Seen tab: most recently seen first, so whatever you just ticked is always at the top.
@@ -822,7 +1012,8 @@ function renderNotificationsView() {
   const byStatus = filter === 'seen' ? seenList : unread;
   const countIn = (list, key) => key === 'all' ? list.length : list.filter(n => notifCat(n) === key).length;
   // Show a category tab when it has anything; Reminders and Warnings are always there.
-  const cats = NOTIF_CATS.filter(c => c.key === 'all' || c.key === 'reminder' || c.key === 'warning' || all.some(n => notifCat(n) === c.key));
+  const cats = NOTIF_CATS.filter(c => ['all', 'reminder', 'warning', 'flagged'].includes(c.key) || all.some(n => notifCat(n) === c.key));
+  const isReader = session.role === 'admin' || session.role === 'director';
   const cat = cats.some(c => c.key === ui.notifCat) ? ui.notifCat : 'all';
   const catInfo = NOTIF_CATS.find(c => c.key === cat);
   const list = cat === 'all' ? byStatus : byStatus.filter(n => notifCat(n) === cat);
@@ -832,8 +1023,8 @@ function renderNotificationsView() {
   const newWarn = countIn(unread, 'warning'), newRem = countIn(unread, 'reminder');
   const statusChip = (key, label, count) => `<button class="notif-status ${filter === key ? 'active' : ''}" data-notif-filter="${key}">${label}${count != null ? `<span class="notif-status-count">${count}</span>` : ''}</button>`;
   const catTab = c => { const n = countIn(byStatus, c.key); return `<button class="notif-cat cat-${c.key} ${cat === c.key ? 'active' : ''}" data-notif-cat="${c.key}">${icon(c.icon, 15)}<span>${c.label}</span>${n ? `<span class="notif-cat-count">${n}</span>` : ''}</button>`; };
-  const behind = cat === 'warning' ? notifBehindPeople(list) : [];
-  const markLabel = cat === 'all' ? 'Mark all as seen' : `Mark these ${list.length} as seen`;
+  const behind = cat === 'warning' || cat === 'flagged' ? notifBehindPeople(list) : [];
+  const newFlag = countIn(unread, 'flagged');
   return `
   <div class="card notif-head">
     <div class="flex-between" style="flex-wrap:wrap;gap:10px;align-items:flex-start;">
@@ -841,18 +1032,18 @@ function renderNotificationsView() {
         <div class="card-title" style="margin:0;">Notifications</div>
         <div class="small muted">${totalNew ? `${totalNew} new` : 'All caught up'}${newWarn ? ` · <b class="txt-warn">${newWarn} warning${newWarn > 1 ? 's' : ''}</b>` : ''}${newRem ? ` · <b class="txt-rem">${newRem} reminder${newRem > 1 ? 's' : ''}</b>` : ''}</div>
       </div>
-      <div class="notif-status-row">${statusChip('unread', 'New', totalNew)}${statusChip('seen', 'Seen', null)}</div>
+      <div class="notif-status-row">${statusChip('unread', 'New', totalNew)}${statusChip('seen', 'Seen', null)}${isReader ? statusChip('reads', '👁 Who has seen', null) : ''}</div>
     </div>
-    ${filter === 'unread' && (newWarn || newRem) ? `<div class="notif-alert-tiles">
+    ${filter === 'unread' && (newWarn || newRem || newFlag) ? `<div class="notif-alert-tiles">
       ${newWarn ? `<button class="notif-tile tile-warn" data-notif-cat="warning">${icon('alertTriangle', 20)}<span><b>${newWarn}</b> warning${newWarn > 1 ? 's' : ''}<small>Overdue or not completed</small></span></button>` : ''}
+      ${newFlag ? `<button class="notif-tile tile-warn tile-flag" data-notif-cat="flagged">${icon('alertTriangle', 20)}<span><b>${newFlag}</b> flagged<small>Not completed for 60+ hours</small></span></button>` : ''}
       ${newRem ? `<button class="notif-tile tile-rem" data-notif-cat="reminder">${icon('clock', 20)}<span><b>${newRem}</b> reminder${newRem > 1 ? 's' : ''}<small>Tasks to complete</small></span></button>` : ''}
     </div>` : ''}
     <div class="notif-cats" role="tablist">${cats.map(catTab).join('')}</div>
   </div>
   <div class="card notif-page">
     <div class="notif-cat-hint">
-      <span class="small muted">${esc(catInfo.hint)} Tap ◯ to mark seen.</span>
-      ${filter === 'unread' && list.length ? `<button class="btn btn-sm" data-act="notif-mark-all" data-notif-mark-cat="${cat}">✓ ${markLabel}</button>` : ''}
+      <span class="small muted">${esc(catInfo.hint)} Open a notification or tap ◯ to mark it seen.</span>
     </div>
     ${ui.notifUndo && filter === 'unread' ? `<div class="notif-undo" role="status">
       <span>✓ ${ui.notifUndo.ids.length > 1 ? `${ui.notifUndo.ids.length} notifications` : `"${esc(ui.notifUndo.label)}"`} moved to the <b>Seen</b> tab.</span>
@@ -860,7 +1051,8 @@ function renderNotificationsView() {
     </div>` : ''}
     ${behind.length ? `<div class="notif-behind">
       <div class="notif-behind-title">${icon('users', 15)} People who have not completed their part</div>
-      <div class="notif-behind-list">${behind.map(p => `<span class="notif-person ${p.flagged ? 'flagged' : ''}"><b>${esc(p.name)}</b> · ${p.count} task${p.count > 1 ? 's' : ''}${p.flagged ? ' · flagged' : ''}</span>`).join('')}</div>
+      <div class="notif-behind-list">${behind.map(p => `<button type="button" class="notif-person ${p.flagged ? 'flagged' : ''} ${ui.notifPerson === p.username ? 'active' : ''}" data-notif-person="${esc(p.username)}"><b>${esc(p.name)}</b> · ${p.count} task${p.count > 1 ? 's' : ''}${p.flagged ? ' · flagged' : ''} ›</button>`).join('')}</div>
+      ${ui.notifPerson && behind.some(p => p.username === ui.notifPerson) ? notifPersonTasksHTML(behind.find(p => p.username === ui.notifPerson)) : ''}
     </div>` : ''}
     ${list.length === 0 ? `<div class="notif-empty">${icon(catInfo.icon, 28)}<div>${filter === 'unread' ? (cat === 'all' ? 'Nothing new — you have seen everything.' : `No new ${catInfo.label.toLowerCase()}.`) : (cat === 'all' ? 'Nothing seen yet.' : `No seen ${catInfo.label.toLowerCase()} yet.`)}</div></div>` : groups.map(g => `
       <div class="notif-day">${filter === 'seen' ? 'Seen ' : ''}${esc(notifDayLabel(g.key))}</div>
@@ -875,6 +1067,8 @@ function renderNotificationsView() {
             <div class="notif-title-row"><span class="notif-title">${esc(NOTIF_TYPE_LABEL[n.type] || 'Alert')}</span>${cat === 'all' ? `<span class="notif-pill">${esc(cInfo.label)}</span>` : ''}</div>
             <div class="notif-msg">${esc(n.message)}</div>
             <div class="notif-meta"><span title="${esc(fmtTime(n.created_at))}">${esc(notifAgo(n.created_at))}</span>${target ? ' · <span class="notif-open">Open ›</span>' : ''}</div>
+            ${notifIncompleteHTML(n)}
+            ${notifActionsHTML(n)}
             ${notifFollowUpHTML(n)}
             ${n.read ? `<div class="notif-seen">✓ ${esc(seenTimeText(n))}</div>` : ''}
           </div>
@@ -927,22 +1121,6 @@ function bindNotificationsView() {
   document.querySelectorAll('[data-notif-cat]').forEach(b => b.onclick = () => { ui.notifCat = b.dataset.notifCat; render(); });
   const activeCat = document.querySelector('.notif-cat.active');
   if (activeCat && activeCat.parentElement) { const row = activeCat.parentElement; const l = activeCat.offsetLeft - row.offsetLeft; if (l < row.scrollLeft || l + activeCat.offsetWidth > row.scrollLeft + row.clientWidth) row.scrollLeft = Math.max(0, l - 16); }
-  const all = document.querySelector('[data-act="notif-mark-all"]');
-  if (all) all.onclick = async () => {
-    const cat = all.dataset.notifMarkCat || 'all';
-    const now = new Date().toISOString();
-    const targets = myNotifications.filter(n => !n.read && (cat === 'all' || notifCat(n) === cat));
-    if (!targets.length) return;
-    targets.forEach(n => { n.read = 1; n.read_at = now; });
-    unreadNotifCount = cat === 'all' ? 0 : Math.max(0, (unreadNotifCount || 0) - targets.length);
-    if (cat !== 'all') showNotifUndo(targets.map(n => n.id), ''); else ui.notifUndo = null;
-    render();
-    try {
-      if (cat === 'all') await api('/api/notifications/read-all', { method: 'POST' });
-      else await api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids: targets.map(n => n.id) }) });
-    } catch (e) { /* refresh corrects it */ }
-    refreshData();
-  };
   document.querySelectorAll('[data-notif-seen]').forEach(b => b.onclick = (e) => { e.stopPropagation(); markNotifSeen(Number(b.dataset.notifSeen)); });
   document.querySelectorAll('[data-notif-followup]').forEach(b => b.onclick = async (e) => {
     e.stopPropagation(); e.preventDefault();
@@ -956,6 +1134,7 @@ function bindNotificationsView() {
     } catch (err) { b.disabled = false; b.textContent = label; setBanner(err.message); render(); }
   });
   const undo = document.querySelector('[data-act="notif-undo"]'); if (undo) undo.onclick = () => undoNotifSeen();
+  bindNotifExtras();
   const view = document.querySelector('[data-act="notif-view-seen"]'); if (view) view.onclick = () => { ui.notifUndo = null; ui.notifFilter = 'seen'; render(); window.scrollTo(0, 0); };
 }
 function renderTopbarSlim() {
@@ -1715,7 +1894,7 @@ function applyData(key, v) {
         needsGuide: typeof v.needsGuide === 'boolean' ? (v.needsGuide && Date.now() - (typeof guideCompletedAt === 'number' ? guideCompletedAt : 0) > 120000) : !!session.needsGuide };
       safeStorage.setItem('ls_session', JSON.stringify(session));
       break;
-    case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; notifTaskInfo = v.tasks || {}; if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items); break;
+    case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; notifTaskInfo = v.tasks || {}; notifRefs = v.refs || { approval: {}, payment: {} }; if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items); break;
     case 'closureData': closureData = v || { toDecide: [], mine: [], keptOpen: [] }; break;
     case 'budgetResp': if (typeof budgetData !== 'undefined') budgetData = v && Array.isArray(v.payments) ? v : { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; break;
     case 'deliveriesResp': if (typeof deliveriesData !== 'undefined') deliveriesData = v && Array.isArray(v.items) ? v : { canManage: false, items: [] }; break;
@@ -1757,9 +1936,23 @@ function refreshData(opts) {
   });
   return refreshInFlight;
 }
+// Bandwidth: background refreshes skip data that rarely changes (people, teams, projects…) unless it is
+// older than 10 minutes, and the full task list (Admin) unless it is older than 3 minutes or that page is open.
+const SLOW_KEYS = { userDirectory: 600000, teamsList: 600000, projectsList: 600000, sectionsList: 600000, phasesList: 600000, features: 600000,
+  suggestions: 300000, announcementsResp: 300000, openTaskTitles: 300000, allTasks: 180000, allApprovalRequests: 120000 };
+const lastFetchedAt = {};
 async function doRefresh(opts) {
   const background = !!(opts && opts.background);
   const { core, extras } = dataRequests();
+  if (background) {
+    const now = Date.now();
+    for (const k of Object.keys(core)) {
+      const ttl = SLOW_KEYS[k]; if (!ttl) continue;
+      if (k === 'allTasks' && ['alltasks', 'today'].includes(ui.adminTab)) continue;
+      if (lastFetchedAt[k] && now - lastFetchedAt[k] < ttl) delete core[k];
+    }
+  }
+  Object.keys(core).forEach(k => { lastFetchedAt[k] = Date.now(); });
   const fetchGroup = async (group) => {
     const keys = Object.keys(group);
     const results = await Promise.allSettled(keys.map(k => api(group[k])));
@@ -1861,7 +2054,9 @@ async function syncTick(force) {
     // and they keep arriving even while you're typing a reply.
     if (r && r.c && r.c !== chat.lastVersion) { chat.lastVersion = r.c; await refreshChat(); }
     if (userIsActivelyTyping() && !force) { syncBusy = false; return; }
-    if (r && (r.v !== lastSyncVersion || Date.now() - lastFullRefreshAt > 60000)) {
+    // Something changed (or 5 minutes passed): refresh — but at most every 15 s, however busy the office is.
+    const since = Date.now() - lastFullRefreshAt;
+    if (r && ((r.v !== lastSyncVersion && (since > 15000 || force)) || since > 300000)) {
       lastSyncVersion = r.v; lastFullRefreshAt = Date.now();
       await refreshData({ background: true });
     }
@@ -2844,9 +3039,9 @@ function taskFormHTML() {
       <textarea id="new-task-desc" placeholder="${isDrawingRequest ? 'Which drawing, which project, and by when' : 'Details, context, what\'s needed'}"></textarea>
       <div class="row">
         <div class="col">
-          <label>Project (optional)</label>
-          <input type="text" id="new-task-project" list="task-projects-datalist" placeholder="Type or pick a project">
-          <datalist id="task-projects-datalist">${projectsList.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+          <label>Project *</label>
+          <select id="new-task-project" required><option value="">— Pick the project —</option>${PROJECT_OPTIONS.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('')}</select>
+          <div id="new-task-project-heads" class="small muted" style="margin-top:4px;" data-morph-skip></div>
         </div>
         <div class="col">
           <label>Phase (optional)</label>
@@ -2945,6 +3140,11 @@ function bindTaskForm() {
       if (warnEl) warnEl.innerHTML = result.warning ? `<div class="notice" style="border-color:var(--amber);">⚠️ ${esc(result.warning)}</div>` : `<div class="small muted">No historical concern found for this deadline.</div>`;
     } catch (e) { if (warnEl) warnEl.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
   };
+  const projSel = document.getElementById('new-task-project');
+  if (projSel) {
+    const showHeads = () => { const el = document.getElementById('new-task-project-heads'); if (el) el.innerHTML = projectHeadsNote(projSel.value); projSel.classList.remove('field-err'); };
+    projSel.onchange = showHeads; if (projSel.value) showHeads();
+  }
   const submitTaskBtn = document.querySelector('[data-act="submit-task"]');
   if (submitTaskBtn) submitTaskBtn.onclick = async () => {
     if (ui.taskCreating) return; // already sending — a second tap must not create a second task
@@ -2954,6 +3154,7 @@ function bindTaskForm() {
     const title = titleEl.value.trim();
     const description = document.getElementById('new-task-desc').value.trim();
     const project = document.getElementById('new-task-project').value.trim();
+    if (!PROJECT_OPTIONS.includes(project)) { setBanner('Pick the project — it is required.'); render(); const pe = document.getElementById('new-task-project'); if (pe) { pe.focus(); pe.classList.add('field-err'); } return; }
     const phase = document.getElementById('new-task-phase').value.trim();
     const priority = document.getElementById('new-task-priority').value;
     const deadline = deadlineEl.value.trim();
@@ -6760,9 +6961,9 @@ function userIsActivelyTyping() {
 // wasteful. A person's OWN actions (creating a task, approving, etc.) already refresh
 // immediately via their own explicit refreshData() call right after that action succeeds —
 // this interval only covers picking up everyone else's changes.
-setInterval(() => syncTick(false), 5000);
+setInterval(() => syncTick(false), 10000);
 // Quicker checks while the Chat Room is open, so conversations feel live.
-setInterval(() => { if (ui && ui.adminTab === 'chat') syncTick(false); }, 2000);
+setInterval(() => { if (ui && ui.adminTab === 'chat') syncTick(false); }, 4000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) syncTick(true); });
 window.addEventListener('focus', () => syncTick(true));
 window.addEventListener('online', () => syncTick(true));

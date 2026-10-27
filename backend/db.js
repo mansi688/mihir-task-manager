@@ -385,6 +385,9 @@ async function init() {
   await ensureColumn('tasks', 'parent_task_id', 'TEXT');
   await ensureColumn('tasks', 'project', 'TEXT');
   await ensureColumn('notifications', 'read_at', 'TEXT');
+  // What a notification is about when it is not a task (approval request id, payment id) — for action buttons.
+  await ensureColumn('notifications', 'ref_type', 'TEXT');
+  await ensureColumn('notifications', 'ref_id', 'TEXT');
   await run(`CREATE TABLE IF NOT EXISTS task_closure_requests(
     id SERIAL PRIMARY KEY,
     task_id TEXT NOT NULL,
@@ -1945,10 +1948,10 @@ module.exports = {
   // ---- notifications ----
   _notificationHook: null,
   setNotificationHook(fn) { module.exports._notificationHook = fn; },
-  async createNotification({ username, type, message, task_id, chat_room }, tx) {
+  async createNotification({ username, type, message, task_id, chat_room, ref_type, ref_id }, tx) {
     const runner = tx ? tx.run : run;
-    const ins = await runner('INSERT INTO notifications(username,type,message,task_id,chat_room,read,created_at) VALUES(?,?,?,?,?,0,?) RETURNING id',
-      [username, type, message, task_id || null, chat_room || null, new Date().toISOString()]);
+    const ins = await runner('INSERT INTO notifications(username,type,message,task_id,chat_room,ref_type,ref_id,read,created_at) VALUES(?,?,?,?,?,?,?,0,?) RETURNING id',
+      [username, type, message, task_id || null, chat_room || null, ref_type || null, ref_id == null ? null : String(ref_id), new Date().toISOString()]);
     const notificationId = ins && ins.rows && ins.rows[0] ? ins.rows[0].id : null;
     // The push/WhatsApp dispatch hook deliberately never runs on the transaction's own client —
     // it's fire-and-forget external I/O (an HTTP call to a push service or WhatsApp), which has
@@ -2008,14 +2011,58 @@ module.exports = {
   async notificationTaskInfo(username, taskIds) {
     const ids = Array.from(new Set((taskIds || []).filter(Boolean)));
     if (!ids.length) return {};
-    const [tasks, fu] = await Promise.all([
-      all('SELECT id, status FROM tasks WHERE id = ANY(?::text[])', [ids]),
+    const me = await get('SELECT role FROM users WHERE username=?', [username]);
+    const isAdmin = !!(me && me.role === 'admin');
+    const [tasks, fu, people, closures] = await Promise.all([
+      all('SELECT id, status, title, deadline, created_at, created_by_username FROM tasks WHERE id = ANY(?::text[])', [ids]),
       all("SELECT task_id, MAX(created_at) AS last FROM task_activity_events WHERE event_type='FOLLOW_UP_SENT' AND actor_username=? AND task_id = ANY(?::text[]) GROUP BY task_id", [username, ids]),
+      all('SELECT task_id, username, submitted_at, completed_at, decision, individual_deadline, COALESCE(released_at, escalation_baseline_at) AS since FROM task_assignees WHERE task_id = ANY(?::text[])', [ids]),
+      all("SELECT id, task_id FROM task_closure_requests WHERE status='pending' AND task_id = ANY(?::text[])", [ids]),
     ]);
     const out = {};
-    for (const t of tasks) out[t.id] = { status: t.status, followedUpAt: null };
+    for (const t of tasks) {
+      const canDecide = isAdmin || t.created_by_username === username;
+      const ps = people.filter(p => p.task_id === t.id);
+      out[t.id] = { status: t.status, title: t.title, deadline: t.deadline, createdAt: t.created_at, followedUpAt: null, canDecide,
+        // People whose part waits for approval — only sent to whoever can approve it.
+        toApprove: canDecide && t.status === 'open' ? ps.filter(p => p.submitted_at && !(p.decision === 'approve' && p.completed_at)).map(p => p.username) : [],
+        // Everyone's progress (for warnings / flags: how long it has been incomplete).
+        people: ps.map(p => ({ u: p.username, done: !!(p.decision === 'approve' && p.completed_at), submitted: !!p.submitted_at, deadline: p.individual_deadline || t.deadline, since: p.since || t.created_at })),
+        closureId: null };
+    }
+    for (const c of closures) if (out[c.task_id] && out[c.task_id].canDecide) out[c.task_id].closureId = c.id;
     for (const f of fu) if (out[f.task_id]) out[f.task_id].followedUpAt = f.last ? new Date(f.last).toISOString() : null;
     return out;
+  },
+  // Status of the approval requests / payments that notifications point to (for their action buttons).
+  async notificationRefInfo(username, items) {
+    const ap = [...new Set(items.filter(n => n.ref_type === 'approval' && n.ref_id).map(n => String(n.ref_id)))];
+    const pay = [...new Set(items.filter(n => n.ref_type === 'payment' && n.ref_id).map(n => Number(n.ref_id)))].filter(Number.isInteger);
+    const out = { approval: {}, payment: {} };
+    if (ap.length) {
+      const rows = await all(`SELECT r.id, r.status, r.title, v.decision FROM approval_requests r LEFT JOIN approval_reviewers v ON v.request_id = r.id AND v.username = ?
+        WHERE r.id = ANY(?::text[])`, [username, ap]);
+      for (const r of rows) out.approval[r.id] = { status: r.status, title: r.title, mine: r.decision || null };
+    }
+    if (pay.length) {
+      const rows = await all("SELECT id, COALESCE(verify_status,'pending') AS st, paid_by, amount FROM delivery_payments WHERE id = ANY(?::int[])", [pay]);
+      for (const r of rows) out.payment[r.id] = { status: r.st, paidBy: r.paid_by, amount: Number(r.amount) };
+    }
+    return out;
+  },
+  // Admin: who has seen their notifications.
+  async notificationReadSummary(sinceIso) {
+    return all(`SELECT u.username, u.name, u.designation, u.team,
+        COUNT(n.id) FILTER (WHERE n.created_at >= ?) AS sent,
+        COUNT(n.id) FILTER (WHERE n.created_at >= ? AND n.read<>0) AS seen,
+        COUNT(n.id) FILTER (WHERE n.read=0) AS unseen,
+        MIN(n.created_at) FILTER (WHERE n.read=0) AS oldest_unseen,
+        MAX(n.read_at) AS last_seen
+      FROM users u LEFT JOIN notifications n ON n.username = u.username
+      GROUP BY u.username, u.name, u.designation, u.team ORDER BY COUNT(n.id) FILTER (WHERE n.read=0) DESC, u.name`, [sinceIso, sinceIso]);
+  },
+  async notificationReadsFor(username, limit = 60) {
+    return all('SELECT id, type, message, task_id, read, read_at, created_at FROM notifications WHERE username=? ORDER BY created_at DESC LIMIT ?', [username, limit]);
   },
   async removeEarlierAutoNotifications(username, taskId, types) {
     if (!taskId || !types.length) return 0;
@@ -2035,6 +2082,9 @@ module.exports = {
     await run(`INSERT INTO push_subscriptions(username,endpoint,p256dh,auth,created_at) VALUES(?,?,?,?,?)
       ON CONFLICT (endpoint) DO UPDATE SET username=EXCLUDED.username, p256dh=EXCLUDED.p256dh, auth=EXCLUDED.auth, created_at=EXCLUDED.created_at`,
       [username, endpoint, p256dh, auth, new Date().toISOString()]);
+    // Keep each person's 5 newest devices only — old phones / browsers are dropped.
+    await run(`DELETE FROM push_subscriptions WHERE username=? AND endpoint NOT IN
+      (SELECT endpoint FROM push_subscriptions WHERE username=? ORDER BY created_at DESC LIMIT 5)`, [username, username]);
   },
   async removePushSubscription(endpoint) { await run('DELETE FROM push_subscriptions WHERE endpoint=?', [endpoint]); },
   async listPushSubscriptionsForUser(username) { return all('SELECT * FROM push_subscriptions WHERE username=?', [username]); },
@@ -2063,6 +2113,6 @@ module.exports = {
     const r = await run(`UPDATE notifications SET read=1, read_at=COALESCE(read_at, ?) WHERE username=? AND read=0 AND id IN (${clean.map(() => '?').join(',')})`, [new Date().toISOString(), username, ...clean]);
     return r && r.changes != null ? r.changes : clean.length;
   },
-  async markAllNotificationsRead(username) { await run('UPDATE notifications SET read=1, read_at=COALESCE(read_at, ?) WHERE username=? AND read=0', [new Date().toISOString(), username]); },
+
   async countUnreadNotifications(username) { const r = await get('SELECT COUNT(*) c FROM notifications WHERE username=? AND read=0', [username]); return Number(r.c); },
 };

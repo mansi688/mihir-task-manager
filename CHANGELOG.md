@@ -4,6 +4,48 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Notifications: act from them, Flagged tab, who has seen; project required
+### Added
+- **Approve right from a notification.** Any notification about a task where someone's part waits for your approval shows
+  "✓ Approve / ↩ Send back" (with a reason); a pending closure request shows "✓ Close task / Keep open"; an approval
+  request shows "✓ Approve / ✗ Reject"; a payment to verify shows "✓ Verify / ✗ Not accepted". Acting marks it seen.
+- **Flagged** is its own tab (60-hour flags), separate from Warnings. Warning and flagged notifications show how long the
+  task has been incomplete — "Incomplete for 2 days 5 hours past the deadline · open 4 days" (or "Due in …"), or that it
+  has since been completed.
+- In Warnings / Flagged, **tap a person's name** to see their incomplete tasks with the same durations and an Open button.
+- **Who has seen** (Admin / Director, on the Notifications page): per person — notifications sent in the last 7 / 30 / 90
+  days, how many seen, % seen, how many not seen now, the oldest not seen, when they last opened one — and **View** for
+  their latest 60 notifications with the time each was seen (or "Not seen · 3 days").
+  `GET /api/admin/notification-reads?days=`, `GET /api/admin/notification-reads/:username`.
+### Changed
+- **"Mark all as seen" removed everywhere** (button and `POST /api/notifications/read-all`). A notification is seen only
+  when it is opened or its ◯ is tapped, so "seen" means the person actually looked at it.
+- **Project is required on every new task** and is one of: Mihir Amara, Nyati Equinox, Sierra (Tathawade), Mihir
+  Projects (dropdown on the form; checked by the server; sub-tasks keep their parent's). Existing tasks are unchanged.
+  The Deliveries project suggestions use the same list.
+- **Project heads are always kept informed** on every new task of their project — added automatically to "Keep
+  informed" (they see the task, its updates and can follow up; no part to submit, no reminders), notified once, and
+  shown under the Project field on the form: Mihir Amara → Suraj Kathale (suraj.k), Rahul Paigude (rahul.p);
+  Nyati Equinox → Anil Wagh (anil.w), Siddheshwar Puri (siddheshwar.p); Sierra (Tathawade) → Dnyaneshwar Kolekar
+  (dnyaneshwar.k). Not added when they created the task or are already on it; also applies to bulk import. The list is
+  `PROJECT_HEADS` in `backend/server.js` (and the same in `frontend/app.js`).
+### Database
+- `notifications.ref_type`, `ref_id` (which approval request / payment a notification is about). Additive.
+
+## [Unreleased] — Bandwidth: push clean-up and lighter refreshing
+### Fixed
+- **Push notifications to dead devices were retried for ever.** Only 404/410 removed a registration; devices returning
+  400/401/403/413 (expired, revoked, old keys) stayed and were retried on every notification. Those are now removed on
+  the first failure, and each person keeps only their 5 newest devices.
+- **Locations: the places list was re-requested on every redraw** while it loaded (and for ever after a failure). Now one
+  request at a time, at most once a minute.
+### Changed
+- Background refresh is lighter: the app checks for changes every 10 s (was 5 s; Chat 4 s, was 2 s), refreshes at most
+  every 15 s however many changes happen (was on every change), and forces a full refresh every 5 minutes (was 1).
+  People / teams / projects / sections / phases / features reload at most every 10 minutes in the background,
+  announcements / suggestions / open titles every 5, and the full task list (Admin) every 3 minutes unless All Tasks or
+  Today is open. Your own actions still refresh immediately.
+
 ## [Unreleased] — Allotted money (per person, monthly + top-ups) with bill verification
 ### Changed
 - **Budget is now per person, not per delivery.** A Director (or Admin) allots money to someone on site — a monthly

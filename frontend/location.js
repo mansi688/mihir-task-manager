@@ -512,9 +512,12 @@
     </div>`;
   }
   async function loadPlaces(force) {
-    if (!force && S.places && Date.now() - S.placesAt < 60000) return;
-    S.placesAt = Date.now();
-    try { S.places = await api('/api/location/places'); render(); } catch (e) { /* ignore */ }
+    // One request at a time, and at most once a minute — also after a failure (otherwise every redraw retried it).
+    if (S.placesLoading) return;
+    if (!force && S.placesAt && Date.now() - S.placesAt < 60000) return;
+    S.placesAt = Date.now(); S.placesLoading = true;
+    try { S.places = await api('/api/location/places'); render(); } catch (e) { if (!S.places) S.places = []; }
+    finally { S.placesLoading = false; }
   }
   function readPlaceForm() {
     const D = S.placeDraft; if (!D) return;

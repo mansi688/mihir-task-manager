@@ -57,6 +57,8 @@ async function startTestServer() {
 }
 
 async function api(baseUrl, path, { method, token, body } = {}) {
+  // New tasks must name a project; tests that don't care about it get one (pass project: '' to test the check).
+  if (method === 'POST' && path === '/api/tasks' && body && typeof body === 'object' && !('project' in body)) body = { ...body, project: 'Mihir Projects' };
   const res = await fetch(baseUrl + path, {
     method: method || 'GET',
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },

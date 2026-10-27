@@ -33,7 +33,10 @@ test('notifications are marked seen in batches, with the time they were seen', a
   assert.ok((await list(asha)).items.every(n => !n.read), "Ravi can't mark Asha's");
 
   assert.equal((await api(baseUrl, '/api/notifications/read', { method: 'POST', token: ravi, body: {} })).status, 400);
-  await api(baseUrl, '/api/notifications/read-all', { method: 'POST', token: ravi });
+  // There is no "mark all as seen" any more — each one is seen one by one
+  assert.equal((await api(baseUrl, '/api/notifications/read-all', { method: 'POST', token: ravi })).status, 404);
+  const left = (await list(ravi)).items.filter(n => !n.read).map(n => n.id);
+  await api(baseUrl, '/api/notifications/read', { method: 'POST', token: ravi, body: { ids: left } });
   const done = await list(ravi);
   assert.equal(done.unread, 0); assert.ok(done.items.every(n => n.read && n.read_at));
 });

@@ -140,7 +140,7 @@ function deliveryFormHTML() {
       <div class="col"><label for="dlv-time">Time <span class="muted small">(optional)</span></label><input type="time" id="dlv-time" value="${dlvEsc(f.expected_time || '')}"></div>
     </div>
     <div class="row">${field('dlv-project', 'Project / site', f.project, 'e.g. Mihir Amara', 'list="dlv-projects"')}${field('dlv-site', 'Where on site', f.site_location, 'e.g. Tower B store, gate 2')}</div>
-    <datalist id="dlv-projects">${(projectsList || []).map(p => `<option value="${dlvEsc(p.name || p)}">`).join('')}</datalist>
+    <datalist id="dlv-projects">${(typeof PROJECT_OPTIONS !== 'undefined' ? PROJECT_OPTIONS : (projectsList || [])).map(p => `<option value="${dlvEsc(p.name || p)}">`).join('')}</datalist>
     <div class="row">${field('dlv-vendor', 'Vendor / supplier', f.vendor, 'e.g. Kratex Tradetech India', 'list="dlv-vendors"')}</div>
     <datalist id="dlv-vendors">${dlvVendorSuggestions().map(v => `<option value="${dlvEsc(v)}">`).join('')}</datalist>
 

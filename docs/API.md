@@ -9,6 +9,9 @@ All under the existing `/api`, Bearer token unless noted. Existing endpoints are
 | POST /api/tasks/:id/nudge | anyone involved in the task, Admin, Director | Follow up — notifies everyone else involved (5 h gap per person) |
 | POST /api/tasks/send-reminders-now {at?} | Admin | run reminder engine (optionally "as of" a time) |
 | GET /api/notifications/deliveries?status | Admin | delivery log |
+| GET /api/notifications | everyone | Your notifications; `tasks` (status, who waits for your approval, pending closure id, people's deadlines), `refs` (approval requests / payments they point to) |
+| GET /api/admin/notification-reads?days= | Admin, Director | Per person: sent, seen, not seen now, oldest not seen, last seen |
+| GET /api/admin/notification-reads/:username | Admin, Director | That person's latest 60 notifications with seen times |
 | GET /api/admin/jobs?status · POST /api/admin/jobs/:id/retry · POST /api/admin/jobs/run-now | Admin | jobs |
 | GET /api/admin/system | Admin | health, jobs, deliveries, integrations, features, AI usage |
 | GET /api/features | any | which optional features are on |

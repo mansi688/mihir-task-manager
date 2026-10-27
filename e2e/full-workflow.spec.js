@@ -32,6 +32,7 @@ test.describe('Full task lifecycle through the real UI', () => {
     await page.click('[data-act="new-task"], text=New Task');
 
     await page.fill('#new-task-title', 'E2E Level Test');
+    await page.selectOption('#new-task-project', 'Mihir Projects');
     await page.fill('#new-task-desc', 'Created by an automated browser test.');
     await page.selectOption('#new-task-priority', 'medium');
     const deadline = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);

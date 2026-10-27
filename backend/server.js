@@ -100,7 +100,9 @@ async function sendPushToUser(username, title, body, taskId) {
     } catch (e) {
       // A 404/410 means the browser itself has invalidated this subscription (uninstalled,
       // permission revoked, etc.) — clean it up instead of retrying it forever.
-      if (e.statusCode === 404 || e.statusCode === 410) { await db.removePushSubscription(sub.endpoint); result.errors.push('device unsubscribed (removed)'); }
+      // 400/401/403/404/410 are permanent (expired, revoked, or registered with old keys) — remove the device at once
+      // so it is never retried. Only temporary errors (429, 5xx, network) keep it.
+      if ([400, 401, 403, 404, 410, 413].includes(e.statusCode)) { await db.removePushSubscription(sub.endpoint); result.errors.push(`device removed (${e.statusCode})`); }
       else { console.error(`Push to ${username} failed:`, e.message); result.errors.push(String(e.statusCode || '') + ' ' + e.message); }
     }
   }
@@ -495,6 +497,22 @@ async function releaseDependentsOf(closedTask) {
 function sign(payload, expiresIn) { return jwt.sign(payload, JWT_SECRET, { expiresIn: expiresIn || '12h' }); }
 
 const ALL_ROLES = ['admin', 'member', 'director'];
+// The firm's projects — a new task must pick one.
+const PROJECT_OPTIONS = ['Mihir Amara', 'Nyati Equinox', 'Sierra (Tathawade)', 'Mihir Projects'];
+// Project heads are always kept informed on every new task of their project (added automatically).
+const PROJECT_HEADS = {
+  'Mihir Amara': ['suraj.k', 'rahul.p'],
+  'Nyati Equinox': ['anil.w', 'siddheshwar.p'],
+  'Sierra (Tathawade)': ['dnyaneshwar.k'],
+};
+// Heads to add for a task: not the creator, not someone already doing the task or already kept informed,
+// and only accounts that exist.
+async function projectHeadsToAdd(project, creator, alreadyOn) {
+  const want = (PROJECT_HEADS[project] || []).filter(u => u !== creator && !alreadyOn.has(u));
+  const out = [];
+  for (const u of want) if (await db.getUser(u)) out.push(u);
+  return out;
+}
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
 // Directors see their own department's Performance/Peak-Hours reporting by default — nothing
 // more — and Admin can grant visibility into additional specific departments per Director via
@@ -1675,7 +1693,7 @@ app.post('/api/approvals', auth(ALL_ROLES), async (req, res) => {
   const id = genId('APR');
   await db.createApprovalRequest({ id, title, description, file_data: fileData, file_name: fileName, created_by_username: req.user.username, created_by_name: req.user.name, reviewers });
   for (const u of reviewers) {
-    if (u !== req.user.username) await db.createNotification({ username: u, type: 'approval_requested', message: `${req.user.name} sent "${title}" for your approval.`, task_id: null });
+    if (u !== req.user.username) await db.createNotification({ username: u, type: 'approval_requested', message: `${req.user.name} sent "${title}" for your approval.`, task_id: null, ref_type: 'approval', ref_id: id });
   }
   res.json({ ok: true, id });
 });
@@ -1741,7 +1759,7 @@ app.post('/api/approvals/:id/revise', auth(ALL_ROLES), async (req, res) => {
   await db.addApprovalHistory(request.id, req.user.username, req.user.name, `Uploaded a revised document: ${fileName}`);
   const revisedReviewers = await db.listReviewers(request.id);
   for (const r of revisedReviewers) {
-    if (r.username !== req.user.username) await db.createNotification({ username: r.username, type: 'approval_requested', message: `${req.user.name} sent a revised "${request.title}" for your approval.`, task_id: null });
+    if (r.username !== req.user.username) await db.createNotification({ username: r.username, type: 'approval_requested', message: `${req.user.name} sent a revised "${request.title}" for your approval.`, task_id: null, ref_type: 'approval', ref_id: request.id });
   }
   res.json({ ok: true });
 });
@@ -1896,6 +1914,16 @@ async function insertTaskRecords(tx, actor, spec, { notify = true } = {}) {
       await db.createNotification({ username: uname, type: 'followup_tagged', message: `${actor.name} asked you to follow up on "${title}".`, task_id: id }, tx);
     }
   }
+  // Project heads — always kept informed on their project's tasks.
+  const heads = await projectHeadsToAdd(spec.project, actor.username, new Set([...tagged.map(t => t.username), ...(spec.followups || [])]));
+  for (const uname of heads) {
+    await db.addFollowup(id, uname, actor.username, tx);
+    if (notify) await db.createNotification({ username: uname, type: 'followup_tagged', message: `${actor.name} created "${title}" on ${spec.project} — you are kept informed as project head.`, task_id: id }, tx);
+  }
+  if (heads.length) {
+    const names = []; for (const u of heads) { const r = await db.getUser(u); names.push(r ? r.name : u); }
+    await ev('FOLLOW_UP', `Kept informed (project head, ${spec.project}): ${names.join(', ')}`, { metadata: { usernames: heads, via: 'project_head' } });
+  }
   return tagged;
 }
 
@@ -1958,6 +1986,8 @@ async function createTaskRoute(req, res, clientRequestId) {
   const dependsOnTaskId = str((req.body || {}).dependsOnTaskId).trim();
   const parentTaskId = str((req.body || {}).parentTaskId).trim();
   const project = str((req.body || {}).project).trim();
+  // Every new task belongs to one of the firm's projects (sub-tasks take their parent's).
+  if (!parentTaskId && !PROJECT_OPTIONS.includes(project)) return res.status(400).json({ error: `Pick the project: ${PROJECT_OPTIONS.join(', ')}.` });
   const phase = str((req.body || {}).phase).trim();
   const { attachment } = req.body || {};
   const attachmentName = str((req.body || {}).attachmentName).trim();
@@ -2180,6 +2210,8 @@ app.post('/api/tasks/import', auth(ALL_ROLES), async (req, res) => {
     }));
     p.checklist.forEach((text, i) => bulk.checklist.push({ task_id: id, text, sort_order: i }));
     p.followups.forEach(u => { bulk.followups.push({ task_id: id, username: u, tagged_by: req.user.username }); note(u, 'followup', p.title, id); });
+    const onTask = new Set([...p.stageGroups.flat(), ...p.followups]);
+    for (const u of await projectHeadsToAdd(p.project, req.user.username, onTask)) { bulk.followups.push({ task_id: id, username: u, tagged_by: req.user.username }); note(u, 'followup', p.title, id); }
     created.push({ rowNumber: p.rowNumber, id, title: p.title });
   }
   const toUpdate = plan.plans.filter(p => p.errors.length === 0 && p.action === 'update');
@@ -3012,7 +3044,8 @@ app.delete('/api/tasks/:id/checklist/:itemId', auth(['admin']), async (req, res)
 /* ============ NOTIFICATIONS ============ */
 app.get('/api/notifications', auth(ALL_ROLES), async (req, res) => {
   const items = await db.listNotifications(req.user.username);
-  res.json({ items, unread: await db.countUnreadNotifications(req.user.username), tasks: await db.notificationTaskInfo(req.user.username, items.map(n => n.task_id)) });
+  res.json({ items, unread: await db.countUnreadNotifications(req.user.username), tasks: await db.notificationTaskInfo(req.user.username, items.map(n => n.task_id)),
+    refs: await db.notificationRefInfo(req.user.username, items) });
 });
 app.post('/api/notifications/:id/read', auth(ALL_ROLES), async (req, res) => {
   await db.markNotificationRead(req.params.id, req.user.username);
@@ -3032,9 +3065,17 @@ app.post('/api/notifications/unread', auth(ALL_ROLES), async (req, res) => {
   await db.markNotificationsUnread(ids, req.user.username);
   res.json({ ok: true, unread: await db.countUnreadNotifications(req.user.username) });
 });
-app.post('/api/notifications/read-all', auth(ALL_ROLES), async (req, res) => {
-  await db.markAllNotificationsRead(req.user.username);
-  res.json({ ok: true });
+// There is deliberately no "mark all as seen": each notification is seen one by one, so Admin can see who has
+// actually read what (below).
+app.get('/api/admin/notification-reads', auth(['admin', 'director']), async (req, res) => {
+  const days = Math.min(90, Math.max(1, parseInt(req.query.days, 10) || 7));
+  const since = new Date(Date.now() - days * 864e5).toISOString();
+  const rows = await db.notificationReadSummary(since);
+  res.json({ days, people: rows.map(r => ({ ...r, sent: Number(r.sent), seen: Number(r.seen), unseen: Number(r.unseen) })) });
+});
+app.get('/api/admin/notification-reads/:username', auth(['admin', 'director']), async (req, res) => {
+  const u = await db.getUser(req.params.username); if (!u) return res.status(404).json({ error: 'No such person.' });
+  res.json({ username: u.username, name: u.name, items: await db.notificationReadsFor(u.username) });
 });
 
 /* ============ REMINDER ENGINE (Phase 2) ============

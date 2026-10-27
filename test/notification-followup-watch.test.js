@@ -30,7 +30,7 @@ test('people only mentioned or kept informed can open the task; Follow up from n
   assert.ok(!(await G(ravi, '/api/tasks/watching')).data.some(x => x.id === id));
 
   // Notifications carry each task's status and my last follow-up
-  assert.deepEqual(an.tasks[id], { status: 'open', followedUpAt: null });
+  assert.equal(an.tasks[id].status, 'open'); assert.equal(an.tasks[id].followedUpAt, null);
   const f1 = await P(asha, `/api/tasks/${id}/nudge`);
   assert.equal(f1.status, 200, JSON.stringify(f1.data));
   assert.ok(f1.data.sent.includes('ravi.w'));

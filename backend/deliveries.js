@@ -92,7 +92,7 @@ function mountDeliveries(app, deps) {
   }
   const label = (d) => `"${d.title}" (${d.ref})`;
   const whenText = (w) => { if (!w) return ''; const [d, t] = w.split('T'); const dt = new Date(d + 'T12:00:00+05:30'); return dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) + (t ? ` ${t}` : ''); };
-  const notifyMany = async (users, except, type, message, taskId) => { for (const u of new Set(users)) if (u && u !== except) await db.createNotification({ username: u, type, message, task_id: taskId || null }); };
+  const notifyMany = async (users, except, type, message, taskId, ref) => { for (const u of new Set(users)) if (u && u !== except) await db.createNotification({ username: u, type, message, task_id: taskId || null, ...(ref || {}) }); };
   // Everyone tagged on a delivery can open its task: they are put on the task's "Keep informed" list.
   async function keepInformedOnTask(d, users, by) {
     if (!d.task_id) return;
@@ -319,7 +319,7 @@ function mountDeliveries(app, deps) {
     const tail = `${d && budget != null ? ` Delivery budget ${inr(budget)} — ${over ? `over by ${inr(paid - budget)}` : `${inr(budget - paid)} left`}.` : ''}${wallet != null ? ` ${req.user.name}'s allotted balance: ${wallet < 0 ? `−${inr(-wallet)} (paid from own pocket)` : inr(wallet)}.` : ''}`;
     const verifiers = await verifiersFor(req.user.username);
     await notifyMany(verifiers, req.user.username, 'budget_verify',
-      `To verify: ${req.user.name} paid ${inr(amount)} — ${purpose} ${what}${up.files.length ? ', bill attached' : ' — NO BILL'}.${tail}`, d ? d.task_id : null);
+      `To verify: ${req.user.name} paid ${inr(amount)} — ${purpose} ${what}${up.files.length ? ', bill attached' : ' — NO BILL'}.${tail}`, d ? d.task_id : null, { ref_type: 'payment', ref_id: p.id });
     if (d && d.created_by && !verifiers.includes(d.created_by))
       await notifyMany([d.created_by], req.user.username, 'delivery_payment', `${req.user.name} paid ${inr(amount)} (${purpose}) ${what}${up.files.length ? '' : ' — no bill'}. Paid so far ${inr(paid)}.${tail}`, d.task_id);
     await auditFromReq(req, 'delivery_payment', `Recorded ${inr(amount)} (${purpose}) ${d ? `on delivery ${label(d)}` : 'without a delivery'}.`);
@@ -447,7 +447,7 @@ function mountDeliveries(app, deps) {
     if (up.files.length) await db.addPaymentBills(p.id, p.delivery_id, up.files, req.user.username);
     await db.setPaymentReply(p.id, note || 'Bill added');
     await notifyMany(p.verified_by ? [p.verified_by] : await verifiersFor(p.paid_by), req.user.username, 'budget_verify',
-      `To verify again: ${req.user.name} answered about ${inr(p.amount)} (${p.purpose}): "${note || 'bill added'}"${up.files.length ? ' — bill attached' : ''}.`, null);
+      `To verify again: ${req.user.name} answered about ${inr(p.amount)} (${p.purpose}): "${note || 'bill added'}"${up.files.length ? ' — bill attached' : ''}.`, null, { ref_type: 'payment', ref_id: p.id });
     res.json({ ok: true });
   });
   // The person holding allotted money asks for a top-up; whoever allots them money (or the Directors) is told.
