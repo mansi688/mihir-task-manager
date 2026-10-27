@@ -486,6 +486,19 @@ async function init() {
     kind TEXT NOT NULL DEFAULT 'attachment', name TEXT NOT NULL, data TEXT NOT NULL,
     taken_at TEXT, uploaded_by TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_delivery_files_delivery ON delivery_files(delivery_id)');
+  // ---- Compliance due dates (TDS, GST, PT, PF …): a day of every month; Accounts + Admin are reminded ----
+  await run(`CREATE TABLE IF NOT EXISTS compliance_items(
+    id SERIAL PRIMARY KEY, name TEXT NOT NULL, due_day INTEGER NOT NULL, notes TEXT, active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by TEXT, created_at TEXT NOT NULL, updated_at TEXT)`);
+  // One row per item per month (YYYY-MM): a due date typed for that month (e.g. from the electricity bill) and when it was done.
+  await run(`CREATE TABLE IF NOT EXISTS compliance_periods(
+    item_id INTEGER NOT NULL REFERENCES compliance_items(id) ON DELETE CASCADE, period TEXT NOT NULL, due_override TEXT,
+    done_at TEXT, done_by TEXT, done_by_name TEXT, note TEXT, PRIMARY KEY(item_id, period))`);
+  if (!Number(((await pool.query('SELECT COUNT(*) AS n FROM compliance_items')).rows[0] || {}).n)) {
+    const seed = [['TDS deposit', 7, null], ['GST deposit', 20, null], ['Sales invoices', 5, null],
+      ['Electricity bill', 10, 'Or as per the due date on the bill — set it for the month.'], ['PT (Professional Tax)', 15, null], ['PF (Provident Fund)', 15, null]];
+    for (const [name, day, notes] of seed) await pool.query('INSERT INTO compliance_items(name, due_day, notes, created_by, created_at) VALUES($1,$2,$3,$4,$5)', [name, day, notes, 'system', new Date().toISOString()]);
+  }
   // ---- Accounts payable: vendor bills sent by Purchase, credit period, payment by Accounts ----
   await run(`CREATE TABLE IF NOT EXISTS ap_bills(
     id SERIAL PRIMARY KEY, ref TEXT UNIQUE NOT NULL, vendor TEXT NOT NULL, bill_no TEXT, bill_date TEXT, amount NUMERIC(16,2) NOT NULL,

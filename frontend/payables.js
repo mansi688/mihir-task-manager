@@ -6,8 +6,10 @@
 
 let apData = null;
 let apSummary = { canView: false };
+let compData = null; // GET /api/compliance — monthly compliance due dates (Accounts + Admin)
 const AP_TABS = [
   { key: 'overdue', label: '🔴 Overdue', match: b => b.status !== 'paid' && b.days_left < 0 },
+  { key: 'compliance', label: '📅 Compliance', payOnly: true },
   { key: 'soon', label: '⏳ Due in 15 days', match: b => b.status !== 'paid' && b.days_left >= 0 && b.days_left <= 15 },
   { key: 'later', label: '🗓 Not yet due', match: b => b.status !== 'paid' && b.days_left > 15 },
   { key: 'hold', label: '⏸ On hold', match: b => b.status === 'on_hold' },
@@ -25,7 +27,8 @@ function apDocLabel(k) { const d = ((apData && apData.docTypes) || []).find(x =>
 function apDocTypeOptions(sel, skipBill) { return ((apData && apData.docTypes) || []).filter(d => !(skipBill && d.key === 'bill')).map(d => `<option value="${d.key}" ${sel === d.key ? 'selected' : ''}>${apEsc(d.label)}</option>`).join(''); }
 function apState() { if (!ui.ap) ui.ap = { tab: 'overdue', q: '', project: '', open: null, form: null, imp: null, act: null }; return ui.ap; }
 function apMe() { return (apData && apData.me) || { canAdd: !!apSummary.canAdd, canPay: !!apSummary.canPay }; }
-function accountsDeptBadge() { return apSummary.canPay ? (apSummary.overdue || 0) : (apSummary.questions || 0); }
+function accountsDeptBadge() { return apSummary.canPay ? (apSummary.overdue || 0) + compUrgent().length : (apSummary.questions || 0); }
+function compUrgent() { return ((compData && compData.items) || []).filter(i => i.days_left <= 2); }
 function apDueChip(b) {
   if (b.status === 'paid') return `<span class="bud-chip good">✓ Paid${b.paid_at ? ` ${apDay(b.paid_at)}` : ''}</span>`;
   const d = b.days_left;
@@ -46,7 +49,8 @@ function renderAccountsDeptView() {
   const month = apToday().slice(0, 7);
   const paidMonth = bills.reduce((a, b) => a + b.events.filter(e => ['partial', 'paid'].includes(e.kind) && String(e.pay_date || e.created_at).slice(0, 7) === month).reduce((x, e) => x + (e.amount || 0), 0), 0);
   const questions = open.filter(b => b.awaiting === 'purchase').length;
-  const tab = AP_TABS.some(t => t.key === s.tab) ? s.tab : 'overdue';
+  const tabs = AP_TABS.filter(t => !t.payOnly || m.canPay);
+  const tab = tabs.some(t => t.key === s.tab) ? s.tab : 'overdue';
   const count = t => t.match ? bills.filter(t.match).length : null;
   return `
   <div class="card">
@@ -69,13 +73,13 @@ function renderAccountsDeptView() {
   ${s.form ? apFormHTML(s.form) : ''}
   ${s.imp ? apImportHTML(s.imp) : ''}
   <div class="card">
-    <div class="task-tabs" role="tablist">${AP_TABS.map(t => `<button class="task-tab${tab === t.key ? ' active' : ''}" data-ap-tab="${t.key}">${t.label}${count(t) != null ? ` <span class="task-tab-count">${count(t)}</span>` : ''}</button>`).join('')}</div>
-    ${tab === 'other' ? '' : `<div class="bud-filters">
+    <div class="task-tabs" role="tablist">${tabs.map(t => `<button class="task-tab${tab === t.key ? ' active' : ''}" data-ap-tab="${t.key}">${t.label}${count(t) != null ? ` <span class="task-tab-count">${count(t)}</span>` : ''}</button>`).join('')}</div>
+    ${tab === 'other' || tab === 'compliance' ? '' : `<div class="bud-filters">
       <div><label for="ap-project">Project</label><select id="ap-project"><option value="">All projects</option>${(apData.projects || []).map(p => `<option ${s.project === p ? 'selected' : ''}>${apEsc(p)}</option>`).join('')}</select></div>
       <div class="bud-search"><label for="ap-q">Search</label><input type="text" id="ap-q" value="${apEsc(s.q)}" placeholder="Vendor, bill no., BILL- number, delivery…"></div>
       <div style="align-self:flex-end;"><button class="btn btn-sm" data-ap-act="csv">⬇ CSV</button></div>
     </div>`}
-    ${tab === 'other' ? '' : tab === 'vendors' ? apVendorsHTML(apFiltered(bills)) : apListHTML(apFiltered(bills.filter(AP_TABS.find(t => t.key === tab).match)), tab)}
+    ${tab === 'compliance' ? compHTML() : tab === 'other' ? '' : tab === 'vendors' ? apVendorsHTML(apFiltered(bills)) : apListHTML(apFiltered(bills.filter(AP_TABS.find(t => t.key === tab).match)), tab)}
   </div>
   ${tab === 'other' && typeof accOverviewHTML === 'function' ? accOverviewHTML() : ''}
   ${ui.deliveryPhoto ? `<div class="dlv-viewer" data-ap-act="close-photo"><img src="${ui.deliveryPhoto.data}" alt=""><div class="dlv-viewer-bar"><span>${apEsc(ui.deliveryPhoto.name)}</span><button class="btn btn-sm" data-ap-act="download-photo">Download</button><button class="btn btn-sm" data-ap-act="close-photo">Close</button></div></div>` : ''}`;
@@ -247,13 +251,89 @@ function openBillFromDelivery(d) {
   apState().imp = null; render(); window.scrollTo(0, 0);
 }
 
+// ---- Compliance due dates (TDS, GST, PT, PF …)
+function compState() { const s = apState(); if (!s.comp) s.comp = { form: null, date: null, done: null }; return s.comp; }
+function compChip(i) {
+  const d = i.days_left;
+  if (d < 0) return `<span class="bud-chip bad">Overdue ${-d} day${d === -1 ? '' : 's'}</span>`;
+  if (d === 0) return '<span class="bud-chip bad">Due today</span>';
+  if (d <= 2) return `<span class="bud-chip warn">${d} day${d === 1 ? '' : 's'} left</span>`;
+  if (d <= 10) return `<span class="bud-chip warn">${d} days left</span>`;
+  return `<span class="bud-chip">${d} days left</span>`;
+}
+const compOrd = (n) => { const v = n % 100; return n + (v >= 11 && v <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th')); };
+function compHTML() {
+  if (!compData) return '<div class="small muted" style="margin-top:10px;">Loading compliance dates…</div>';
+  const c = compState(); const can = compData.me && compData.me.canEdit;
+  const f = c.form;
+  return `<div class="comp-wrap">
+    <div class="flex-between" style="gap:8px;flex-wrap:wrap;margin:10px 0 6px;">
+      <div class="small muted">Monthly compliance dates. Accounts and Admin are reminded <b>${(compData.remindBefore || [10, 2]).join(' and ')} days before</b>, on the due date, and every day once it is overdue — until it is marked done for that month.</div>
+      ${can && !f ? '<button class="btn btn-sm btn-primary" data-comp-act="new">+ Add due date</button>' : ''}
+    </div>
+    ${f ? `<div class="comp-form">
+      <div class="row"><div class="col"><label for="comp-name">What is due *</label><input id="comp-name" type="text" value="${apEsc(f.name || '')}" placeholder="e.g. GST deposit"></div>
+        <div class="col" style="max-width:170px;"><label for="comp-day">Due by (day of month) *</label><input id="comp-day" type="number" min="1" max="31" inputmode="numeric" value="${apEsc(f.due_day || '')}" placeholder="e.g. 20"></div></div>
+      <label for="comp-notes">Notes</label><input id="comp-notes" type="text" value="${apEsc(f.notes || '')}" placeholder="e.g. or as per the due date on the bill">
+      ${f.err ? `<div class="small" style="color:var(--danger);margin-top:6px;">${apEsc(f.err)}</div>` : ''}
+      <div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-sm btn-primary" data-comp-act="save">${f.id ? 'Save' : 'Add'}</button><button class="btn btn-sm" data-comp-act="cancel">Cancel</button></div>
+    </div>` : ''}
+    ${compData.items.length ? `<div class="comp-list">${compData.items.map(i => {
+      const last = (i.history || [])[0];
+      const dateOpen = c.date && c.date.id === i.id, doneOpen = c.done && c.done.id === i.id;
+      return `<div class="comp-item ${i.days_left < 0 || i.days_left === 0 ? 'late' : i.days_left <= 2 ? 'soon' : ''}">
+        <div class="comp-main">
+          <div><b>${apEsc(i.name)}</b> <span class="small muted">· by the ${compOrd(i.due_day)} of every month</span></div>
+          <div class="small">${apEsc(i.period_label)}: due <b>${apDay(i.due)}</b>${i.override ? ' <span class="muted">(date set for this month)</span>' : ''} ${compChip(i)}</div>
+          ${i.notes ? `<div class="small muted">${apEsc(i.notes)}</div>` : ''}
+          ${last ? `<div class="small muted">Last done: ${apEsc(last.period_label)} — ${apEsc(last.done_by_name || last.done_by)}, ${apDay(last.done_at)}${last.note ? ` · ${apEsc(last.note)}` : ''}${can ? ` <button type="button" class="linklike" data-comp-undo="${i.id}:${last.period}">undo</button>` : ''}</div>` : ''}
+        </div>
+        ${can ? `<div class="comp-btns">
+          <button class="btn btn-sm btn-primary" data-comp-done="${i.id}">✓ Done for ${apEsc(i.period_label)}</button>
+          <button class="btn btn-sm" data-comp-date="${i.id}">📅 Date this month</button>
+          <button class="btn btn-sm" data-comp-edit="${i.id}">✏️</button>
+          <button class="btn btn-sm" data-comp-del="${i.id}" title="Remove">✕</button>
+        </div>` : ''}
+        ${doneOpen ? `<div class="comp-inline"><input type="text" id="comp-done-note" value="${apEsc(c.done.note || '')}" placeholder="Note (optional) — e.g. challan no., amount"><button class="btn btn-sm btn-primary" data-comp-act="done-save">Mark done</button><button class="btn btn-sm" data-comp-act="inline-cancel">Cancel</button></div>` : ''}
+        ${dateOpen ? `<div class="comp-inline"><label class="small" for="comp-date-in">Due date for ${apEsc(i.period_label)}</label><input type="date" id="comp-date-in" value="${apEsc(c.date.value || '')}"><button class="btn btn-sm btn-primary" data-comp-act="date-save">Save</button>${i.override ? '<button class="btn btn-sm" data-comp-act="date-clear">Use the usual day</button>' : ''}<button class="btn btn-sm" data-comp-act="inline-cancel">Cancel</button></div>` : ''}
+      </div>`;
+    }).join('')}</div>` : '<div class="small muted">No compliance dates yet.</div>'}
+  </div>`;
+}
+async function compReload() { try { compData = await api('/api/compliance'); } catch (e) { setBanner(e.message); } render(); }
+function bindCompliance() {
+  const c = compState();
+  const on = (sel, fn) => document.querySelectorAll(sel).forEach(b => b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(b); });
+  const item = (id) => ((compData && compData.items) || []).find(i => i.id === Number(id));
+  const post = async (b, path, body, ok) => { if (b) b.disabled = true; try { await api(path, { method: 'POST', body: JSON.stringify(body || {}) }); c.date = null; c.done = null; if (ok) setBanner(ok, 'ok'); await compReload(); } catch (e) { if (b) b.disabled = false; setBanner(e.message); render(); } };
+  on('[data-comp-act="new"]', () => { c.form = { name: '', due_day: '', notes: '' }; render(); });
+  on('[data-comp-act="cancel"]', () => { c.form = null; render(); });
+  on('[data-comp-edit]', b => { const i = item(b.dataset.compEdit); if (i) { c.form = { id: i.id, name: i.name, due_day: i.due_day, notes: i.notes || '' }; render(); } });
+  ['name', 'day', 'notes'].forEach(k => { const el = document.getElementById(`comp-${k}`); if (el && c.form) el.oninput = () => { c.form[k === 'day' ? 'due_day' : k] = el.value; }; });
+  on('[data-comp-act="save"]', async b => {
+    const f = c.form; b.disabled = true;
+    try { await api(f.id ? `/api/compliance/${f.id}/update` : '/api/compliance', { method: 'POST', body: JSON.stringify({ name: f.name, due_day: Number(f.due_day), notes: f.notes }) }); c.form = null; setBanner('Compliance date saved.', 'ok'); await compReload(); }
+    catch (e) { f.err = e.message; render(); }
+  });
+  on('[data-comp-del]', b => { const i = item(b.dataset.compDel); if (i && confirm(`Remove "${i.name}" from compliance dates? Its reminders stop.`)) post(b, `/api/compliance/${i.id}/delete`, {}, 'Removed.'); });
+  on('[data-comp-done]', b => { const i = item(b.dataset.compDone); if (i) { c.done = { id: i.id, period: i.period, note: '' }; c.date = null; render(); const n = document.getElementById('comp-done-note'); if (n) n.focus(); } });
+  on('[data-comp-date]', b => { const i = item(b.dataset.compDate); if (i) { c.date = { id: i.id, period: i.period, value: i.due }; c.done = null; render(); } });
+  on('[data-comp-act="inline-cancel"]', () => { c.date = null; c.done = null; render(); });
+  const dn = document.getElementById('comp-done-note'); if (dn && c.done) dn.oninput = () => { c.done.note = dn.value; };
+  const di = document.getElementById('comp-date-in'); if (di && c.date) di.oninput = di.onchange = () => { c.date.value = di.value; };
+  on('[data-comp-act="done-save"]', b => post(b, `/api/compliance/${c.done.id}/done`, { period: c.done.period, note: c.done.note }, 'Marked done — the reminders for this month stop.'));
+  on('[data-comp-act="date-save"]', b => post(b, `/api/compliance/${c.date.id}/due-date`, { period: c.date.period, due_date: c.date.value }, 'Due date set for this month.'));
+  on('[data-comp-act="date-clear"]', b => post(b, `/api/compliance/${c.date.id}/due-date`, { period: c.date.period, due_date: '' }, 'Back to the usual day.'));
+  on('[data-comp-undo]', b => { const [id, period] = b.dataset.compUndo.split(':'); post(b, `/api/compliance/${id}/undone`, { period }, 'Marked not done.'); });
+}
 function bindAccountsDeptView() {
   const s = apState();
   if (!apData && apSummary.canView) { apReload(); return; }
   if (typeof bindAccOverview === 'function' && (s.tab === 'other' || !apSummary.canView)) bindAccOverview();
   if (!apData) return;
   const on = (sel, fn) => document.querySelectorAll(sel).forEach(b => b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(b); });
-  on('[data-ap-tab]', b => { s.tab = b.dataset.apTab; render(); });
+  on('[data-ap-tab]', b => { s.tab = b.dataset.apTab; if (s.tab === 'compliance' && !compData) compReload(); render(); });
+  if (s.tab === 'compliance') { if (!compData) compReload(); bindCompliance(); }
   on('[data-ap-open]', b => { const id = Number(b.dataset.apOpen); s.open = s.open === id ? null : id; s.act = null; render(); });
   const pj = document.getElementById('ap-project'); if (pj) pj.onchange = () => { s.project = pj.value; render(); };
   const q = document.getElementById('ap-q'); if (q) q.oninput = () => { s.q = q.value; clearTimeout(window.__apQ); window.__apQ = setTimeout(() => { render(); const n = document.getElementById('ap-q'); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 300); };

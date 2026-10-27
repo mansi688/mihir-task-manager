@@ -74,7 +74,13 @@ test('Estimation: JMR with previous/cumulative quantities, reconciliation maths,
   assert.equal(a.material, 'AAC blocks 150 mm'); assert.equal(a.amount, null);
   assert.ok(a.comments.some(c => c.kind === 'submit' && /lift wall/.test(c.text)));
   assert.ok(a.comments.some(c => c.kind === 'returned') && a.comments.some(c => c.kind === 'approved'));
-  assert.equal((await G(pur, `/api/estimation/files/${a.files[0].id}`)).status, 200);
+  const srcF = a.files.find(f => f.kind === 'source'), attF = a.files.find(f => f.kind !== 'source');
+  assert.equal((await G(pur, `/api/estimation/files/${srcF.id}`)).status, 200, 'HighRise document can be downloaded');
+  assert.equal((await G(pur, `/api/estimation/files/${attF.id}`)).status, 403, 'other attachments: view only');
+  assert.equal((await G(est, `/api/estimation/files/${attF.id}`)).status, 403);
+  assert.equal((await G(admin, `/api/estimation/files/${attF.id}`)).status, 200);
+  assert.equal((await G(pur, `/api/estimation/files/${srcF.id}/view`)).data.canDownload, true);
+  assert.equal((await G(pur, `/api/estimation/files/${attF.id}/view`)).data.canDownload, false);
   // view-only: images come back as an image, spreadsheets as a table
   const img = a.files.find(f => /png$/.test(f.name));
   assert.equal((await G(pur, `/api/estimation/files/${img.id}/view`)).data.kind, 'image');

@@ -48,8 +48,10 @@ function dlvMissingDocs(d, dir) {
 
 // ---- Sounds: a ring when a delivery is placed, a "your package is delivered" chime when it arrives.
 // Played for the person who does it and for the people notified about it (new notifications only).
-const DLV_SOUND_FILES = { placed: '/sounds/delivery-placed.mp3', delivered: '/sounds/delivered.mp3' };
-const DLV_SOUND_FOR_TYPE = { delivery_scheduled: 'placed', delivery_delivered: 'delivered' };
+// Every other new notification plays a short notification tone; announcements play a cheerful chime.
+const DLV_SOUND_FILES = { placed: '/sounds/delivery-placed.mp3', delivered: '/sounds/delivered.mp3', notification: '/sounds/notification.mp3', announcement: '/sounds/announcement.mp3' };
+const DLV_SOUND_FOR_TYPE = { delivery_scheduled: 'placed', delivery_delivered: 'delivered', announcement: 'announcement' };
+const dlvSoundKind = (n) => DLV_SOUND_FOR_TYPE[n.type] || 'notification';
 const dlvSoundCache = {};
 let dlvLastNotifId = null;
 function dlvSoundOn() { try { return safeStorage.getItem('ls_dlv_sound') !== 'off'; } catch (e) { return true; } }
@@ -68,9 +70,10 @@ function dlvSoundsForNotifications(items) {
     let saved = 0; try { saved = Number(safeStorage.getItem('ls_dlv_sound_last:' + (session && session.username)) || 0); } catch (e) {}
     dlvLastNotifId = saved || maxId; // first load after login: nothing old rings
   }
-  const fresh = list.filter(n => Number(n.id) > dlvLastNotifId && !Number(n.read) && DLV_SOUND_FOR_TYPE[n.type]);
+  const fresh = list.filter(n => Number(n.id) > dlvLastNotifId && !Number(n.read));
   if (maxId > dlvLastNotifId) { dlvLastNotifId = maxId; try { safeStorage.setItem('ls_dlv_sound_last:' + (session && session.username), String(maxId)); } catch (e) {} }
-  const kind = fresh.some(n => DLV_SOUND_FOR_TYPE[n.type] === 'delivered') ? 'delivered' : fresh.length ? 'placed' : null;
+  const kinds = new Set(fresh.map(dlvSoundKind));
+  const kind = ['announcement', 'delivered', 'placed', 'notification'].find(k => kinds.has(k)) || null;
   if (kind) dlvPlaySound(kind);
 }
 
@@ -405,7 +408,7 @@ function renderDeliveriesView() {
       <div><div class="card-title" style="margin:0;">Deliveries</div>
         <div class="small muted">Material on its way to site. The site team tagged on a delivery confirms it with photos — first the delivery, then the unloading.${dlvCanManage() ? ' Driver details are filled in here by the purchase team — the driver does not use this app.' : ' The purchase team adds deliveries and their driver details.'}</div></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn btn-sm" data-dlv-act="sound" title="Ring when a delivery is placed and when it is delivered">${dlvSoundOn() ? '🔔 Sounds on' : '🔕 Sounds off'}</button>
+        <button class="btn btn-sm" data-dlv-act="sound" title="Sounds for new notifications, announcements and deliveries">${dlvSoundOn() ? '🔔 Sounds on' : '🔕 Sounds off'}</button>
         ${dlvCanManage() && !ui.deliveryForm ? `<button class="btn btn-primary btn-sm" data-dlv-act="new">+ New delivery</button>` : ''}
       </div>
     </div>

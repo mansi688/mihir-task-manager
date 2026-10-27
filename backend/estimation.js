@@ -364,24 +364,29 @@ function mountEstimation(app, deps) {
     res.json({ name: 'JMR-template.xlsx', data: 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + Buffer.from(buf).toString('base64') });
   });
   app.get('/api/estimation/files/:id', auth(ALL_ROLES), async (req, res) => {
+    // Download: the HighRise / estimation document (kind 'source') for anyone who can see Estimation; other
+    // attachments are view-only (on screen through /view) — only Admin can download those.
     const m = await me(req.user); if (!m.canView) return res.status(403).json({ error: 'Not allowed.' });
-    const f = await one('SELECT name, data FROM est_files WHERE id=$1', [Number(req.params.id) || 0]);
+    const f = await one('SELECT name, data, kind FROM est_files WHERE id=$1', [Number(req.params.id) || 0]);
     if (!f) return res.status(404).json({ error: 'File not found.' });
-    res.json(f);
+    if (f.kind !== 'source' && req.user.role !== 'admin') return res.status(403).json({ error: 'This attachment can only be viewed on screen.' });
+    res.json({ name: f.name, data: f.data });
   });
   // View only: images and PDFs come back as data for the on-screen viewer; Excel / CSV as rows (no file to save).
   app.get('/api/estimation/files/:id/view', auth(ALL_ROLES), async (req, res) => {
+    // (HighRise documents can also be downloaded — canDownload.)
     const m = await me(req.user); if (!m.canView) return res.status(403).json({ error: 'Not allowed.' });
-    const f = await one('SELECT name, data FROM est_files WHERE id=$1', [Number(req.params.id) || 0]);
+    const f = await one('SELECT name, data, kind FROM est_files WHERE id=$1', [Number(req.params.id) || 0]);
     if (!f) return res.status(404).json({ error: 'File not found.' });
+    const extra = { canDownload: f.kind === 'source' || req.user.role === 'admin' };
     const mime = (/^data:([^;,]+)/.exec(f.data || '') || [])[1] || '';
-    if (/^image\//.test(mime)) return res.json({ kind: 'image', name: f.name, data: f.data });
-    if (mime === 'application/pdf' || /\.pdf$/i.test(f.name)) return res.json({ kind: 'pdf', name: f.name, data: f.data });
+    if (/^image\//.test(mime)) return res.json({ kind: 'image', name: f.name, data: f.data, ...extra });
+    if (mime === 'application/pdf' || /\.pdf$/i.test(f.name)) return res.json({ kind: 'pdf', name: f.name, data: f.data, ...extra });
     if (/sheet|excel|csv/.test(mime) || /\.(xlsx|xlsm|csv)$/i.test(f.name)) {
-      try { return res.json({ kind: 'sheet', name: f.name, sheets: await sheetPreview(f.data, f.name) }); }
-      catch (e) { return res.json({ kind: 'none', name: f.name, error: "This spreadsheet can't be shown here (save it as .xlsx)." }); }
+      try { return res.json({ kind: 'sheet', name: f.name, sheets: await sheetPreview(f.data, f.name), ...extra }); }
+      catch (e) { return res.json({ kind: 'none', name: f.name, error: "This spreadsheet can't be shown here (save it as .xlsx).", ...extra }); }
     }
-    return res.json({ kind: 'none', name: f.name, error: 'This kind of file cannot be shown here.' });
+    return res.json({ kind: 'none', name: f.name, error: 'This kind of file cannot be shown here.', ...extra });
   });
   app.post('/api/estimation/files/:id/delete', auth(ALL_ROLES), async (req, res) => {
     const f = await one('SELECT * FROM est_files WHERE id=$1', [Number(req.params.id) || 0]);

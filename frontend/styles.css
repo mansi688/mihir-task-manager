@@ -1590,9 +1590,21 @@ select.field-err,input.field-err{border-color:var(--danger);box-shadow:0 0 0 2px
 .est-viewer-bar b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .est-viewer-body{flex:1;overflow:auto;padding:10px;user-select:none;-webkit-user-select:none;}
 .est-view-img{max-width:100%;display:block;margin:0 auto;-webkit-user-drag:none;pointer-events:none;}
-.est-pdf,.est-pdf iframe{width:100%;height:100%;min-height:70vh;border:0;}
+.est-pdf{width:100%;}
+.est-pdf-page{display:block;width:100%;height:auto;margin:0 auto 10px;box-shadow:0 1px 4px rgba(0,0,0,.18);background:#fff;pointer-events:none;}
 .est-sheet-wrap{overflow:auto;}
 .est-sheet{border-collapse:collapse;font-size:12.5px;width:auto !important;}
 .est-sheet th{width:1%;}
 .est-sheet td,.est-sheet th{border:1px solid var(--line);padding:4px 8px;white-space:nowrap;}
 .est-sheet th{background:color-mix(in srgb,var(--ink) 6%,var(--panel));color:var(--muted);font-weight:600;position:sticky;left:0;}
+/* ---- Accounts Dept: compliance due dates ---- */
+.comp-list{display:flex;flex-direction:column;gap:8px;}
+.comp-item{border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;}
+.comp-item.late{border-color:color-mix(in srgb,var(--danger,#d33) 55%,var(--line));background:color-mix(in srgb,var(--danger,#d33) 5%,var(--panel));}
+.comp-item.soon{border-color:color-mix(in srgb,#e0a100 55%,var(--line));}
+.comp-main{flex:1;min-width:240px;display:flex;flex-direction:column;gap:3px;}
+.comp-btns{display:flex;gap:6px;flex-wrap:wrap;}
+.comp-inline{flex-basis:100%;display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+.comp-inline input{flex:1;min-width:180px;width:auto;}
+.comp-form{border:1px dashed var(--line);border-radius:12px;padding:10px 12px;margin-bottom:10px;}
+.linklike{background:none;border:0;padding:0;color:var(--accent,#2563eb);text-decoration:underline;cursor:pointer;font:inherit;}

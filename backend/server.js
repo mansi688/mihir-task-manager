@@ -3230,6 +3230,7 @@ async function runReminderEngine(now = new Date(), opts = {}) {
   const stats = await flushReminderOutbox(out, now);
   try { stats.deliveryReminders = await runDeliveryReminders(now, win); } catch (e) { log('ERROR', 'delivery reminders failed', { error: e.message }); }
   try { stats.billReminders = await payables.runPayableReminders(now); } catch (e) { log('ERROR', 'bill reminders failed', { error: e.message }); }
+  try { stats.complianceReminders = await compliance.runComplianceReminders(now); } catch (e) { log('ERROR', 'compliance reminders failed', { error: e.message }); }
   return stats;
 }
 // Deliveries due today (or late) and deliveries waiting for unloading remind the tagged site team at the
@@ -3789,6 +3790,9 @@ mountEstimation(app, { db, auth, ALL_ROLES, auditFromReq, collectUploads, MAX_FI
 /* backend/payables.js — vendor bills: Purchase sends them to Accounts with a credit period; reminders before / after the due date. */
 const { mountPayables } = require('./payables');
 const payables = mountPayables(app, { db, auth, ALL_ROLES, auditFromReq, collectUploads, MAX_FILE_CHARS, str, PROJECT_OPTIONS, localDateStr });
+/* backend/compliance.js — monthly compliance due dates (TDS, GST, PT, PF …): reminders 10 and 2 days before to Accounts + Admin. */
+const { mountCompliance } = require('./compliance');
+const compliance = mountCompliance(app, { db, auth, ALL_ROLES, auditFromReq, str, localDateStr });
 
 /* ============ EMPLOYEE LOCATION TRACKING ============
    backend/location/* — off unless ENABLE_LOCATION_TRACKING=true (docs/LOCATION_TRACKING.md). */

@@ -4,6 +4,26 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Compliance due dates, sounds, JMR quantity only, view-only estimation files
+### Added
+- **Compliance due dates** (Accounts Dept → 📅 Compliance; Accounts Department and Admin): TDS deposit 7th, **GST deposit
+  20th**, Sales invoices 5th, Electricity bill 10th (or the date on the bill — "Date this month"), PT 15th, PF 15th —
+  seeded on first start; add / edit / remove more. Reminders to Accounts + Admin **10 days and 2 days before**, on the
+  due date and every day once overdue, until "Done for <month>" is pressed (Admin and Accounts are told; undo kept).
+  New `backend/compliance.js`, notification types `compliance_due` / `compliance_done`.
+- **Notification sound** for every new notification (`/sounds/notification.mp3`) and a **cheerful announcement chime**
+  (`/sounds/announcement.mp3`) for announcements (also for whoever posts one). Sound on / off button on Notifications.
+  Phone push notifications still use the phone's own notification sound.
+- PDF attachments in Estimation are drawn page by page with pdf.js (`/vendor/pdfjs`, Apache-2.0) — works on phones.
+### Changed
+- **JMR: the measurements table is removed** — one "Quantity this JMR" field. JMRs imported from Excel keep their lines
+  (shown read-only) unless the quantity is changed.
+- **Estimation attachments are view-only** (on-screen viewer, no Download) — except the **HighRise / estimation
+  document**, which anyone who can see Estimation can download. `GET /api/estimation/files/:id` returns other
+  attachments to Admin only; `/view` says `canDownload`.
+### Database
+- New tables `compliance_items`, `compliance_periods` — additive.
+
 ## [Unreleased] — Department access, Estimation material + remarks, view-only files, follow-up clears notifications
 ### Changed
 - **Who sees which department page:** Accounts Dept = Accounts Department people, Purchase Department and Admin

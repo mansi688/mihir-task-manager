@@ -60,7 +60,7 @@ function renderEstimationView() {
   <div class="card">
     <div class="flex-between" style="flex-wrap:wrap;gap:10px;">
       <div><div class="card-title" style="margin:0;">Estimation & Billing</div>
-        <div class="small muted">JMR — joint measurement of work done (Nos × L × B × H), with previous / this / cumulative quantity. Reconciliation — material issued to a contractor against the work done, with wastage allowed and recovery.
+        <div class="small muted">JMR — joint measurement of work done (quantity and material), with previous / this / cumulative quantity. Reconciliation — material issued to a contractor against the work done, with wastage allowed and recovery.
           ${m.canEdit ? 'Write it, then send it for approval — it goes to Dnyaneshwar Kolekar and Admin.' : m.approveAll ? 'You approve these entries.' : 'You can view them.'}</div></div>
       ${m.canEdit && !s.form && !s.imp ? `<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary btn-sm" data-est-act="new-jmr">+ New JMR</button><button class="btn btn-sm" data-est-act="import">⬆ Import JMR from Excel</button><button class="btn btn-sm" data-est-act="new-recon">+ New reconciliation</button></div>` : ''}
     </div>
@@ -86,7 +86,7 @@ function estViewerHTML() {
   const sh = v.sheets && v.sheets[v.sheet || 0];
   return `<div class="est-viewer" data-est-act="view-close-bg">
     <div class="est-viewer-box" data-est-act="view-stay">
-      <div class="est-viewer-bar"><b>${estEsc(v.name || '')}</b><span class="small muted">View only</span><button class="btn btn-sm" data-est-act="view-close">Close</button></div>
+      <div class="est-viewer-bar"><b>${estEsc(v.name || '')}</b>${v.canDownload ? `<button class="btn btn-sm" data-est-download="${v.id}">⬇ Download</button>` : '<span class="small muted">View only</span>'}<button class="btn btn-sm" data-est-act="view-close">Close</button></div>
       <div class="est-viewer-body" oncontextmenu="return false;">
         ${v.loading ? '<div class="small muted" style="padding:20px;">Opening…</div>'
           : v.kind === 'image' ? `<img src="${v.data}" alt="" draggable="false" class="est-view-img">`
@@ -102,17 +102,46 @@ async function estOpenViewer(id) {
   ui.estView = { loading: true, name: '' }; render();
   try {
     const r = await api(`/api/estimation/files/${id}/view`);
-    ui.estView = { ...r, sheet: 0 };
+    ui.estView = { ...r, id, sheet: 0 };
     render();
-    if (r.kind === 'pdf') {
-      const bin = atob(String(r.data).split(',')[1] || ''); const arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-      const url = URL.createObjectURL(new Blob([arr], { type: 'application/pdf' }));
-      ui.estView.blobUrl = url;
-      const h = document.getElementById('est-pdf-holder'); if (h) h.innerHTML = `<iframe src="${url}#toolbar=0&navpanes=0" title="${estEsc(r.name)}"></iframe>`;
-    }
+    if (r.kind === 'pdf') await estRenderPdf(r.data);
   } catch (e) { ui.estView = null; setBanner(e.message); render(); }
 }
-function estCloseViewer() { if (ui.estView && ui.estView.blobUrl) URL.revokeObjectURL(ui.estView.blobUrl); ui.estView = null; render(); }
+function estCloseViewer() { ui.estView = null; render(); }
+// PDFs are drawn page by page as pictures (pdf.js, loaded only when needed) — works on phones and offers no download.
+let estPdfLib = null;
+function estLoadPdfLib() {
+  if (estPdfLib) return estPdfLib;
+  estPdfLib = new Promise((ok, bad) => {
+    const sc = document.createElement('script'); sc.src = '/vendor/pdfjs/pdf.min.js';
+    sc.onload = () => { try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.js'; ok(window.pdfjsLib); } catch (e) { bad(e); } };
+    sc.onerror = () => { estPdfLib = null; bad(new Error('Could not open the PDF viewer — check your connection.')); };
+    document.head.appendChild(sc);
+  });
+  return estPdfLib;
+}
+async function estRenderPdf(dataUrl) {
+  const h = document.getElementById('est-pdf-holder'); if (!h) return;
+  h.innerHTML = '<div class="small muted" style="padding:20px;">Opening PDF…</div>';
+  try {
+    const lib = await estLoadPdfLib();
+    const bin = atob(String(dataUrl).split(',')[1] || ''); const arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    const doc = await lib.getDocument({ data: arr }).promise;
+    h.innerHTML = '';
+    const width = Math.min(h.clientWidth || 800, 1000);
+    for (let n = 1; n <= Math.min(doc.numPages, 60); n++) {
+      if (!document.body.contains(h)) return; // viewer closed
+      const page = await doc.getPage(n);
+      const base = page.getViewport({ scale: 1 });
+      const scale = (width / base.width) * (window.devicePixelRatio || 1);
+      const vp = page.getViewport({ scale });
+      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height; c.className = 'est-pdf-page';
+      h.appendChild(c);
+      await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+    }
+    if (doc.numPages > 60) h.insertAdjacentHTML('beforeend', '<div class="small muted">Showing the first 60 pages.</div>');
+  } catch (e) { h.innerHTML = `<div class="small" style="padding:20px;">${estEsc(e.message || 'This PDF cannot be shown.')}</div>`; }
+}
 function estFilter(list, fields) {
   const s = estState(); const q = (s.q || '').trim().toLowerCase();
   return list.filter(x => (!s.project || x.project === s.project) && (!s.status || x.status === s.status)
@@ -164,7 +193,7 @@ function estJmrListHTML() {
       <button type="button" class="est-row" data-est-open="jmr:${j.id}">
         <span class="est-row-main"><b>${estEsc(j.work_item)}</b> <span class="mono small muted">${estEsc(j.ref)}</span>
           <span class="small muted">${estEsc([j.project, j.location, j.contractor, j.material ? `Material: ${j.material}` : '', j.ra_bill_no ? `RA ${j.ra_bill_no}` : ''].filter(Boolean).join(' · '))}</span></span>
-        <span class="est-row-num"><b>${estNum(j.total_qty)} ${estEsc(j.unit)}</b><span class="small muted">${j.lines.length} line${j.lines.length === 1 ? '' : 's'}</span></span>
+        <span class="est-row-num"><b>${estNum(j.total_qty)} ${estEsc(j.unit)}</b>${estHasLines(j) ? `<span class="small muted">${j.lines.length} line${j.lines.length === 1 ? '' : 's'}</span>` : ''}</span>
         ${estChip(j.status)}
       </button>
       ${open ? estJmrDetailHTML(j) : ''}
@@ -182,12 +211,12 @@ function estJmrDetailHTML(j) {
       ${[['Material', j.material], ['RA bill no.', j.ra_bill_no], ['Measured on', estDate(j.measured_on)], ['Period', [estDate(j.period_from), estDate(j.period_to)].filter(Boolean).join(' – ')], ['Our representative', j.client_rep], ['Contractor representative', j.contractor_rep],
         ['Written by', `${j.created_by_name || j.created_by} · ${estDate(j.created_at)}`]].filter(r => r[1]).map(r => `<div class="dlv-kv"><span>${r[0]}</span><b>${estEsc(r[1])}</b></div>`).join('')}
     </div>
-    <div class="dlv-perf-wrap"><table class="dlv-perf bud-table est-lines"><thead><tr><th>#</th><th>Description</th><th style="text-align:right;">Nos</th><th style="text-align:right;">L</th><th style="text-align:right;">B</th><th style="text-align:right;">H / D</th><th style="text-align:right;">Qty (${estEsc(j.unit)})</th><th>Remarks</th></tr></thead><tbody>
+    ${estHasLines(j) ? `<div class="dlv-perf-wrap"><table class="dlv-perf bud-table est-lines"><thead><tr><th>#</th><th>Description</th><th style="text-align:right;">Nos</th><th style="text-align:right;">L</th><th style="text-align:right;">B</th><th style="text-align:right;">H / D</th><th style="text-align:right;">Qty (${estEsc(j.unit)})</th><th>Remarks</th></tr></thead><tbody>
       ${j.lines.map((l, i) => `<tr class="${l.deduct ? 'est-deduct' : ''}"><td>${i + 1}</td><td>${l.deduct ? '<b>Less:</b> ' : ''}${estEsc(l.description || '')}</td>
         <td style="text-align:right;">${estNum(l.nos)}</td><td style="text-align:right;">${estNum(l.length)}</td><td style="text-align:right;">${estNum(l.breadth)}</td><td style="text-align:right;">${estNum(l.height)}</td>
         <td style="text-align:right;"><b>${estNum(l.qty)}</b>${l.manual ? ' <span class="small muted">(typed)</span>' : ''}</td><td>${estEsc(l.remarks || '')}</td></tr>`).join('')}
       <tr class="dlv-total"><td colspan="6">Total</td><td style="text-align:right;">${estNum(j.total_qty)}</td><td></td></tr>
-    </tbody></table></div>
+    </tbody></table></div>` : ''}
     ${j.notes ? `<div class="doc-note" style="margin-top:8px;">${estEsc(j.notes)}</div>` : ''}
     ${estFilesHTML(j, 'jmr')}
     ${estRemarksHTML(j, 'jmr')}
@@ -229,9 +258,16 @@ function estImportHTML(im) {
   </div>`;
 }
 // ---- JMR form
+// Lines sent to the server: the original Excel lines when the quantity is unchanged, otherwise one typed quantity.
+function estJmrLinesFor(f) {
+  if (f.origLines && f.origLines.length && Number(f.qty) === Number(f.origTotal)) return f.origLines;
+  return [{ description: f.work_item || 'Quantity', qty: Number(f.qty), manual: true }];
+}
+// JMRs are entered as one quantity now; JMRs imported from Excel keep their measurement lines.
+function estHasLines(j) { const ls = j.lines || []; return ls.length > 1 || ls.some(l => !l.manual || l.deduct || l.nos != null || l.length != null || l.breadth != null || l.height != null); }
 function estBlankLine() { return { description: '', nos: '', length: '', breadth: '', height: '', qty: '', manual: false, deduct: false, remarks: '' }; }
 function estJmrFormHTML(f) {
-  const total = estR3(f.lines.reduce((a, l) => a + estLineQty(l), 0));
+  const total = estR3(Number(f.qty) || 0);
   // previous approved quantity for this work item + contractor
   const key = j => `${j.project}|${String(j.work_item || '').toLowerCase()}|${String(j.contractor || '').toLowerCase()}`;
   const prev = estR3(estData.jmr.filter(j => j.status === 'approved' && j.id !== f.id && key(j) === key(f)).reduce((a, j) => a + j.total_qty, 0));
@@ -250,19 +286,8 @@ function estJmrFormHTML(f) {
     <datalist id="ejf-contractors">${[...new Set([...estData.jmr.map(j => j.contractor), ...estData.recon.map(r => r.contractor)].filter(Boolean))].map(w => `<option value="${estEsc(w)}">`).join('')}</datalist>
     <div class="row">${inp('measured_on', 'Measured on', '', 'date')}${inp('period_from', 'Work period from', '', 'date')}${inp('period_to', 'to', '', 'date')}</div>
     <div class="row">${inp('client_rep', 'Our representative', 'e.g. Site engineer name')}${inp('contractor_rep', "Contractor's representative", 'Name')}</div>
-    <div class="dlv-section">Measurements</div>
-    <div class="dlv-perf-wrap"><table class="dlv-perf est-lines est-edit"><thead><tr><th>#</th><th>Description</th><th>Nos</th><th>L</th><th>B</th><th>H / D</th><th>Type qty</th><th style="text-align:right;">Qty</th><th>Less</th><th>Remarks</th><th></th></tr></thead><tbody>
-      ${f.lines.map((l, i) => `<tr class="${l.deduct ? 'est-deduct' : ''}"><td>${i + 1}</td>
-        <td><input type="text" data-ejl="${i}:description" value="${estEsc(l.description)}" placeholder="e.g. Wall A"></td>
-        ${['nos', 'length', 'breadth', 'height'].map(k => `<td><input type="number" step="any" inputmode="decimal" class="est-n" data-ejl="${i}:${k}" value="${estEsc(l[k])}" ${l.manual ? 'disabled' : ''}></td>`).join('')}
-        <td><input type="checkbox" data-ejl-check="${i}:manual" ${l.manual ? 'checked' : ''}>${l.manual ? `<input type="number" step="any" inputmode="decimal" class="est-n" data-ejl="${i}:qty" value="${estEsc(l.qty)}">` : ''}</td>
-        <td style="text-align:right;" class="est-q" id="ejq-${i}"><b>${estNum(estLineQty(l))}</b></td>
-        <td><input type="checkbox" data-ejl-check="${i}:deduct" ${l.deduct ? 'checked' : ''}></td>
-        <td><input type="text" data-ejl="${i}:remarks" value="${estEsc(l.remarks)}"></td>
-        <td><button type="button" class="dlv-x" data-ejl-del="${i}" aria-label="Remove line">✕</button></td></tr>`).join('')}
-      <tr class="dlv-total"><td colspan="7">Total this JMR</td><td style="text-align:right;" id="ej-total">${estNum(total)}</td><td colspan="3">${estEsc(f.unit || '')}</td></tr>
-    </tbody></table></div>
-    <button type="button" class="btn btn-sm" style="margin-top:6px;" data-est-act="add-line">+ Add line</button>
+    <div class="row"><div class="col"><label for="ejf-qty">Quantity this JMR *${f.unit ? ` (${estEsc(f.unit)})` : ''}</label><input type="number" step="any" min="0" inputmode="decimal" id="ejf-qty" data-ejf="qty" value="${estEsc(f.qty == null ? '' : f.qty)}" placeholder="e.g. 40.4"></div><div class="col"></div></div>
+    ${f.origLines && f.origLines.length > 1 ? '<div class="small muted">This JMR came with measurement lines from Excel — they are kept unless you change the quantity.</div>' : ''}
     <div class="dlv-money-tiles bud-tiles" style="margin-top:10px;" id="ej-tiles">
       <div class="dlv-tile"><span>Up to previous (approved)</span><b>${estNum(prev)} ${estEsc(f.unit || '')}</b></div>
       <div class="dlv-tile good"><span>This JMR</span><b>${estNum(total)} ${estEsc(f.unit || '')}</b></div>
@@ -398,9 +423,9 @@ function estPrintJmr(j) {
     <div class="grid"><div><b>Work item:</b> ${estEsc(j.work_item)}</div><div><b>Material:</b> ${estEsc(j.material || '—')}</div><div><b>Contractor:</b> ${estEsc(j.contractor || '—')}</div>
       <div><b>Measured on:</b> ${estEsc(estDate(j.measured_on))}</div><div><b>Period:</b> ${estEsc([estDate(j.period_from), estDate(j.period_to)].filter(Boolean).join(' – '))}</div>
       <div><b>RA bill no.:</b> ${estEsc(j.ra_bill_no || '—')}</div></div>
-    <table><thead><tr><th>#</th><th>Description</th><th class="r">Nos</th><th class="r">L</th><th class="r">B</th><th class="r">H / D</th><th class="r">Qty (${estEsc(j.unit)})</th><th>Remarks</th></tr></thead><tbody>
+    ${estHasLines(j) ? `<table><thead><tr><th>#</th><th>Description</th><th class="r">Nos</th><th class="r">L</th><th class="r">B</th><th class="r">H / D</th><th class="r">Qty (${estEsc(j.unit)})</th><th>Remarks</th></tr></thead><tbody>
       ${j.lines.map((l, i) => `<tr><td>${i + 1}</td><td>${l.deduct ? 'Less: ' : ''}${estEsc(l.description || '')}</td><td class="r">${estNum(l.nos)}</td><td class="r">${estNum(l.length)}</td><td class="r">${estNum(l.breadth)}</td><td class="r">${estNum(l.height)}</td><td class="r">${estNum(l.qty)}</td><td>${estEsc(l.remarks || '')}</td></tr>`).join('')}
-      <tr><td colspan="6"><b>Total this JMR</b></td><td class="r"><b>${estNum(j.total_qty)}</b></td><td></td></tr></tbody></table>
+      <tr><td colspan="6"><b>Total this JMR</b></td><td class="r"><b>${estNum(j.total_qty)}</b></td><td></td></tr></tbody></table>` : ''}
     <table><tr><th>Up to previous</th><th>This JMR</th><th>Cumulative</th></tr>
       <tr><td>${estNum(j.prev_qty)} ${estEsc(j.unit)}</td><td>${estNum(j.total_qty)} ${estEsc(j.unit)}</td><td>${estNum(j.cum_qty)} ${estEsc(j.unit)}</td></tr></table>
     ${j.notes ? `<p><b>Notes:</b> ${estEsc(j.notes)}</p>` : ''}
@@ -431,6 +456,7 @@ function bindEstimationView() {
   on('[data-est-open]', b => { s.open = s.open === b.dataset.estOpen ? null : b.dataset.estOpen; s.decide = null; render(); });
   on('[data-est-file]', b => estOpenViewer(b.dataset.estFile));
   on('[data-est-act="view-close"]', () => estCloseViewer());
+  on('[data-est-download]', async b => { b.disabled = true; try { const r = await api(`/api/estimation/files/${b.dataset.estDownload}`); downloadDataUrl(r.data, r.name); } catch (e) { setBanner(e.message); render(); } b.disabled = false; });
   document.querySelectorAll('[data-est-act="view-close-bg"]').forEach(el => el.onclick = (e) => { if (e.target === el) estCloseViewer(); });
   on('[data-est-sheet]', b => { if (ui.estView) { ui.estView.sheet = Number(b.dataset.estSheet); render(); } });
   // send for approval with remarks; remarks thread
@@ -535,29 +561,22 @@ function bindEstimationView() {
   }
   // forms
   const today = typeof istDayKey === 'function' ? istDayKey(new Date().toISOString()) : '';
-  on('[data-est-act="new-jmr"]', () => { s.form = { type: 'jmr', project: s.project || '', unit: '', measured_on: today, lines: [estBlankLine(), estBlankLine(), estBlankLine()], files: [] }; render(); window.scrollTo(0, 0); });
+  on('[data-est-act="new-jmr"]', () => { s.form = { type: 'jmr', project: s.project || '', unit: '', measured_on: today, qty: '', files: [] }; render(); window.scrollTo(0, 0); });
   on('[data-est-act="new-recon"]', () => { s.form = { type: 'recon', project: s.project || '', unit: '', files: [] }; render(); window.scrollTo(0, 0); });
   on('[data-est-act="form-cancel"]', () => { s.form = null; render(); });
   on('[data-est-edit]', b => {
     const [t, id] = b.dataset.estEdit.split(':');
     const x = (t === 'jmr' ? estData.jmr : estData.recon).find(y => y.id === Number(id)); if (!x) return;
     const blank = v => v == null ? '' : v;
-    s.form = t === 'jmr' ? { type: 'jmr', ...Object.fromEntries(Object.entries(x).map(([k, v]) => [k, blank(v)])), files: [], lines: x.lines.map(l => ({ description: blank(l.description), nos: blank(l.nos), length: blank(l.length), breadth: blank(l.breadth), height: blank(l.height), qty: l.manual ? Math.abs(l.qty) : '', manual: l.manual, deduct: l.deduct, remarks: blank(l.remarks) })) }
+    s.form = t === 'jmr' ? { type: 'jmr', ...Object.fromEntries(Object.entries(x).map(([k, v]) => [k, blank(v)])), files: [], qty: x.total_qty, origTotal: x.total_qty, origLines: x.lines.map(l => ({ description: blank(l.description), nos: blank(l.nos), length: blank(l.length), breadth: blank(l.breadth), height: blank(l.height), qty: l.manual ? Math.abs(l.qty) : '', manual: l.manual, deduct: l.deduct, remarks: blank(l.remarks) })) }
       : { type: 'recon', ...Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'calc').map(([k, v]) => [k, blank(v)])), files: [] };
     s.form.hasSource = (x.files || []).some(y => y.kind === 'source'); s.form.sourceFiles = [];
     render(); window.scrollTo(0, 0);
   });
   const f = s.form;
   if (f && f.type === 'jmr') {
-    const refreshTotals = () => {
-      f.lines.forEach((l, i) => { const c = document.getElementById(`ejq-${i}`); if (c) c.innerHTML = `<b>${estNum(estLineQty(l))}</b>`; });
-      const t = document.getElementById('ej-total'); if (t) t.textContent = estNum(estR3(f.lines.reduce((a, l) => a + estLineQty(l), 0)));
-    };
-    document.querySelectorAll('[data-ejf]').forEach(el => { const k = el.dataset.ejf; el.oninput = () => { f[k] = el.value; }; el.onchange = () => { f[k] = el.value; if (['project', 'unit', 'rate', 'work_item', 'contractor'].includes(k)) { render(); const n = document.getElementById(el.id); if (n && n.focus && el.tagName === 'INPUT') n.focus(); } }; });
-    document.querySelectorAll('[data-ejl]').forEach(el => { const [i, k] = el.dataset.ejl.split(':'); el.oninput = () => { f.lines[Number(i)][k] = el.value; refreshTotals(); }; el.onchange = () => { f.lines[Number(i)][k] = el.value; render(); }; });
-    document.querySelectorAll('[data-ejl-check]').forEach(el => { const [i, k] = el.dataset.ejlCheck.split(':'); el.onchange = () => { f.lines[Number(i)][k] = el.checked; render(); }; });
-    on('[data-ejl-del]', b => { f.lines.splice(Number(b.dataset.ejlDel), 1); if (!f.lines.length) f.lines.push(estBlankLine()); render(); });
-    on('[data-est-act="add-line"]', () => { f.lines.push(estBlankLine()); render(); const ins = document.querySelectorAll('[data-ejl$=":description"]'); if (ins.length) ins[ins.length - 1].focus(); });
+    const refreshTiles = () => { const el = document.getElementById('ej-tiles'); if (!el) return; const tmp = document.createElement('div'); tmp.innerHTML = estJmrFormHTML(f); const n = tmp.querySelector('#ej-tiles'); if (n) el.innerHTML = n.innerHTML; };
+    document.querySelectorAll('[data-ejf]').forEach(el => { const k = el.dataset.ejf; el.oninput = () => { f[k] = el.value; if (k === 'qty') refreshTiles(); }; el.onchange = () => { f[k] = el.value; if (['project', 'unit', 'work_item', 'contractor'].includes(k)) { render(); const n = document.getElementById(el.id); if (n && n.focus && el.tagName === 'INPUT') n.focus(); } }; });
   }
   if (f && f.type === 'recon') {
     document.querySelectorAll('[data-erf]').forEach(el => { const k = el.dataset.erf; el.oninput = () => { f[k] = el.value; const c = document.getElementById('er-calc'); if (c) c.innerHTML = estReconCalcHTML(estReconCalc(f), f); }; el.onchange = () => { f[k] = el.value; render(); }; });
@@ -576,10 +595,11 @@ function bindEstimationView() {
     on('[data-est-save]', async b => {
       if (f.saving) return;
       const submit = b.dataset.estSave === 'submit';
+      if (f.type === 'jmr' && !(Number(f.qty) > 0)) { f.err = 'Enter the quantity for this JMR.'; render(); return; }
       if (submit && !(f.sourceFiles || []).length && !f.hasSource) { f.err = 'Attach the HighRise / estimation document (Excel, PDF or any format) before sending it for approval.'; render(); return; }
       const body = f.type === 'jmr'
         ? { project: f.project, location: f.location, work_item: f.work_item, material: f.material, contractor: f.contractor, unit: f.unit, measured_on: f.measured_on, period_from: f.period_from, period_to: f.period_to,
-            ra_bill_no: f.ra_bill_no, client_rep: f.client_rep, contractor_rep: f.contractor_rep, notes: f.notes, lines: f.lines, attachments: f.files, source_files: f.sourceFiles || [], remarks: submit ? (f.remarks || '') : '', submit }
+            ra_bill_no: f.ra_bill_no, client_rep: f.client_rep, contractor_rep: f.contractor_rep, notes: f.notes, lines: estJmrLinesFor(f), attachments: f.files, source_files: f.sourceFiles || [], remarks: submit ? (f.remarks || '') : '', submit }
         : { ...Object.fromEntries(['project', 'material', 'unit', 'contractor', 'work_item', 'period_from', 'period_to', 'issued', 'returned', 'balance_at_site', 'work_qty', 'work_unit', 'norm', 'wastage_pct', 'rate', 'notes'].map(k => [k, f[k]])), attachments: f.files, source_files: f.sourceFiles || [], remarks: submit ? (f.remarks || '') : '', submit };
       f.saving = true; f.err = ''; render();
       try {
