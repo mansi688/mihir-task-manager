@@ -1,7 +1,7 @@
 /* Estimation & Billing department: JMR (Joint Measurement Records) and material Reconciliation.
 
-   JMR — what was measured jointly on site for one work item (BOQ item) of one contractor, as measurement lines
-   (Nos × L × B × H, or a quantity typed in, with deductions). Quantity × rate = amount. Each JMR shows the quantity
+   JMR — what was measured jointly on site for one work item (and material) of one contractor, as measurement lines
+   (Nos × L × B × H, or a quantity typed in, with deductions). Each JMR shows the quantity
    approved up to the previous JMR for the same project + work item + contractor, this JMR, and the cumulative.
    Workflow: draft → submitted → approved, or returned (with a note) → edited → submitted again.
 
@@ -15,10 +15,38 @@
 
    Sending for approval needs the HighRise / estimation document attached (Excel, PDF or any format) — kind 'source'.
 
-   Who: the Estimation & Billing Department (and Admin) create and edit. Approval: Admin, Directors, Senior
-   management, and the project heads of that project. View: those, plus Accounts, Store, Contracting and Execution. */
+   Remarks: added when sending for approval, and any time after on the entry (everyone who can see it).
+
+   Who: the Estimation & Billing Department (and Admin) create and edit. Approval: EST_APPROVERS (Dnyaneshwar Kolekar)
+   and Admin. View: the Estimation & Billing Department, the Purchase Department, Admin and the approvers. */
+const EST_APPROVERS = ['dnyaneshwar.k'];
 
 const STATUS = ['draft', 'submitted', 'approved', 'returned'];
+
+const ExcelJS = require('exceljs');
+const { decodeDataUrl, excelCellValue, stripXlsxComments, parseCSV } = require('./task-import');
+// First sheets of an Excel / CSV file as rows of text, for showing on screen.
+async function sheetPreview(dataUrl, name, maxRows = 300, maxCols = 30) {
+  const buf = decodeDataUrl(dataUrl);
+  const isZip = buf.length > 3 && buf[0] === 0x50 && buf[1] === 0x4b;
+  const fmt = v => v instanceof Date ? v.toISOString().slice(0, 10) : String(v == null ? '' : v);
+  if (!isZip) return [{ name: String(name || 'Sheet'), rows: parseCSV(buf.toString('utf8')).slice(0, maxRows).map(r => r.slice(0, maxCols)), more: false }];
+  let wb = new ExcelJS.Workbook();
+  try { await wb.xlsx.load(buf); } catch (e) { wb = new ExcelJS.Workbook(); await wb.xlsx.load(await stripXlsxComments(buf)); }
+  const out = [];
+  for (const ws of wb.worksheets.slice(0, 8)) {
+    if (ws.state === 'hidden' || ws.state === 'veryHidden') continue;
+    const rows = []; let more = false;
+    ws.eachRow({ includeEmpty: true }, (row, n) => {
+      if (n > maxRows) { more = true; return; }
+      const v = []; for (let c = 1; c <= Math.min(maxCols, Math.max(ws.actualColumnCount || 0, row.cellCount)); c++) v.push(fmt(excelCellValue(row.getCell(c).value)));
+      rows[n - 1] = v;
+    });
+    for (let i = 0; i < rows.length; i++) if (!rows[i]) rows[i] = [];
+    out.push({ name: ws.name, rows, more });
+  }
+  return out;
+}
 
 function mountEstimation(app, deps) {
   const { db, auth, ALL_ROLES, auditFromReq, collectUploads, MAX_FILE_CHARS, str, PROJECT_OPTIONS, PROJECT_HEADS } = deps;
@@ -35,25 +63,20 @@ function mountEstimation(app, deps) {
   async function me(user) {
     const u = await db.getUserFresh(user.username);
     const team = String((u && u.team) || '');
-    const headOf = Object.keys(PROJECT_HEADS).filter(p => (PROJECT_HEADS[p] || []).includes(user.username));
     const isEst = /estimat|billing/i.test(team);
-    const senior = /senior management/i.test(team);
-    const approveAll = user.role === 'admin' || user.role === 'director' || senior;
+    const approveAll = user.role === 'admin' || EST_APPROVERS.includes(user.username);
     return {
       username: user.username, name: (u && u.name) || user.name, team,
       canEdit: user.role === 'admin' || isEst,
-      approveAll, headOf,
+      approveAll, headOf: [],
       isAccounts: /account/i.test(team),
-      canView: user.role === 'admin' || user.role === 'director' || isEst || senior || headOf.length > 0 || /account|store|contracting|execution/i.test(team),
+      canView: approveAll || isEst || /purchase/i.test(team),
     };
   }
-  const canApprove = (m, project) => m.approveAll || m.headOf.includes(project);
-  async function approversFor(project) {
+  const canApprove = (m) => m.approveAll;
+  async function approversFor() {
     const users = await db.listUsers();
-    const set = new Set((PROJECT_HEADS[project] || []).filter(u => users.some(x => x.username === u)));
-    for (const u of users) if (u.role === 'director' || /senior management/i.test(u.team || '')) set.add(u.username);
-    if (!set.size) for (const u of users) if (u.role === 'admin') set.add(u.username);
-    return [...set];
+    return users.filter(u => u.role === 'admin' || EST_APPROVERS.includes(u.username)).map(u => u.username);
   }
   const notify = async (users, except, type, message) => { for (const u of new Set(users)) if (u && u !== except) await db.createNotification({ username: u, type, message, task_id: null }); };
 
@@ -85,15 +108,13 @@ function mountEstimation(app, deps) {
   function readJmrFields(b) {
     const f = {
       project: str(b.project).trim(), location: str(b.location).trim().slice(0, 200) || null, work_item: str(b.work_item).trim().slice(0, 300),
-      boq_item: str(b.boq_item).trim().slice(0, 60) || null, contractor: str(b.contractor).trim().slice(0, 200) || null, unit: str(b.unit).trim().slice(0, 20),
-      rate: num(b.rate), measured_on: str(b.measured_on).slice(0, 10) || null, period_from: str(b.period_from).slice(0, 10) || null, period_to: str(b.period_to).slice(0, 10) || null,
+      material: str(b.material).trim().slice(0, 200) || null, contractor: str(b.contractor).trim().slice(0, 200) || null, unit: str(b.unit).trim().slice(0, 20), measured_on: str(b.measured_on).slice(0, 10) || null, period_from: str(b.period_from).slice(0, 10) || null, period_to: str(b.period_to).slice(0, 10) || null,
       ra_bill_no: str(b.ra_bill_no).trim().slice(0, 40) || null, client_rep: str(b.client_rep).trim().slice(0, 120) || null, contractor_rep: str(b.contractor_rep).trim().slice(0, 120) || null,
       notes: str(b.notes).trim().slice(0, 2000) || null,
     };
     if (!PROJECT_OPTIONS.includes(f.project)) return { error: `Pick the project: ${PROJECT_OPTIONS.join(', ')}.` };
     if (!f.work_item) return { error: 'Write the work item (e.g. "RCC M25 — slab").' };
     if (!f.unit) return { error: 'Pick the unit.' };
-    if (Number.isNaN(f.rate) || (f.rate != null && f.rate < 0)) return { error: 'Rate must be a number.' };
     return { f };
   }
   function readReconFields(b) {
@@ -131,10 +152,11 @@ function mountEstimation(app, deps) {
     const lines = ids.length ? await rows('SELECT * FROM est_jmr_lines WHERE jmr_id = ANY($1::int[]) ORDER BY jmr_id, sort, id', [ids]) : [];
     const recon = await rows('SELECT * FROM est_recon ORDER BY created_at DESC LIMIT 3000');
     const files = await rows('SELECT id, parent_type, parent_id, name, kind, uploaded_by, created_at FROM est_files ORDER BY id');
+    const comments = await rows('SELECT * FROM est_comments ORDER BY id');
     const N = v => v == null ? null : Number(v);
     const jmrOut = jmr.map(j => ({ ...j, rate: N(j.rate), total_qty: N(j.total_qty), amount: N(j.amount),
       lines: lines.filter(l => l.jmr_id === j.id).map(l => ({ ...l, nos: N(l.nos), length: N(l.length), breadth: N(l.breadth), height: N(l.height), qty: N(l.qty), manual: !!l.manual, deduct: !!l.deduct })),
-      files: files.filter(f => f.parent_type === 'jmr' && f.parent_id === j.id) }));
+      files: files.filter(f => f.parent_type === 'jmr' && f.parent_id === j.id), comments: comments.filter(c => c.parent_type === 'jmr' && c.parent_id === j.id) }));
     // Quantity approved before this JMR for the same project + work item + contractor (RA billing: previous / this / cumulative).
     const approved = jmrOut.filter(j => j.status === 'approved').sort((a, b) => String(a.decided_at).localeCompare(String(b.decided_at)) || a.id - b.id);
     for (const j of jmrOut) {
@@ -147,7 +169,7 @@ function mountEstimation(app, deps) {
     const reconOut = recon.map(r => {
       const x = { ...r };
       for (const k of ['issued', 'returned', 'balance_at_site', 'work_qty', 'norm', 'wastage_pct', 'rate']) x[k] = N(r[k]);
-      return { ...x, calc: reconCalc(x), files: files.filter(f => f.parent_type === 'recon' && f.parent_id === r.id) };
+      return { ...x, calc: reconCalc(x), files: files.filter(f => f.parent_type === 'recon' && f.parent_id === r.id), comments: comments.filter(c => c.parent_type === 'recon' && c.parent_id === r.id) };
     });
     return { jmr: jmrOut, recon: reconOut };
   }
@@ -157,13 +179,13 @@ function mountEstimation(app, deps) {
     const m = await me(req.user);
     if (!m.canView) return res.json({ canView: false });
     const sub = await rows("SELECT 'jmr' AS t, project FROM est_jmr WHERE status='submitted' UNION ALL SELECT 'recon', project FROM est_recon WHERE status='submitted'");
-    const toApprove = sub.filter(x => canApprove(m, x.project)).length;
+    const toApprove = m.approveAll ? sub.length : 0;
     const returned = m.canEdit ? Number((await one("SELECT (SELECT COUNT(*) FROM est_jmr WHERE status='returned' AND created_by=$1) + (SELECT COUNT(*) FROM est_recon WHERE status='returned' AND created_by=$1) AS n", [m.username])).n) : 0;
     res.json({ canView: true, canEdit: m.canEdit, isAccounts: m.isAccounts, approveAll: m.approveAll, headOf: m.headOf, toApprove, returned });
   });
   app.get('/api/estimation', auth(ALL_ROLES), async (req, res) => {
     const m = await me(req.user);
-    if (!m.canView) return res.status(403).json({ error: 'The Estimation pages are for the Estimation & Billing team, project heads, management, Accounts, Store, Contracting and Execution.' });
+    if (!m.canView) return res.status(403).json({ error: 'The Estimation page is for the Estimation & Billing and Purchase departments, the approvers and Admin.' });
     const data = await loadAll();
     res.json({ me: { canEdit: m.canEdit, approveAll: m.approveAll, headOf: m.headOf, isAccounts: m.isAccounts }, projects: PROJECT_OPTIONS, ...data });
   });
@@ -177,7 +199,7 @@ function mountEstimation(app, deps) {
     const up = collectUploads(b, MAX_FILE_CHARS); if (up.error) return res.status(400).json({ error: up.error });
     const src = readSource(b); if (src.error) return res.status(400).json({ error: src.error });
     if (b.submit && !src.files.length && !(existing && await hasSource('jmr', existing.id))) return res.status(400).json({ error: NEED_SOURCE });
-    const amount = f.rate != null ? r2(L.total * f.rate) : null;
+    const amount = null; // no rates on JMRs
     const t = now();
     const client = await db.pool.connect();
     let id;
@@ -185,15 +207,15 @@ function mountEstimation(app, deps) {
       await client.query('BEGIN');
       if (existing) {
         id = existing.id;
-        await client.query(`UPDATE est_jmr SET project=$1, location=$2, work_item=$3, boq_item=$4, contractor=$5, unit=$6, rate=$7, measured_on=$8, period_from=$9, period_to=$10,
-          ra_bill_no=$11, client_rep=$12, contractor_rep=$13, notes=$14, total_qty=$15, amount=$16, updated_at=$17 WHERE id=$18`,
-          [f.project, f.location, f.work_item, f.boq_item, f.contractor, f.unit, f.rate, f.measured_on, f.period_from, f.period_to, f.ra_bill_no, f.client_rep, f.contractor_rep, f.notes, L.total, amount, t, id]);
+        await client.query(`UPDATE est_jmr SET project=$1, location=$2, work_item=$3, material=$4, contractor=$5, unit=$6, measured_on=$7, period_from=$8, period_to=$9,
+          ra_bill_no=$10, client_rep=$11, contractor_rep=$12, notes=$13, total_qty=$14, updated_at=$15 WHERE id=$16`,
+          [f.project, f.location, f.work_item, f.material, f.contractor, f.unit, f.measured_on, f.period_from, f.period_to, f.ra_bill_no, f.client_rep, f.contractor_rep, f.notes, L.total, t, id]);
         await client.query('DELETE FROM est_jmr_lines WHERE jmr_id=$1', [id]);
       } else {
         let ref; do { ref = genRef('JMR'); } while ((await client.query('SELECT 1 FROM est_jmr WHERE ref=$1', [ref])).rows.length);
-        id = (await client.query(`INSERT INTO est_jmr(ref, project, location, work_item, boq_item, contractor, unit, rate, measured_on, period_from, period_to, ra_bill_no, client_rep, contractor_rep, notes,
-          total_qty, amount, status, created_by, created_by_name, created_at, updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'draft',$18,$19,$20,$20) RETURNING id`,
-          [ref, f.project, f.location, f.work_item, f.boq_item, f.contractor, f.unit, f.rate, f.measured_on, f.period_from, f.period_to, f.ra_bill_no, f.client_rep, f.contractor_rep, f.notes, L.total, amount, req.user.username, m.name, t])).rows[0].id;
+        id = (await client.query(`INSERT INTO est_jmr(ref, project, location, work_item, material, contractor, unit, measured_on, period_from, period_to, ra_bill_no, client_rep, contractor_rep, notes,
+          total_qty, status, created_by, created_by_name, created_at, updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'draft',$16,$17,$18,$18) RETURNING id`,
+          [ref, f.project, f.location, f.work_item, f.material, f.contractor, f.unit, f.measured_on, f.period_from, f.period_to, f.ra_bill_no, f.client_rep, f.contractor_rep, f.notes, L.total, req.user.username, m.name, t])).rows[0].id;
       }
       for (const l of L.lines) await client.query('INSERT INTO est_jmr_lines(jmr_id, sort, description, nos, length, breadth, height, qty, manual, deduct, remarks) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
         [id, l.sort, l.description || null, l.nos, l.length, l.breadth, l.height, l.qty, l.manual ? 1 : 0, l.deduct ? 1 : 0, l.remarks || null]);
@@ -204,7 +226,7 @@ function mountEstimation(app, deps) {
     const j = await one('SELECT * FROM est_jmr WHERE id=$1', [id]);
     if (b.submit) return submit(req, res, 'jmr', j, m);
     await auditFromReq(req, existing ? 'jmr_updated' : 'jmr_created', `${existing ? 'Updated' : 'Created'} JMR ${j.ref} — ${j.work_item} (${j.project}).`);
-    res.json({ ok: true, id, ref: j.ref, total_qty: L.total, amount });
+    res.json({ ok: true, id, ref: j.ref, total_qty: L.total });
   }
   async function saveRecon(req, res, existing) {
     const m = await me(req.user);
@@ -234,16 +256,21 @@ function mountEstimation(app, deps) {
     res.json({ ok: true, id, ref: r.ref, calc: reconCalc(r) });
   }
   const TABLE = { jmr: 'est_jmr', recon: 'est_recon' };
-  const label = (type, x) => type === 'jmr' ? `JMR ${x.ref} — ${x.work_item}${x.contractor ? ` (${x.contractor})` : ''}, ${x.project}` : `Reconciliation ${x.ref} — ${x.material}${x.contractor ? ` (${x.contractor})` : ''}, ${x.project}`;
+  const label = (type, x) => type === 'jmr' ? `JMR ${x.ref} — ${x.work_item}${x.material ? ` / ${x.material}` : ''}${x.contractor ? ` (${x.contractor})` : ''}, ${x.project}` : `Reconciliation ${x.ref} — ${x.material}${x.contractor ? ` (${x.contractor})` : ''}, ${x.project}`;
   async function submit(req, res, type, x, m) {
     if (!['draft', 'returned'].includes(x.status)) return res.status(400).json({ error: 'It has already been sent for approval.' });
     if (!(await hasSource(type, x.id))) return res.status(400).json({ error: NEED_SOURCE });
+    const remarks = str((req.body || {}).remarks).trim().slice(0, 1000);
     await q(`UPDATE ${TABLE[type]} SET status='submitted', submitted_at=$1 WHERE id=$2`, [now(), x.id]);
-    const to = await approversFor(x.project);
-    const extra = type === 'jmr' ? ` Qty ${Number(x.total_qty)} ${x.unit}${x.amount != null ? `, ₹${Number(x.amount).toLocaleString('en-IN')}` : ''}.` : '';
-    await notify(to, req.user.username, 'est_submitted', `${m.name} sent ${label(type, x)} for your approval.${extra}`);
+    if (remarks) await addComment(type, x.id, m, remarks, 'submit');
+    const to = await approversFor();
+    const extra = type === 'jmr' ? ` Qty ${Number(x.total_qty)} ${x.unit}.` : '';
+    await notify(to, req.user.username, 'est_submitted', `${m.name} sent ${label(type, x)} for your approval.${extra}${remarks ? ` Remarks: ${remarks.slice(0, 200)}` : ''}`);
     await auditFromReq(req, `${type}_submitted`, `Sent ${label(type, x)} for approval.`);
     res.json({ ok: true, id: x.id, ref: x.ref, status: 'submitted', sentTo: to });
+  }
+  async function addComment(type, id, m, text, kind = 'remark') {
+    await q('INSERT INTO est_comments(parent_type, parent_id, kind, text, by_username, by_name, created_at) VALUES($1,$2,$3,$4,$5,$6,$7)', [type, id, kind, text, m.username, m.name, now()]);
   }
   async function getOr404(type, id, res) {
     const x = await one(`SELECT * FROM ${TABLE[type]} WHERE id=$1`, [Number(id) || 0]);
@@ -266,7 +293,7 @@ function mountEstimation(app, deps) {
     app.post(`/api/estimation/${type}/:id/decide`, auth(ALL_ROLES), async (req, res) => {
       const m = await me(req.user);
       const x = await getOr404(type, req.params.id, res); if (!x) return;
-      if (!canApprove(m, x.project)) return res.status(403).json({ error: 'Only Admin, Directors, Senior management or the project heads can approve this.' });
+      if (!canApprove(m)) return res.status(403).json({ error: 'Only Dnyaneshwar Kolekar or Admin can approve this.' });
       if (x.status !== 'submitted') return res.status(400).json({ error: 'It is not waiting for approval.' });
       const decision = str((req.body || {}).decision);
       const note = str((req.body || {}).note).trim().slice(0, 1000);
@@ -275,6 +302,7 @@ function mountEstimation(app, deps) {
       if (x.created_by === req.user.username && decision === 'approve' && req.user.role !== 'admin') return res.status(400).json({ error: 'You cannot approve your own entry.' });
       await q(`UPDATE ${TABLE[type]} SET status=$1, decided_by=$2, decided_by_name=$3, decided_at=$4, decision_note=$5 WHERE id=$6`,
         [decision === 'approve' ? 'approved' : 'returned', req.user.username, m.name, now(), note || null, x.id]);
+      await addComment(type, x.id, m, `${decision === 'approve' ? 'Approved' : 'Returned for correction'}${note ? `: ${note}` : '.'}`, decision === 'approve' ? 'approved' : 'returned');
       await notify([x.created_by], req.user.username, 'est_decided', decision === 'approve'
         ? `✓ ${m.name} approved ${label(type, x)}.${note ? ` Note: ${note}` : ''}`
         : `↩ ${m.name} returned ${label(type, x)}: "${note}". Correct it and send it again.`);
@@ -291,11 +319,21 @@ function mountEstimation(app, deps) {
       await auditFromReq(req, `${type}_deleted`, `Removed ${label(type, x)} (${x.status}).`);
       res.json({ ok: true });
     });
+    // Remarks on an entry, any time — the writer and the approvers are told.
+    app.post(`/api/estimation/${type}/:id/remark`, auth(ALL_ROLES), async (req, res) => {
+      const m = await me(req.user); if (!m.canView) return res.status(403).json({ error: 'Not allowed.' });
+      const x = await getOr404(type, req.params.id, res); if (!x) return;
+      const text = str((req.body || {}).text).trim().slice(0, 1000);
+      if (text.length < 2) return res.status(400).json({ error: 'Write the remark.' });
+      await addComment(type, x.id, m, text);
+      await notify([x.created_by, ...(await approversFor())], req.user.username, 'est_remark', `💬 ${m.name} on ${label(type, x)}: ${text.slice(0, 200)}`);
+      res.json({ ok: true });
+    });
     // Add files any time (e.g. the signed JMR copy after approval).
     app.post(`/api/estimation/${type}/:id/files`, auth(ALL_ROLES), async (req, res) => {
       const m = await me(req.user);
       const x = await getOr404(type, req.params.id, res); if (!x) return;
-      if (!(m.canEdit || canApprove(m, x.project))) return res.status(403).json({ error: 'Only the Estimation & Billing team, approvers or Admin can add files.' });
+      if (!(m.canEdit || canApprove(m))) return res.status(403).json({ error: 'Only the Estimation & Billing team, approvers or Admin can add files.' });
       const up = collectUploads(req.body || {}, MAX_FILE_CHARS); if (up.error) return res.status(400).json({ error: up.error });
       if (!up.files.length) return res.status(400).json({ error: 'Attach a file.' });
       const kind = str((req.body || {}).kind) === 'source' ? 'source' : 'attachment';
@@ -330,6 +368,20 @@ function mountEstimation(app, deps) {
     const f = await one('SELECT name, data FROM est_files WHERE id=$1', [Number(req.params.id) || 0]);
     if (!f) return res.status(404).json({ error: 'File not found.' });
     res.json(f);
+  });
+  // View only: images and PDFs come back as data for the on-screen viewer; Excel / CSV as rows (no file to save).
+  app.get('/api/estimation/files/:id/view', auth(ALL_ROLES), async (req, res) => {
+    const m = await me(req.user); if (!m.canView) return res.status(403).json({ error: 'Not allowed.' });
+    const f = await one('SELECT name, data FROM est_files WHERE id=$1', [Number(req.params.id) || 0]);
+    if (!f) return res.status(404).json({ error: 'File not found.' });
+    const mime = (/^data:([^;,]+)/.exec(f.data || '') || [])[1] || '';
+    if (/^image\//.test(mime)) return res.json({ kind: 'image', name: f.name, data: f.data });
+    if (mime === 'application/pdf' || /\.pdf$/i.test(f.name)) return res.json({ kind: 'pdf', name: f.name, data: f.data });
+    if (/sheet|excel|csv/.test(mime) || /\.(xlsx|xlsm|csv)$/i.test(f.name)) {
+      try { return res.json({ kind: 'sheet', name: f.name, sheets: await sheetPreview(f.data, f.name) }); }
+      catch (e) { return res.json({ kind: 'none', name: f.name, error: "This spreadsheet can't be shown here (save it as .xlsx)." }); }
+    }
+    return res.json({ kind: 'none', name: f.name, error: 'This kind of file cannot be shown here.' });
   });
   app.post('/api/estimation/files/:id/delete', auth(ALL_ROLES), async (req, res) => {
     const f = await one('SELECT * FROM est_files WHERE id=$1', [Number(req.params.id) || 0]);

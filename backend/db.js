@@ -510,6 +510,11 @@ async function init() {
     status TEXT NOT NULL DEFAULT 'draft', created_by TEXT NOT NULL, created_by_name TEXT, created_at TEXT NOT NULL, updated_at TEXT,
     submitted_at TEXT, decided_by TEXT, decided_by_name TEXT, decided_at TEXT, decision_note TEXT)`);
   await run('CREATE INDEX IF NOT EXISTS idx_est_jmr_key ON est_jmr(project, work_item, contractor)');
+  await ensureColumn('est_jmr', 'material', 'TEXT');
+  await run(`CREATE TABLE IF NOT EXISTS est_comments(
+    id SERIAL PRIMARY KEY, parent_type TEXT NOT NULL, parent_id INTEGER NOT NULL, kind TEXT NOT NULL DEFAULT 'remark', text TEXT NOT NULL,
+    by_username TEXT, by_name TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_est_comments_parent ON est_comments(parent_type, parent_id)');
   await run(`CREATE TABLE IF NOT EXISTS est_jmr_lines(
     id SERIAL PRIMARY KEY, jmr_id INTEGER NOT NULL REFERENCES est_jmr(id) ON DELETE CASCADE, sort INTEGER NOT NULL DEFAULT 0,
     description TEXT, nos NUMERIC(14,3), length NUMERIC(14,3), breadth NUMERIC(14,3), height NUMERIC(14,3),

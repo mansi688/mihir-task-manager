@@ -2,7 +2,7 @@
 
    Each visible sheet is read. Recognised:
    - details above the table, as "Label: value" in one cell or a label cell followed by its value:
-     Project / Site, Location / Tower / Floor, Work item / Name of work, Contractor / Agency, Unit, Rate, BOQ item,
+     Project / Site, Location / Tower / Floor, Work item / Name of work, Material, Contractor / Agency, Unit,
      RA bill, Date / Measured on;
    - the measurement table: a heading row with Description (Particulars / Item / Details) and at least one of
      Nos, L, B, H (Depth / Thickness), Qty — plus optional Unit, Work item and Remarks columns;
@@ -33,8 +33,7 @@ const META = {
   work_item: ['work item', 'name of work', 'item of work', 'work', 'activity', 'description of work'],
   contractor: ['contractor', 'agency', 'name of contractor', 'sub contractor', 'subcontractor', 'vendor'],
   unit: ['unit', 'uom'],
-  rate: ['rate', 'rate rs', 'rate inr'],
-  boq_item: ['boq item', 'boq no', 'boq item no', 'item no', 'boq'],
+  material: ['material', 'material name', 'material used', 'material type'],
   ra_bill_no: ['ra bill', 'ra bill no', 'ra no', 'bill no', 'running bill no'],
   measured_on: ['date', 'measured on', 'date of measurement', 'jmr date'],
 };
@@ -79,7 +78,7 @@ function readMeta(rows, upto) {
       for (const [k, al] of Object.entries(META)) {
         if (meta[k] != null || !al.includes(label)) continue;
         if (value == null || text(value) === '') continue;
-        meta[k] = k === 'rate' ? numOf(value) : k === 'measured_on' ? ymd(value) : k === 'unit' ? unitOf(value) : text(value).slice(0, 300);
+        meta[k] = k === 'measured_on' ? ymd(value) : k === 'unit' ? unitOf(value) : text(value).slice(0, 300);
       }
     }
   }
@@ -162,7 +161,7 @@ async function readJmrFile(dataUrl, fileName) {
 async function buildJmrTemplate() {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('JMR');
-  const meta = [['Project:', 'Mihir Amara'], ['Location:', 'Tower B, 4th floor'], ['Contractor:', 'Shree Builders'], ['Work item:', 'Block work 150 mm'], ['Unit:', 'sqm'], ['Rate:', 450], ['BOQ item:', '4.2'], ['RA bill:', 'RA-03'], ['Date:', '25-10-2026']];
+  const meta = [['Project:', 'Mihir Amara'], ['Location:', 'Tower B, 4th floor'], ['Contractor:', 'Shree Builders'], ['Work item:', 'Block work 150 mm'], ['Material:', 'AAC blocks 150 mm'], ['Unit:', 'sqm'], ['RA bill:', 'RA-03'], ['Date:', '25-10-2026'], ['', '']];
   meta.forEach(r => ws.addRow(r));
   ws.addRow([]);
   const head = ws.addRow(['Description', 'Nos', 'L', 'B', 'H', 'Qty', 'Remarks']);
@@ -176,7 +175,7 @@ async function buildJmrTemplate() {
   ws.addRow(['Wall A both faces', 2, 5, '', 3, 30, '']);
   ws.columns = [{ width: 46 }, { width: 8 }, { width: 8 }, { width: 8 }, { width: 8 }, { width: 10 }, { width: 22 }];
   const help = wb.addWorksheet('How to fill');
-  ['Details at the top (Project, Location, Contractor, Work item, Unit, Rate, BOQ item, RA bill, Date) are optional — you can also pick them on the screen.',
+  ['Details at the top (Project, Location, Contractor, Work item, Material, Unit, RA bill, Date) are optional — you can also pick them on the screen.',
     'The table needs a heading row with "Description" and Nos / L / B / H and/or Qty. Leave a box empty if it does not apply.',
     'Start a line with "Less" (or use a negative number) for deductions such as openings.',
     '"Total" rows are skipped — the app adds the lines up itself.',

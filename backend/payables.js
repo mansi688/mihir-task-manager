@@ -47,7 +47,7 @@ function mountPayables(app, deps) {
     const canAdd = admin || /purchase/i.test(team) || !!(u && u.manage_deliveries);
     const canPay = admin || /account/i.test(team);
     return { username: user.username, name: (u && u.name) || user.name, admin, canAdd, canPay,
-      canView: canAdd || canPay || user.role === 'director' || /senior management/i.test(team) };
+      canView: canAdd || canPay }; // Accounts Department, Purchase Department (and delivery access), Admin
   }
   async function accountsTeam() {
     const users = await db.listUsers();
@@ -134,7 +134,7 @@ function mountPayables(app, deps) {
   });
   app.get('/api/payables', auth(ALL_ROLES), async (req, res) => {
     const m = await me(req.user);
-    if (!m.canView) return res.status(403).json({ error: 'Vendor bills are for Accounts, Purchase, Admin and management.' });
+    if (!m.canView) return res.status(403).json({ error: 'Vendor bills are for the Accounts and Purchase departments and Admin.' });
     res.json({ me: { canAdd: m.canAdd, canPay: m.canPay, admin: m.admin }, payModes: PAY_MODES, docTypes: DOC_TYPES, remindBefore: REMIND_BEFORE, projects: PROJECT_OPTIONS, bills: await loadBills() });
   });
   async function linkDelivery(b, f) {

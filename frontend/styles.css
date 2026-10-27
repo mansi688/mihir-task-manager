@@ -1583,3 +1583,16 @@ select.field-err,input.field-err{border-color:var(--danger);box-shadow:0 0 0 2px
 .ap-credit{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
 .ap-doc{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px;font-size:13px;}
 .ap-doc-type{font-weight:700;min-width:170px;}
+/* ---- Estimation view-only file viewer ---- */
+.est-viewer{position:fixed;inset:0;z-index:1000;background:rgba(10,15,25,.72);display:flex;align-items:center;justify-content:center;padding:16px;}
+.est-viewer-box{background:var(--panel);border-radius:14px;width:min(1100px,100%);height:min(88vh,100%);display:flex;flex-direction:column;overflow:hidden;}
+.est-viewer-bar{display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);}
+.est-viewer-bar b{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.est-viewer-body{flex:1;overflow:auto;padding:10px;user-select:none;-webkit-user-select:none;}
+.est-view-img{max-width:100%;display:block;margin:0 auto;-webkit-user-drag:none;pointer-events:none;}
+.est-pdf,.est-pdf iframe{width:100%;height:100%;min-height:70vh;border:0;}
+.est-sheet-wrap{overflow:auto;}
+.est-sheet{border-collapse:collapse;font-size:12.5px;width:auto !important;}
+.est-sheet th{width:1%;}
+.est-sheet td,.est-sheet th{border:1px solid var(--line);padding:4px 8px;white-space:nowrap;}
+.est-sheet th{background:color-mix(in srgb,var(--ink) 6%,var(--panel));color:var(--muted);font-weight:600;position:sticky;left:0;}

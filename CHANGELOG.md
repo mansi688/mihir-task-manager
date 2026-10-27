@@ -4,6 +4,27 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Department access, Estimation material + remarks, view-only files, follow-up clears notifications
+### Changed
+- **Who sees which department page:** Accounts Dept = Accounts Department people, Purchase Department and Admin
+  (Directors / senior management removed). Estimation = Estimation & Billing people, Purchase Department, Admin and
+  Dnyaneshwar Kolekar. Only Estimation & Billing (and Admin) write JMRs / reconciliations; only Accounts (and Admin) record payments.
+- **Estimation approvals go only to Dnyaneshwar Kolekar (`dnyaneshwar.k`) and Admin** (no longer the project heads).
+- **JMR: rate and BOQ item no. removed, Material added** (form, list, detail, print, CSV, summary, Excel import / template).
+  JMR amounts are no longer shown anywhere.
+- The measurements help line ("Qty = Nos × L × B × H … Tick 'Less' for deductions") is removed.
+- Accounts Dept "Site money" tab no longer shows the JMR billing card.
+### Added
+- **Remarks when sending for approval** (JMR and reconciliation) — included in the approver's notification — and a
+  **Remarks thread** on every JMR / reconciliation (submit, returned and approved notes appear there too). New
+  notification type `est_remark`.
+- **View-only file viewer for Estimation uploads**: images, PDFs (no toolbar) and Excel / CSV shown as a table, with no
+  Download button. `GET /api/estimation/files/:id/view`. (A screenshot cannot be prevented.)
+- **Notifications:** pressing **Follow up** marks every unread notification about that task as seen (with Undo), so the
+  count goes down. In the Flagged / Warnings person panel each task now has its own **Follow up** button.
+### Database
+- `est_jmr.material` (TEXT), new table `est_comments` — additive.
+
 ## [Unreleased] — Accounts Department: vendor bills, credit period, payment reminders
 ### Added
 - **Vendor bills (accounts payable)** on the Accounts Dept page (Accounts, Purchase, Admin, Directors, Senior management).

@@ -12,7 +12,7 @@ test('JMR import: template, section headings, deductions, mismatched Qty, CSV', 
   assert.equal(t.jmrs.length, 2);
   const [a, b] = t.jmrs;
   assert.equal(a.project, 'Mihir Amara'); assert.equal(a.contractor, 'Shree Builders'); assert.equal(a.work_item, 'Block work 150 mm');
-  assert.equal(a.unit, 'sqm'); assert.equal(a.rate, 450); assert.equal(a.measured_on, '2026-10-25'); assert.equal(a.ra_bill_no, 'RA-03');
+  assert.equal(a.unit, 'sqm'); assert.equal(a.material, 'AAC blocks 150 mm'); assert.equal(a.rate, undefined); assert.equal(a.measured_on, '2026-10-25'); assert.equal(a.ra_bill_no, 'RA-03');
   assert.equal(a.lines.length, 3); assert.equal(a.total, 40.4);
   assert.equal(a.lines[1].deduct, true); assert.equal(a.lines[1].description, 'Door opening D1');
   assert.equal(a.lines[2].manual, true); assert.equal(a.lines[2].qty, 12.5);

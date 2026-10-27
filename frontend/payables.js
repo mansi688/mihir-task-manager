@@ -14,7 +14,7 @@ const AP_TABS = [
   { key: 'paid', label: '✅ Paid', match: b => b.status === 'paid' },
   { key: 'all', label: 'All bills', match: () => true },
   { key: 'vendors', label: '🏢 By vendor' },
-  { key: 'other', label: 'Contractors & site' },
+  { key: 'other', label: 'Site money' },
 ];
 function apEsc(s) { return typeof esc === 'function' ? esc(s) : String(s == null ? '' : s); }
 function apInr(n) { return n == null ? '—' : '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }

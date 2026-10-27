@@ -25,7 +25,8 @@ function estState() {
 }
 // Menu
 function estimationTabVisible() { return !!estSummary.canView; }
-function accountsDeptTabVisible() { return !!(estSummary.isAccounts || session.role === 'admin' || session.role === 'director' || /senior management/i.test(session.team || '') || (typeof apSummary !== 'undefined' && apSummary.canView)); }
+// Accounts Department page: the Accounts Department, the Purchase Department (and delivery access) and Admin — the server decides (apSummary.canView).
+function accountsDeptTabVisible() { return !!(session.role === 'admin' || (typeof apSummary !== 'undefined' && apSummary.canView)); }
 function estimationBadge() { return (estSummary.toApprove || 0) + (estSummary.returned || 0); }
 
 // ---- maths (same as the server)
@@ -59,8 +60,8 @@ function renderEstimationView() {
   <div class="card">
     <div class="flex-between" style="flex-wrap:wrap;gap:10px;">
       <div><div class="card-title" style="margin:0;">Estimation & Billing</div>
-        <div class="small muted">JMR — joint measurement of work done (Nos × L × B × H), with previous / this / cumulative quantity and amount. Reconciliation — material issued to a contractor against the work done, with wastage allowed and recovery.
-          ${m.canEdit ? 'Write it, then send it for approval to the project heads / management.' : estCanApprove('') || (m.headOf || []).length ? 'You approve entries for your projects.' : 'You can view and download.'}</div></div>
+        <div class="small muted">JMR — joint measurement of work done (Nos × L × B × H), with previous / this / cumulative quantity. Reconciliation — material issued to a contractor against the work done, with wastage allowed and recovery.
+          ${m.canEdit ? 'Write it, then send it for approval — it goes to Dnyaneshwar Kolekar and Admin.' : m.approveAll ? 'You approve these entries.' : 'You can view them.'}</div></div>
       ${m.canEdit && !s.form && !s.imp ? `<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary btn-sm" data-est-act="new-jmr">+ New JMR</button><button class="btn btn-sm" data-est-act="import">⬆ Import JMR from Excel</button><button class="btn btn-sm" data-est-act="new-recon">+ New reconciliation</button></div>` : ''}
     </div>
     ${waiting ? `<div class="notice dlv-warn" style="margin-top:10px;">⏳ ${waiting} waiting for your approval.</div>` : ''}
@@ -77,8 +78,41 @@ function renderEstimationView() {
     </div>
     ${view === 'jmr' ? estJmrListHTML() : view === 'recon' ? estReconListHTML() : estSummaryHTML()}
   </div>
-  ${ui.deliveryPhoto ? `<div class="dlv-viewer" data-est-act="close-photo"><img src="${ui.deliveryPhoto.data}" alt=""><div class="dlv-viewer-bar"><span>${estEsc(ui.deliveryPhoto.name)}</span><button class="btn btn-sm" data-est-act="download-photo">Download</button><button class="btn btn-sm" data-est-act="close-photo">Close</button></div></div>` : ''}`;
+  ${estViewerHTML()}`;
 }
+// View-only viewer for estimation files: images, PDFs (no toolbar) and Excel / CSV shown as a table — no Download button.
+function estViewerHTML() {
+  const v = ui.estView; if (!v) return '';
+  const sh = v.sheets && v.sheets[v.sheet || 0];
+  return `<div class="est-viewer" data-est-act="view-close-bg">
+    <div class="est-viewer-box" data-est-act="view-stay">
+      <div class="est-viewer-bar"><b>${estEsc(v.name || '')}</b><span class="small muted">View only</span><button class="btn btn-sm" data-est-act="view-close">Close</button></div>
+      <div class="est-viewer-body" oncontextmenu="return false;">
+        ${v.loading ? '<div class="small muted" style="padding:20px;">Opening…</div>'
+          : v.kind === 'image' ? `<img src="${v.data}" alt="" draggable="false" class="est-view-img">`
+          : v.kind === 'pdf' ? `<div data-morph-skip id="est-pdf-holder" class="est-pdf"></div>`
+          : v.kind === 'sheet' ? `${v.sheets.length > 1 ? `<div class="dlv-subtabs" style="margin-bottom:8px;">${v.sheets.map((x, i) => `<button type="button" class="dlv-subtab${(v.sheet || 0) === i ? ' active' : ''}" data-est-sheet="${i}">${estEsc(x.name)}</button>`).join('')}</div>` : ''}
+              ${sh && sh.rows.length ? `<div class="est-sheet-wrap"><table class="est-sheet"><tbody>${sh.rows.map((r, ri) => `<tr><th>${ri + 1}</th>${r.map(c => `<td>${estEsc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>${sh.more ? '<div class="small muted">Showing the first 300 rows.</div>' : ''}` : '<div class="small muted">This sheet is empty.</div>'}`
+          : `<div class="small" style="padding:20px;">${estEsc(v.error || 'This file cannot be shown here.')}</div>`}
+      </div>
+    </div>
+  </div>`;
+}
+async function estOpenViewer(id) {
+  ui.estView = { loading: true, name: '' }; render();
+  try {
+    const r = await api(`/api/estimation/files/${id}/view`);
+    ui.estView = { ...r, sheet: 0 };
+    render();
+    if (r.kind === 'pdf') {
+      const bin = atob(String(r.data).split(',')[1] || ''); const arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([arr], { type: 'application/pdf' }));
+      ui.estView.blobUrl = url;
+      const h = document.getElementById('est-pdf-holder'); if (h) h.innerHTML = `<iframe src="${url}#toolbar=0&navpanes=0" title="${estEsc(r.name)}"></iframe>`;
+    }
+  } catch (e) { ui.estView = null; setBanner(e.message); render(); }
+}
+function estCloseViewer() { if (ui.estView && ui.estView.blobUrl) URL.revokeObjectURL(ui.estView.blobUrl); ui.estView = null; render(); }
 function estFilter(list, fields) {
   const s = estState(); const q = (s.q || '').trim().toLowerCase();
   return list.filter(x => (!s.project || x.project === s.project) && (!s.status || x.status === s.status)
@@ -92,6 +126,14 @@ function estFilesHTML(x, type) {
   <div class="dlv-files" style="margin-top:8px;">${other.map(f => `<button type="button" class="dlv-file" data-est-file="${f.id}">📎 ${estEsc(f.name)}</button>`).join('')}
     ${m.canEdit || estCanApprove(x.project) ? `<label class="btn btn-sm">+ Add file${x.status === 'approved' ? ' (e.g. signed copy)' : ''}<input type="file" data-est-addfile="${type}:${x.id}" accept="image/*,application/pdf,.pdf,.xlsx,.xls,.doc,.docx" multiple hidden></label>` : ''}</div>`;
 }
+function estRemarksHTML(x, type) {
+  const s = estState(); const icon = { submit: '📤', approved: '✓', returned: '↩', remark: '💬' };
+  const key = `${type}:${x.id}`;
+  return `<div class="dlv-section" style="margin-top:12px;">Remarks</div>
+    <div class="ap-timeline">${(x.comments || []).map(c => `<div class="ap-ev ap-${c.kind === 'returned' ? 'hold' : c.kind === 'approved' ? 'paid' : c.kind === 'submit' ? 'query' : 'note'}"><span class="ap-ev-ic">${icon[c.kind] || '💬'}</span><div><div>${c.kind === 'submit' ? '<b>Sent for approval:</b> ' : ''}${estEsc(c.text)}</div>
+      <div class="small muted">${estEsc(c.by_name || c.by_username || '')} · ${estEsc(new Date(c.created_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }))}</div></div></div>`).join('') || '<div class="small muted">No remarks yet.</div>'}</div>
+    <div class="ap-credit" style="margin-top:6px;"><input type="text" id="est-remark-${type}-${x.id}" value="${estEsc((s.remarkDraft || {})[key] || '')}" placeholder="Add a remark…" style="flex:1;min-width:200px;margin:0;"><button class="btn btn-sm" data-est-remark="${key}">Add remark</button></div>`;
+}
 function estActionsHTML(x, type) {
   const m = estMe(); const s = estState();
   const mineEdit = m.canEdit && ['draft', 'returned'].includes(x.status);
@@ -100,18 +142,20 @@ function estActionsHTML(x, type) {
     ${x.status === 'returned' && x.decision_note ? `<div class="notice dlv-warn" style="margin-top:8px;">↩ Returned by <b>${estEsc(x.decided_by_name || x.decided_by)}</b>: “${estEsc(x.decision_note)}”</div>` : ''}
     ${x.status === 'approved' ? `<div class="small" style="margin-top:8px;">✓ Approved by <b>${estEsc(x.decided_by_name || x.decided_by)}</b> · ${estEsc(estDate(x.decided_at))}${x.decision_note ? ` — “${estEsc(x.decision_note)}”` : ''}</div>` : ''}
     <div class="dlv-actions">
-      ${mineEdit ? `<button class="btn btn-sm" data-est-edit="${type}:${x.id}">✏️ Edit</button><button class="btn btn-primary btn-sm" data-est-submit="${type}:${x.id}" ${(x.files || []).some(f => f.kind === 'source') ? '' : 'disabled title="Attach the HighRise / estimation document first"'}>📤 Send for approval</button>` : ''}
+      ${mineEdit ? `<button class="btn btn-sm" data-est-edit="${type}:${x.id}">✏️ Edit</button><button class="btn btn-primary btn-sm" data-est-sendbox="${type}:${x.id}" ${(x.files || []).some(f => f.kind === 'source') ? '' : 'disabled title="Attach the HighRise / estimation document first"'}>📤 Send for approval</button>` : ''}
       ${x.status === 'submitted' && estCanApprove(x.project) && !dec ? `<button class="btn btn-primary btn-sm" data-est-approve="${type}:${x.id}">✓ Approve</button><button class="btn btn-sm" data-est-return="${type}:${x.id}">↩ Return for correction</button>` : ''}
       ${type === 'jmr' ? `<button class="btn btn-sm" data-est-print="${x.id}">🖨 Print</button>` : `<button class="btn btn-sm" data-est-print-recon="${x.id}">🖨 Print</button>`}
       ${(m.canEdit && x.status !== 'approved') || session.role === 'admin' ? `<button class="btn btn-sm btn-danger" data-est-del="${type}:${x.id}">🗑 Delete</button>` : ''}
     </div>
+    ${s.send && s.send.type === type && s.send.id === x.id ? `<div class="dlv-proof"><label for="est-send-remarks">Remarks for Dnyaneshwar Kolekar / Admin <span class="muted small">(optional)</span></label><textarea id="est-send-remarks" placeholder="Anything they should know before approving">${estEsc(s.send.remarks || '')}</textarea>
+      <div style="margin-top:8px;display:flex;gap:8px;"><button class="btn btn-primary btn-sm" data-est-submit="${type}:${x.id}">📤 Send for approval</button><button class="btn btn-sm" data-est-act="send-cancel">Cancel</button></div></div>` : ''}
     ${dec ? `<div class="dlv-proof"><label for="est-dec-note">${dec.decision === 'return' ? 'What needs correcting?' : 'Note (optional)'}</label><input type="text" id="est-dec-note" value="${estEsc(dec.note || '')}">
       <div style="margin-top:8px;display:flex;gap:8px;"><button class="btn btn-sm ${dec.decision === 'return' ? 'btn-danger' : 'btn-primary'}" data-est-dec-send="1">${dec.decision === 'return' ? '↩ Return' : '✓ Approve'}</button><button class="btn btn-sm" data-est-act="dec-cancel">Cancel</button></div></div>` : ''}`;
 }
 
 // ---- JMR list / detail
 function estJmrListHTML() {
-  const list = estFilter(estData.jmr, ['ref', 'work_item', 'boq_item', 'contractor', 'location', 'ra_bill_no', 'project']);
+  const list = estFilter(estData.jmr, ['ref', 'work_item', 'material', 'contractor', 'location', 'ra_bill_no', 'project']);
   if (!list.length) return `<div class="empty">No JMR yet.${estMe().canEdit ? ' Tap “+ New JMR”.' : ''}</div>`;
   const s = estState();
   return `<div class="est-list">${list.map(j => {
@@ -119,8 +163,8 @@ function estJmrListHTML() {
     return `<div class="est-item ${open ? 'open' : ''}">
       <button type="button" class="est-row" data-est-open="jmr:${j.id}">
         <span class="est-row-main"><b>${estEsc(j.work_item)}</b> <span class="mono small muted">${estEsc(j.ref)}</span>
-          <span class="small muted">${estEsc([j.project, j.location, j.contractor, j.boq_item ? `BOQ ${j.boq_item}` : '', j.ra_bill_no ? `RA ${j.ra_bill_no}` : ''].filter(Boolean).join(' · '))}</span></span>
-        <span class="est-row-num"><b>${estNum(j.total_qty)} ${estEsc(j.unit)}</b><span class="small muted">${j.amount != null ? estInr(j.amount) : 'no rate'}</span></span>
+          <span class="small muted">${estEsc([j.project, j.location, j.contractor, j.material ? `Material: ${j.material}` : '', j.ra_bill_no ? `RA ${j.ra_bill_no}` : ''].filter(Boolean).join(' · '))}</span></span>
+        <span class="est-row-num"><b>${estNum(j.total_qty)} ${estEsc(j.unit)}</b><span class="small muted">${j.lines.length} line${j.lines.length === 1 ? '' : 's'}</span></span>
         ${estChip(j.status)}
       </button>
       ${open ? estJmrDetailHTML(j) : ''}
@@ -130,12 +174,12 @@ function estJmrListHTML() {
 function estJmrDetailHTML(j) {
   return `<div class="est-detail">
     <div class="dlv-money-tiles bud-tiles">
-      <div class="dlv-tile"><span>Up to previous (approved)</span><b>${estNum(j.prev_qty)} ${estEsc(j.unit)}</b>${j.rate != null ? `<small class="muted">${estInr(j.prev_qty * j.rate)}</small>` : ''}</div>
-      <div class="dlv-tile good"><span>This JMR</span><b>${estNum(j.total_qty)} ${estEsc(j.unit)}</b>${j.amount != null ? `<small class="muted">${estInr(j.amount)} @ ${estInr(j.rate)}/${estEsc(j.unit)}</small>` : ''}</div>
-      <div class="dlv-tile"><span>Cumulative</span><b>${estNum(j.cum_qty)} ${estEsc(j.unit)}</b>${j.rate != null ? `<small class="muted">${estInr(j.cum_qty * j.rate)}</small>` : ''}</div>
+      <div class="dlv-tile"><span>Up to previous (approved)</span><b>${estNum(j.prev_qty)} ${estEsc(j.unit)}</b></div>
+      <div class="dlv-tile good"><span>This JMR</span><b>${estNum(j.total_qty)} ${estEsc(j.unit)}</b></div>
+      <div class="dlv-tile"><span>Cumulative</span><b>${estNum(j.cum_qty)} ${estEsc(j.unit)}</b></div>
     </div>
     <div class="dlv-grid" style="margin-top:8px;">
-      ${[['Measured on', estDate(j.measured_on)], ['Period', [estDate(j.period_from), estDate(j.period_to)].filter(Boolean).join(' – ')], ['Our representative', j.client_rep], ['Contractor representative', j.contractor_rep],
+      ${[['Material', j.material], ['RA bill no.', j.ra_bill_no], ['Measured on', estDate(j.measured_on)], ['Period', [estDate(j.period_from), estDate(j.period_to)].filter(Boolean).join(' – ')], ['Our representative', j.client_rep], ['Contractor representative', j.contractor_rep],
         ['Written by', `${j.created_by_name || j.created_by} · ${estDate(j.created_at)}`]].filter(r => r[1]).map(r => `<div class="dlv-kv"><span>${r[0]}</span><b>${estEsc(r[1])}</b></div>`).join('')}
     </div>
     <div class="dlv-perf-wrap"><table class="dlv-perf bud-table est-lines"><thead><tr><th>#</th><th>Description</th><th style="text-align:right;">Nos</th><th style="text-align:right;">L</th><th style="text-align:right;">B</th><th style="text-align:right;">H / D</th><th style="text-align:right;">Qty (${estEsc(j.unit)})</th><th>Remarks</th></tr></thead><tbody>
@@ -146,6 +190,7 @@ function estJmrDetailHTML(j) {
     </tbody></table></div>
     ${j.notes ? `<div class="doc-note" style="margin-top:8px;">${estEsc(j.notes)}</div>` : ''}
     ${estFilesHTML(j, 'jmr')}
+    ${estRemarksHTML(j, 'jmr')}
     ${estActionsHTML(j, 'jmr')}
   </div>`;
 }
@@ -171,11 +216,11 @@ function estImportHTML(im) {
       </div>
       <datalist id="ejf-contractors">${[...new Set([...estData.jmr.map(j => j.contractor), ...estData.recon.map(x => x.contractor)].filter(Boolean))].map(w => `<option value="${estEsc(w)}">`).join('')}</datalist>
       <label class="small" style="display:flex;gap:8px;align-items:center;margin-top:8px;"><input type="checkbox" id="imp-source" style="width:auto;margin:0;" ${im.asSource ? 'checked' : ''}> This Excel is the <b>HighRise / estimation document</b> (otherwise it is attached as a normal file and you add the HighRise document before sending)</label>
-      <div class="dlv-perf-wrap"><table class="dlv-perf bud-table"><thead><tr><th></th><th>Work item</th><th>Unit</th><th>Sheet</th><th style="text-align:right;">Lines</th><th style="text-align:right;">Total qty</th><th>Rate</th></tr></thead><tbody>
+      <div class="dlv-perf-wrap"><table class="dlv-perf bud-table"><thead><tr><th></th><th>Work item</th><th>Unit</th><th>Sheet</th><th style="text-align:right;">Lines</th><th style="text-align:right;">Total qty</th><th>Material</th></tr></thead><tbody>
         ${r.jmrs.map((j, i) => `<tr><td><input type="checkbox" data-imp-pick="${i}" style="width:auto;margin:0;" ${im.picked[i] ? 'checked' : ''}></td>
           <td><input type="text" data-imp-wi="${i}" value="${estEsc(j.work_item)}" style="margin:0;min-width:200px;"></td>
           <td><select data-imp-unit="${i}" style="margin:0;width:auto;"><option value="">—</option>${[...new Set([...EST_UNITS, j.unit].filter(Boolean))].map(u => `<option ${j.unit === u ? 'selected' : ''}>${estEsc(u)}</option>`).join('')}</select></td>
-          <td class="small">${estEsc(j.sheet)}</td><td style="text-align:right;">${j.lines.length}</td><td style="text-align:right;"><b>${estNum(j.total)}</b></td><td>${j.rate != null ? estInr(j.rate) : '—'}</td></tr>`).join('')}
+          <td class="small">${estEsc(j.sheet)}</td><td style="text-align:right;">${j.lines.length}</td><td style="text-align:right;"><b>${estNum(j.total)}</b></td><td>${estEsc(j.material || '—')}</td></tr>`).join('')}
       </tbody></table></div>
       <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
         ${Object.values(im.picked).filter(Boolean).length === 1 ? '<button class="btn btn-sm" data-est-act="import-open">✏️ Open in the JMR form</button>' : ''}
@@ -187,7 +232,6 @@ function estImportHTML(im) {
 function estBlankLine() { return { description: '', nos: '', length: '', breadth: '', height: '', qty: '', manual: false, deduct: false, remarks: '' }; }
 function estJmrFormHTML(f) {
   const total = estR3(f.lines.reduce((a, l) => a + estLineQty(l), 0));
-  const amount = f.rate !== '' && f.rate != null ? Math.round(total * Number(f.rate) * 100) / 100 : null;
   // previous approved quantity for this work item + contractor
   const key = j => `${j.project}|${String(j.work_item || '').toLowerCase()}|${String(j.contractor || '').toLowerCase()}`;
   const prev = estR3(estData.jmr.filter(j => j.status === 'approved' && j.id !== f.id && key(j) === key(f)).reduce((a, j) => a + j.total_qty, 0));
@@ -198,14 +242,15 @@ function estJmrFormHTML(f) {
       <div class="col"><label for="ejf-project">Project *</label><select id="ejf-project" data-ejf="project"><option value="">— Pick —</option>${estData.projects.map(p => `<option ${f.project === p ? 'selected' : ''}>${estEsc(p)}</option>`).join('')}</select></div>
       ${inp('location', 'Location (tower / floor / area)', 'e.g. Tower B, 4th floor')}
     </div>
-    <div class="row">${inp('work_item', 'Work item *', 'e.g. Block work 150 mm', 'text', 'list="ejf-items"')}${inp('boq_item', 'BOQ item no.', 'e.g. 4.2')}
+    <div class="row">${inp('work_item', 'Work item *', 'e.g. Block work 150 mm', 'text', 'list="ejf-items"')}${inp('material', 'Material', 'e.g. AAC blocks 150 mm', 'text', 'list="ejf-materials"')}
       <div class="col"><label for="ejf-unit">Unit *</label><select id="ejf-unit" data-ejf="unit"><option value="">—</option>${EST_UNITS.map(u => `<option ${f.unit === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div></div>
+    <datalist id="ejf-materials">${[...new Set(['Cement OPC 53', 'TMT Steel', 'AAC blocks', 'Bricks', 'Sand', 'Aggregate 20 mm', 'RMC M25', 'Tiles', ...estData.jmr.map(j => j.material), ...estData.recon.map(r => r.material)].filter(Boolean))].map(w => `<option value="${estEsc(w)}">`).join('')}</datalist>
     <datalist id="ejf-items">${[...new Set(estData.jmr.map(j => j.work_item))].map(w => `<option value="${estEsc(w)}">`).join('')}</datalist>
-    <div class="row">${inp('contractor', 'Contractor', 'e.g. Shree Builders', 'text', 'list="ejf-contractors"')}${inp('rate', 'Rate (₹ per unit)', 'e.g. 450', 'number', 'step="0.01" min="0" inputmode="decimal"')}${inp('ra_bill_no', 'RA bill no.', 'e.g. RA-03')}</div>
+    <div class="row">${inp('contractor', 'Contractor', 'e.g. Shree Builders', 'text', 'list="ejf-contractors"')}${inp('ra_bill_no', 'RA bill no.', 'e.g. RA-03')}</div>
     <datalist id="ejf-contractors">${[...new Set([...estData.jmr.map(j => j.contractor), ...estData.recon.map(r => r.contractor)].filter(Boolean))].map(w => `<option value="${estEsc(w)}">`).join('')}</datalist>
     <div class="row">${inp('measured_on', 'Measured on', '', 'date')}${inp('period_from', 'Work period from', '', 'date')}${inp('period_to', 'to', '', 'date')}</div>
     <div class="row">${inp('client_rep', 'Our representative', 'e.g. Site engineer name')}${inp('contractor_rep', "Contractor's representative", 'Name')}</div>
-    <div class="dlv-section">Measurements <span class="muted small">— Qty = Nos × L × B × H (leave a box empty to skip it), or tick “Type qty”. Tick “Less” for deductions (openings etc.).</span></div>
+    <div class="dlv-section">Measurements</div>
     <div class="dlv-perf-wrap"><table class="dlv-perf est-lines est-edit"><thead><tr><th>#</th><th>Description</th><th>Nos</th><th>L</th><th>B</th><th>H / D</th><th>Type qty</th><th style="text-align:right;">Qty</th><th>Less</th><th>Remarks</th><th></th></tr></thead><tbody>
       ${f.lines.map((l, i) => `<tr class="${l.deduct ? 'est-deduct' : ''}"><td>${i + 1}</td>
         <td><input type="text" data-ejl="${i}:description" value="${estEsc(l.description)}" placeholder="e.g. Wall A"></td>
@@ -220,10 +265,11 @@ function estJmrFormHTML(f) {
     <button type="button" class="btn btn-sm" style="margin-top:6px;" data-est-act="add-line">+ Add line</button>
     <div class="dlv-money-tiles bud-tiles" style="margin-top:10px;" id="ej-tiles">
       <div class="dlv-tile"><span>Up to previous (approved)</span><b>${estNum(prev)} ${estEsc(f.unit || '')}</b></div>
-      <div class="dlv-tile good"><span>This JMR</span><b>${estNum(total)} ${estEsc(f.unit || '')}</b><small class="muted">${amount != null ? estInr(amount) : 'add a rate for the amount'}</small></div>
-      <div class="dlv-tile"><span>Cumulative</span><b>${estNum(estR3(prev + total))} ${estEsc(f.unit || '')}</b>${f.rate ? `<small class="muted">${estInr((prev + total) * Number(f.rate))}</small>` : ''}</div>
+      <div class="dlv-tile good"><span>This JMR</span><b>${estNum(total)} ${estEsc(f.unit || '')}</b></div>
+      <div class="dlv-tile"><span>Cumulative</span><b>${estNum(estR3(prev + total))} ${estEsc(f.unit || '')}</b></div>
     </div>
-    <label for="ejf-notes">Notes</label><textarea id="ejf-notes" data-ejf="notes" placeholder="Anything the approver should know">${estEsc(f.notes || '')}</textarea>
+    <label for="ejf-notes">Notes</label><textarea id="ejf-notes" data-ejf="notes" placeholder="Notes kept on the JMR">${estEsc(f.notes || '')}</textarea>
+    <label for="est-remarks">Remarks for the approver <span class="muted small">(sent with it when you send it for approval)</span></label><textarea id="est-remarks" placeholder="e.g. Measured with the contractor's engineer; lift wall height to be confirmed">${estEsc(f.remarks || '')}</textarea>
     <div class="est-src ${(f.sourceFiles || []).length || f.hasSource ? '' : 'missing'}" style="margin-top:10px;"><b>📊 HighRise / estimation document *</b> <span class="small muted">— Excel, PDF or any format; required to send for approval</span><br>
       <label class="btn btn-sm" style="margin-top:6px;">📎 Choose file<input type="file" id="est-src-files" multiple hidden></label>
       ${(f.sourceFiles || []).length ? `<span class="small">${f.sourceFiles.map(x => estEsc(x.name)).join(', ')}</span>` : f.hasSource ? '<span class="small muted">Already attached — add another if it changed.</span>' : ''}</div>
@@ -268,6 +314,7 @@ function estReconListHTML() {
         ${estReconCalcHTML(c, r)}
         ${r.notes ? `<div class="doc-note" style="margin-top:8px;">${estEsc(r.notes)}</div>` : ''}
         ${estFilesHTML(r, 'recon')}
+        ${estRemarksHTML(r, 'recon')}
         ${estActionsHTML(r, 'recon')}
       </div>` : ''}
     </div>`;
@@ -295,6 +342,7 @@ function estReconFormHTML(f) {
     ${f.work_item ? `<div class="small muted">Approved JMR quantity for “${estEsc(f.work_item)}”${f.contractor ? ` (${estEsc(f.contractor)})` : ''}: <b>${estNum(estR3(estData.jmr.filter(j => j.status === 'approved' && j.project === f.project && String(j.work_item).toLowerCase() === String(f.work_item).toLowerCase() && (!f.contractor || String(j.contractor || '').toLowerCase() === String(f.contractor).toLowerCase())).reduce((a, j) => a + j.total_qty, 0)))}</b> <button type="button" class="linkish" data-est-act="use-jmr-qty">Use it as work done</button></div>` : ''}
     <div id="er-calc">${estReconCalcHTML(c, f)}</div>
     <label for="erf-notes">Notes</label><textarea id="erf-notes" data-erf="notes">${estEsc(f.notes || '')}</textarea>
+    <label for="est-remarks">Remarks for the approver <span class="muted small">(sent with it when you send it for approval)</span></label><textarea id="est-remarks" placeholder="e.g. Store register checked; 10 bags damaged in rain">${estEsc(f.remarks || '')}</textarea>
     <div class="est-src ${(f.sourceFiles || []).length || f.hasSource ? '' : 'missing'}" style="margin-top:10px;"><b>📊 HighRise / estimation document *</b> <span class="small muted">— Excel, PDF or any format; required to send for approval</span><br>
       <label class="btn btn-sm" style="margin-top:6px;">📎 Choose file<input type="file" id="est-src-files" multiple hidden></label>
       ${(f.sourceFiles || []).length ? `<span class="small">${f.sourceFiles.map(x => estEsc(x.name)).join(', ')}</span>` : f.hasSource ? '<span class="small muted">Already attached — add another if it changed.</span>' : ''}</div>
@@ -314,23 +362,23 @@ function estSummaryHTML() {
   const appr = estData.jmr.filter(j => j.status === 'approved' && ok(j));
   const groups = new Map();
   for (const j of appr) {
-    const k = `${j.project}|${j.work_item}|${j.contractor || ''}|${j.unit}`;
-    const g = groups.get(k) || { project: j.project, work_item: j.work_item, contractor: j.contractor, unit: j.unit, qty: 0, amount: 0, count: 0, last: '' };
-    g.qty += j.total_qty; g.amount += j.amount || 0; g.count++; if (String(j.decided_at) > g.last) g.last = j.decided_at; groups.set(k, g);
+    const k = `${j.project}|${j.work_item}|${j.material || ''}|${j.contractor || ''}|${j.unit}`;
+    const g = groups.get(k) || { project: j.project, work_item: j.work_item, material: j.material, contractor: j.contractor, unit: j.unit, qty: 0, count: 0, last: '' };
+    g.qty += j.total_qty; g.count++; if (String(j.decided_at) > g.last) g.last = j.decided_at; groups.set(k, g);
   }
-  const rows = [...groups.values()].sort((a, b) => a.project.localeCompare(b.project) || b.amount - a.amount);
+  const rows = [...groups.values()].sort((a, b) => a.project.localeCompare(b.project) || String(a.work_item).localeCompare(String(b.work_item)));
   const pend = estData.jmr.filter(j => j.status === 'submitted' && ok(j));
   const recs = estData.recon.filter(r => r.status === 'approved' && ok(r));
   const recovery = recs.reduce((a, r) => a + (r.calc.recovery || 0), 0);
   return `
     <div class="dlv-money-tiles bud-tiles" style="margin-top:10px;">
-      <div class="dlv-tile good"><span>Approved JMR value</span><b>${estInr(Math.round(appr.reduce((a, j) => a + (j.amount || 0), 0) * 100) / 100)}</b><small class="muted">${appr.length} JMR</small></div>
-      <div class="dlv-tile ${pend.length ? 'warn' : ''}"><span>Waiting for approval</span><b>${estInr(Math.round(pend.reduce((a, j) => a + (j.amount || 0), 0) * 100) / 100)}</b><small class="muted">${pend.length} JMR</small></div>
+      <div class="dlv-tile good"><span>Approved JMRs</span><b>${appr.length}</b></div>
+      <div class="dlv-tile ${pend.length ? 'warn' : ''}"><span>Waiting for approval</span><b>${pend.length}</b><small class="muted">JMR</small></div>
       <div class="dlv-tile ${recovery ? 'bad' : ''}"><span>Recoveries (approved reconciliations)</span><b>${estInr(Math.round(recovery * 100) / 100)}</b><small class="muted">${recs.filter(r => r.calc.excess > 0).length} with excess</small></div>
     </div>
     <div class="dlv-section" style="margin-top:12px;">Work done to date (approved JMRs) — by work item and contractor</div>
-    ${rows.length ? `<div class="dlv-perf-wrap"><table class="dlv-perf bud-table"><thead><tr><th>Project</th><th>Work item</th><th>Contractor</th><th style="text-align:right;">Cumulative qty</th><th style="text-align:right;">Amount</th><th>JMRs</th><th>Last approved</th></tr></thead><tbody>
-      ${rows.map(g => `<tr><td>${estEsc(g.project)}</td><td><b>${estEsc(g.work_item)}</b></td><td>${estEsc(g.contractor || '—')}</td><td style="text-align:right;">${estNum(g.qty)} ${estEsc(g.unit)}</td><td style="text-align:right;">${estInr(Math.round(g.amount * 100) / 100)}</td><td>${g.count}</td><td>${estEsc(estDate(g.last))}</td></tr>`).join('')}
+    ${rows.length ? `<div class="dlv-perf-wrap"><table class="dlv-perf bud-table"><thead><tr><th>Project</th><th>Work item</th><th>Material</th><th>Contractor</th><th style="text-align:right;">Cumulative qty</th><th>JMRs</th><th>Last approved</th></tr></thead><tbody>
+      ${rows.map(g => `<tr><td>${estEsc(g.project)}</td><td><b>${estEsc(g.work_item)}</b></td><td>${estEsc(g.material || '—')}</td><td>${estEsc(g.contractor || '—')}</td><td style="text-align:right;">${estNum(g.qty)} ${estEsc(g.unit)}</td><td>${g.count}</td><td>${estEsc(estDate(g.last))}</td></tr>`).join('')}
     </tbody></table></div>` : '<div class="empty small">No approved JMR yet.</div>'}`;
 }
 
@@ -347,14 +395,14 @@ function estPrint(html, title) {
 }
 function estPrintJmr(j) {
   estPrint(`<h1>Joint Measurement Record — ${estEsc(j.ref)}</h1><div class="muted">${estEsc(j.project)}${j.location ? ' · ' + estEsc(j.location) : ''} · ${estChip(j.status).replace(/<[^>]+>/g, '')}</div>
-    <div class="grid"><div><b>Work item:</b> ${estEsc(j.work_item)}${j.boq_item ? ` (BOQ ${estEsc(j.boq_item)})` : ''}</div><div><b>Contractor:</b> ${estEsc(j.contractor || '—')}</div>
+    <div class="grid"><div><b>Work item:</b> ${estEsc(j.work_item)}</div><div><b>Material:</b> ${estEsc(j.material || '—')}</div><div><b>Contractor:</b> ${estEsc(j.contractor || '—')}</div>
       <div><b>Measured on:</b> ${estEsc(estDate(j.measured_on))}</div><div><b>Period:</b> ${estEsc([estDate(j.period_from), estDate(j.period_to)].filter(Boolean).join(' – '))}</div>
-      <div><b>RA bill no.:</b> ${estEsc(j.ra_bill_no || '—')}</div><div><b>Rate:</b> ${j.rate != null ? estInr(j.rate) + ' / ' + estEsc(j.unit) : '—'}</div></div>
+      <div><b>RA bill no.:</b> ${estEsc(j.ra_bill_no || '—')}</div></div>
     <table><thead><tr><th>#</th><th>Description</th><th class="r">Nos</th><th class="r">L</th><th class="r">B</th><th class="r">H / D</th><th class="r">Qty (${estEsc(j.unit)})</th><th>Remarks</th></tr></thead><tbody>
       ${j.lines.map((l, i) => `<tr><td>${i + 1}</td><td>${l.deduct ? 'Less: ' : ''}${estEsc(l.description || '')}</td><td class="r">${estNum(l.nos)}</td><td class="r">${estNum(l.length)}</td><td class="r">${estNum(l.breadth)}</td><td class="r">${estNum(l.height)}</td><td class="r">${estNum(l.qty)}</td><td>${estEsc(l.remarks || '')}</td></tr>`).join('')}
       <tr><td colspan="6"><b>Total this JMR</b></td><td class="r"><b>${estNum(j.total_qty)}</b></td><td></td></tr></tbody></table>
-    <table><tr><th>Up to previous</th><th>This JMR</th><th>Cumulative</th><th>Amount (this JMR)</th></tr>
-      <tr><td>${estNum(j.prev_qty)} ${estEsc(j.unit)}</td><td>${estNum(j.total_qty)} ${estEsc(j.unit)}</td><td>${estNum(j.cum_qty)} ${estEsc(j.unit)}</td><td>${estInr(j.amount)}</td></tr></table>
+    <table><tr><th>Up to previous</th><th>This JMR</th><th>Cumulative</th></tr>
+      <tr><td>${estNum(j.prev_qty)} ${estEsc(j.unit)}</td><td>${estNum(j.total_qty)} ${estEsc(j.unit)}</td><td>${estNum(j.cum_qty)} ${estEsc(j.unit)}</td></tr></table>
     ${j.notes ? `<p><b>Notes:</b> ${estEsc(j.notes)}</p>` : ''}
     <div class="sig"><div>Contractor's representative<br>${estEsc(j.contractor_rep || '')}</div><div>Our representative<br>${estEsc(j.client_rep || '')}</div><div>Approved by<br>${estEsc(j.decided_by_name || '')}</div></div>`, j.ref);
 }
@@ -381,9 +429,22 @@ function bindEstimationView() {
   const q = document.getElementById('est-q'); if (q) q.oninput = () => { s.q = q.value; clearTimeout(window.__estQ); window.__estQ = setTimeout(() => { render(); const n = document.getElementById('est-q'); if (n) { n.focus(); n.setSelectionRange(n.value.length, n.value.length); } }, 300); };
   on('[data-est-view]', b => { s.view = b.dataset.estView; render(); });
   on('[data-est-open]', b => { s.open = s.open === b.dataset.estOpen ? null : b.dataset.estOpen; s.decide = null; render(); });
-  on('[data-est-act="close-photo"]', () => { ui.deliveryPhoto = null; render(); });
-  on('[data-est-act="download-photo"]', () => { const p = ui.deliveryPhoto; if (p) downloadDataUrl(p.data, p.name); });
-  on('[data-est-file]', async b => { try { const r = await api(`/api/estimation/files/${b.dataset.estFile}`); if (/^data:image\//.test(r.data)) { ui.deliveryPhoto = r; render(); } else downloadDataUrl(r.data, r.name); } catch (e) { setBanner(e.message); render(); } });
+  on('[data-est-file]', b => estOpenViewer(b.dataset.estFile));
+  on('[data-est-act="view-close"]', () => estCloseViewer());
+  document.querySelectorAll('[data-est-act="view-close-bg"]').forEach(el => el.onclick = (e) => { if (e.target === el) estCloseViewer(); });
+  on('[data-est-sheet]', b => { if (ui.estView) { ui.estView.sheet = Number(b.dataset.estSheet); render(); } });
+  // send for approval with remarks; remarks thread
+  on('[data-est-sendbox]', b => { const [t, id] = b.dataset.estSendbox.split(':'); s.send = { type: t, id: Number(id), remarks: '' }; render(); const n = document.getElementById('est-send-remarks'); if (n) n.focus(); });
+  on('[data-est-act="send-cancel"]', () => { s.send = null; render(); });
+  const sr = document.getElementById('est-send-remarks'); if (sr && s.send) sr.oninput = () => { s.send.remarks = sr.value; };
+  document.querySelectorAll('[id^="est-remark-"]').forEach(el => el.oninput = () => { const k = el.id.replace('est-remark-', '').replace('-', ':'); s.remarkDraft = { ...(s.remarkDraft || {}), [k]: el.value }; });
+  on('[data-est-remark]', async b => {
+    const key = b.dataset.estRemark; const [t, id] = key.split(':'); const text = String((s.remarkDraft || {})[key] || '').trim();
+    if (text.length < 2) { setBanner('Write the remark first.'); render(); return; }
+    b.disabled = true;
+    try { await api(`/api/estimation/${t}/${id}/remark`, { method: 'POST', body: JSON.stringify({ text }) }); s.remarkDraft[key] = ''; setBanner('Remark added.', 'ok'); await estReload(); }
+    catch (e) { b.disabled = false; setBanner(e.message); render(); }
+  });
   document.querySelectorAll('[data-est-addfile]').forEach(inp => inp.onchange = () => {
     const [type, id, kind] = inp.dataset.estAddfile.split(':'); const list = Array.from(inp.files || []).slice(0, 10); if (!list.length) return;
     const files = []; let left = list.length;
@@ -397,16 +458,16 @@ function bindEstimationView() {
       estDownloadCsv([['Ref', 'Project', 'Material', 'Unit', 'Contractor', 'Work item', 'From', 'To', 'Issued', 'Returned', 'Balance at site', 'Actual', 'Work done', 'Work unit', 'Norm', 'Theoretical', 'Wastage %', 'Allowed', 'Excess', 'Saving', 'Rate', 'Recovery', 'Status', 'Approved by'],
         ...list.map(r => [r.ref, r.project, r.material, r.unit, r.contractor, r.work_item, r.period_from, r.period_to, r.issued, r.returned, r.balance_at_site, r.calc.actual, r.work_qty, r.work_unit, r.norm, r.calc.theoretical, r.wastage_pct, r.calc.allowed, r.calc.excess, r.calc.saving, r.rate, r.calc.recovery, EST_STATUS[r.status].label, r.decided_by_name])], 'reconciliation.csv');
     } else {
-      const list = estFilter(estData.jmr, ['ref', 'work_item', 'boq_item', 'contractor', 'location', 'ra_bill_no', 'project']);
-      estDownloadCsv([['Ref', 'Project', 'Location', 'Work item', 'BOQ item', 'Contractor', 'Unit', 'Previous qty', 'This JMR qty', 'Cumulative qty', 'Rate', 'Amount', 'RA bill', 'Measured on', 'Status', 'Written by', 'Approved by'],
-        ...list.map(j => [j.ref, j.project, j.location, j.work_item, j.boq_item, j.contractor, j.unit, j.prev_qty, j.total_qty, j.cum_qty, j.rate, j.amount, j.ra_bill_no, j.measured_on, EST_STATUS[j.status].label, j.created_by_name, j.decided_by_name])], 'jmr.csv');
+      const list = estFilter(estData.jmr, ['ref', 'work_item', 'material', 'contractor', 'location', 'ra_bill_no', 'project']);
+      estDownloadCsv([['Ref', 'Project', 'Location', 'Work item', 'Material', 'Contractor', 'Unit', 'Previous qty', 'This JMR qty', 'Cumulative qty', 'RA bill', 'Measured on', 'Status', 'Written by', 'Approved by'],
+        ...list.map(j => [j.ref, j.project, j.location, j.work_item, j.material, j.contractor, j.unit, j.prev_qty, j.total_qty, j.cum_qty, j.ra_bill_no, j.measured_on, EST_STATUS[j.status].label, j.created_by_name, j.decided_by_name])], 'jmr.csv');
     }
   });
   on('[data-est-print]', b => { const j = estData.jmr.find(x => x.id === Number(b.dataset.estPrint)); if (j) estPrintJmr(j); });
   on('[data-est-print-recon]', b => { const r = estData.recon.find(x => x.id === Number(b.dataset.estPrintRecon)); if (r) estPrintRecon(r); });
   // workflow
   const call = async (b, url, body, ok) => { if (b.disabled) return; b.disabled = true; try { await api(url, { method: 'POST', body: JSON.stringify(body || {}) }); setBanner(ok, 'ok'); s.decide = null; await estReload(); } catch (e) { b.disabled = false; setBanner(e.message); render(); } };
-  on('[data-est-submit]', b => { const [t, id] = b.dataset.estSubmit.split(':'); call(b, `/api/estimation/${t}/${id}/submit`, {}, 'Sent for approval.'); });
+  on('[data-est-submit]', b => { const [t, id] = b.dataset.estSubmit.split(':'); const remarks = s.send && s.send.id === Number(id) ? s.send.remarks : ''; s.send = null; call(b, `/api/estimation/${t}/${id}/submit`, { remarks }, 'Sent for approval to Dnyaneshwar Kolekar / Admin.'); });
   on('[data-est-approve]', b => { const [t, id] = b.dataset.estApprove.split(':'); s.decide = { type: t, id: Number(id), decision: 'approve', note: '' }; render(); });
   on('[data-est-return]', b => { const [t, id] = b.dataset.estReturn.split(':'); s.decide = { type: t, id: Number(id), decision: 'return', note: '' }; render(); const n = document.getElementById('est-dec-note'); if (n) n.focus(); });
   on('[data-est-act="dec-cancel"]', () => { s.decide = null; render(); });
@@ -444,8 +505,8 @@ function bindEstimationView() {
     document.querySelectorAll('[data-imp-pick]').forEach(el => el.onchange = () => { im.picked[el.dataset.impPick] = el.checked; render(); });
     document.querySelectorAll('[data-imp-wi]').forEach(el => el.oninput = () => { im.result.jmrs[Number(el.dataset.impWi)].work_item = el.value; });
     document.querySelectorAll('[data-imp-unit]').forEach(el => el.onchange = () => { im.result.jmrs[Number(el.dataset.impUnit)].unit = el.value; });
-    const bodyFor = j => ({ project: im.project, location: j.location || im.location || '', work_item: j.work_item, boq_item: j.boq_item || '', contractor: j.contractor || im.contractor || '', unit: j.unit,
-      rate: j.rate == null ? '' : j.rate, measured_on: j.measured_on || '', ra_bill_no: j.ra_bill_no || '', lines: j.lines });
+    const bodyFor = j => ({ project: im.project, location: j.location || im.location || '', work_item: j.work_item, material: j.material || im.material || '', contractor: j.contractor || im.contractor || '', unit: j.unit,
+      measured_on: j.measured_on || '', ra_bill_no: j.ra_bill_no || '', lines: j.lines });
     const fileObj = () => ({ name: im.fileName, data: im.fileData });
     on('[data-est-act="import-open"]', () => {
       const i = Object.keys(im.picked).find(k => im.picked[k]); const j = im.result.jmrs[Number(i)];
@@ -509,6 +570,7 @@ function bindEstimationView() {
   if (f) {
     const fi = document.getElementById(f.type === 'jmr' ? 'ejf-files' : 'erf-files');
     if (fi) fi.onchange = () => { const list = Array.from(fi.files || []).slice(0, 10); f.files = []; let left = list.length; list.forEach(file => readAnyFile(file, data => { if (data) f.files.push({ name: file.name, data }); if (--left === 0) render(); })); };
+    const rmk = document.getElementById('est-remarks'); if (rmk) rmk.oninput = () => { f.remarks = rmk.value; };
     const sfi = document.getElementById('est-src-files');
     if (sfi) sfi.onchange = () => { const list = Array.from(sfi.files || []).slice(0, 10); f.sourceFiles = []; f.err = ''; let left = list.length; list.forEach(file => readAnyFile(file, data => { if (data) f.sourceFiles.push({ name: file.name, data }); if (--left === 0) render(); })); };
     on('[data-est-save]', async b => {
@@ -516,9 +578,9 @@ function bindEstimationView() {
       const submit = b.dataset.estSave === 'submit';
       if (submit && !(f.sourceFiles || []).length && !f.hasSource) { f.err = 'Attach the HighRise / estimation document (Excel, PDF or any format) before sending it for approval.'; render(); return; }
       const body = f.type === 'jmr'
-        ? { project: f.project, location: f.location, work_item: f.work_item, boq_item: f.boq_item, contractor: f.contractor, unit: f.unit, rate: f.rate, measured_on: f.measured_on, period_from: f.period_from, period_to: f.period_to,
-            ra_bill_no: f.ra_bill_no, client_rep: f.client_rep, contractor_rep: f.contractor_rep, notes: f.notes, lines: f.lines, attachments: f.files, source_files: f.sourceFiles || [], submit }
-        : { ...Object.fromEntries(['project', 'material', 'unit', 'contractor', 'work_item', 'period_from', 'period_to', 'issued', 'returned', 'balance_at_site', 'work_qty', 'work_unit', 'norm', 'wastage_pct', 'rate', 'notes'].map(k => [k, f[k]])), attachments: f.files, source_files: f.sourceFiles || [], submit };
+        ? { project: f.project, location: f.location, work_item: f.work_item, material: f.material, contractor: f.contractor, unit: f.unit, measured_on: f.measured_on, period_from: f.period_from, period_to: f.period_to,
+            ra_bill_no: f.ra_bill_no, client_rep: f.client_rep, contractor_rep: f.contractor_rep, notes: f.notes, lines: f.lines, attachments: f.files, source_files: f.sourceFiles || [], remarks: submit ? (f.remarks || '') : '', submit }
+        : { ...Object.fromEntries(['project', 'material', 'unit', 'contractor', 'work_item', 'period_from', 'period_to', 'issued', 'returned', 'balance_at_site', 'work_qty', 'work_unit', 'norm', 'wastage_pct', 'rate', 'notes'].map(k => [k, f[k]])), attachments: f.files, source_files: f.sourceFiles || [], remarks: submit ? (f.remarks || '') : '', submit };
       f.saving = true; f.err = ''; render();
       try {
         const r = await api(f.id ? `/api/estimation/${f.type}/${f.id}/update` : `/api/estimation/${f.type}`, { method: 'POST', body: JSON.stringify(body) });
@@ -547,24 +609,13 @@ function accOverviewHTML() {
   const pv = pays.filter(p => (p.verify_status || 'pending') === 'verified'), pp = pays.filter(p => ['pending', 'query'].includes(p.verify_status || 'pending'));
   return `
   <div class="card">
-    <div class="card-title" style="margin:0;">Contractors & site money</div>
-    <div class="small muted">Contractor work approved for billing (from JMRs), recoveries (from reconciliation), site payments with their bills, and invoices received with material.</div>
+    <div class="card-title" style="margin:0;">Site money</div>
+    <div class="small muted">Site payments (porter / transport) with their bills, and invoices received with material from site.</div>
     <div class="dlv-money-tiles bud-tiles" style="margin-top:10px;">
-      <div class="dlv-tile good"><span>Approved contractor work (JMR)</span><b>${jmr ? estInr(sum(appr, j => j.amount)) : '…'}</b><small class="muted">${appr.length} JMR</small></div>
-      <div class="dlv-tile ${recs.length ? 'bad' : ''}"><span>Recoveries from contractors</span><b>${estInr(sum(recs, r => r.calc.recovery))}</b><small class="muted">${recs.length} reconciliation${recs.length === 1 ? '' : 's'}</small></div>
       <div class="dlv-tile good"><span>Site payments verified</span><b>${estInr(sum(pv, p => p.amount))}</b><small class="muted">${pv.length} payment${pv.length === 1 ? '' : 's'}</small></div>
       <div class="dlv-tile ${pp.length ? 'warn' : ''}"><span>Site payments waiting</span><b>${estInr(sum(pp, p => p.amount))}</b><small class="muted">${pp.length} to verify</small></div>
       <div class="dlv-tile"><span>Invoices received from site</span><b>${invoices.length}</b></div>
     </div>
-  </div>
-  <div class="card">
-    <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">Contractor billing — approved JMRs</div>${appr.length ? '<button class="btn btn-sm" data-acc-act="csv-jmr">⬇ CSV</button>' : ''}</div>
-    ${byContractor.size ? `<div class="dlv-perf-wrap"><table class="dlv-perf bud-table"><thead><tr><th>Contractor</th><th>JMRs</th><th style="text-align:right;">Work value</th><th style="text-align:right;">Recovery</th><th style="text-align:right;">Net</th></tr></thead><tbody>
-      ${[...byContractor.values()].sort((a, b) => b.amount - a.amount).map(g => `<tr><td><b>${estEsc(g.contractor)}</b><div class="small muted">${g.items.slice(0, 4).map(j => `${estEsc(j.ref)} ${estEsc(j.work_item)}${j.ra_bill_no ? ` (RA ${estEsc(j.ra_bill_no)})` : ''}`).join(' · ')}${g.items.length > 4 ? ` · +${g.items.length - 4} more` : ''}</div></td>
-        <td>${g.count}</td><td style="text-align:right;">${estInr(Math.round(g.amount * 100) / 100)}</td><td style="text-align:right;">${g.recovery ? `<span class="dlv-over">−${estInr(Math.round(g.recovery * 100) / 100)}</span>` : '—'}</td>
-        <td style="text-align:right;"><b>${estInr(Math.round((g.amount - (g.recovery || 0)) * 100) / 100)}</b></td></tr>`).join('')}
-    </tbody></table></div>` : `<div class="empty small">${jmr ? 'No approved JMR yet — they appear here once the Estimation team’s JMRs are approved.' : 'Loading…'}</div>`}
-    ${estSummary.canView ? '<div style="margin-top:8px;"><button class="btn btn-sm" data-acc-goto="estimation">Open Estimation ›</button></div>' : ''}
   </div>
   <div class="card">
     <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">Site payments (porter / transport)</div><button class="btn btn-sm" data-acc-goto="budget">Open Budget ›</button></div>
@@ -584,7 +635,6 @@ function accOverviewHTML() {
   ${ui.deliveryPhoto ? `<div class="dlv-viewer" data-acc-act="close-photo"><img src="${ui.deliveryPhoto.data}" alt=""><div class="dlv-viewer-bar"><span>${estEsc(ui.deliveryPhoto.name)}</span><button class="btn btn-sm" data-acc-act="close-photo">Close</button></div></div>` : ''}`;
 }
 function bindAccOverview() {
-  if (!estData && estSummary.canView) { estReload(); }
   const on = (sel, fn) => document.querySelectorAll(sel).forEach(b => b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(b); });
   on('[data-acc-goto]', b => { ui.adminTab = b.dataset.accGoto; try { safeStorage.setItem('ls_last_tab', ui.adminTab); } catch (e) {} if (ui.adminTab === 'estimation') estState().view = 'summary'; render(); window.scrollTo(0, 0); });
   on('[data-acc-dlv]', b => openDeliveryOnPage(Number(b.dataset.accDlv)));
