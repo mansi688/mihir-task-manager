@@ -820,7 +820,7 @@ function notifBehindPeople(list) {
 // task comes back at the next reminder slot because it is still incomplete.
 function notifFollowUpHTML(n) {
   const info = n.task_id ? notifTaskInfo[n.task_id] : null;
-  if (!info || info.status !== 'open' || /^(closure|delivery)_/.test(n.type)) return '';
+  if (!info || info.status !== 'open' || /^(closure|delivery)_/.test(n.type) || notifCat(n) === 'approval') return '';
   const at = info.followedUpAt;
   const when = at ? new Date(at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit' }) : '';
   const day = at && istDayKey(at) !== istDayKey(new Date().toISOString()) ? ` ${new Date(at).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short' })}` : '';
@@ -872,16 +872,17 @@ function notifIncompleteHTML(n) {
   return `<div class="notif-dur ${r.done ? 'done' : r.late ? 'late' : ''}">${r.done ? '✓ ' : '⏱ '}${r.done ? esc(r.text) : r.text}</div>`;
 }
 function notifPersonTasksHTML(p) {
-  const ids = [...p.tasks].filter(id => notifTaskInfo[id]);
+  const ids = [...p.tasks].filter(id => { const r = notifTaskInfo[id] ? notifIncompleteText(id, p.username) : null; return r && !r.done; });
   return `<div class="notif-person-tasks">
-    <div class="small"><b>${esc(p.name)}</b> — tasks not completed${p.flagged ? ' (flagged)' : ''}:</div>
+    <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="small"><b>${esc(p.name)}</b> — pending tasks${p.flagged ? ' (flagged)' : ''}: ${ids.length}</div>
+      <span class="na-btns">${ids.length > 1 ? `<button type="button" class="btn btn-sm" data-notif-fu-all="${esc(ids.join(','))}">📣 Follow up all</button>` : ''}<button type="button" class="btn btn-sm" data-notif-person="${esc(p.username)}">✕ Show all notifications</button></span></div>
     ${ids.length ? ids.map(id => {
       const info = notifTaskInfo[id]; const r = notifIncompleteText(id, p.username) || { text: '' };
       return `<div class="notif-pt"><div style="min-width:0;flex:1;"><div class="notif-pt-title">${esc(info.title || id)} <span class="mono small muted">${esc(id)}</span></div>
         <div class="notif-dur ${r.done ? 'done' : r.late ? 'late' : ''}">${r.done ? '✓ ' + esc(r.text) : '⏱ ' + r.text}</div></div>
         <span class="na-btns">${!r.done && info.status === 'open' ? `<button type="button" class="btn btn-sm notif-fu ${info.followedUpAt ? 'done' : ''}" data-notif-followup="${esc(id)}" title="Remind everyone on this task">📣 ${info.followedUpAt ? 'Follow up again' : 'Follow up'}</button>` : ''}
         <button type="button" class="btn btn-sm" data-na-open-task="${esc(id)}">Open ›</button></span></div>`;
-    }).join('') : '<div class="small muted">Task details not available.</div>'}
+    }).join('') : '<div class="small muted">No pending tasks — everything is completed.</div>'}
   </div>`;
 }
 // ---- Approve / send back / close / verify — right on the notification ----
@@ -899,6 +900,9 @@ function notifActionsHTML(n) {
         <button type="button" class="btn btn-sm" data-na-open="sendback" data-key="${esc(key)}" data-nid="${n.id}">↩ Send back</button></span>
         ${act && act.kind === 'sendback' && act.key === key ? form('What should they fix? (at least 5 characters)', 'Send back', true) : ''}</div>`);
     }
+    // An old approval notification whose request is already decided: say so instead of showing nothing / Follow up.
+    if (info.canDecide && n.type === 'task_submitted' && !(info.toApprove || []).length) rows.push('<div class="na-done">✓ Already decided — nothing is waiting for your approval on this task now.</div>');
+    if (info.canDecide && n.type === 'closure_requested' && !info.closureId) rows.push('<div class="na-done">✓ This closure request has already been handled.</div>');
     if (info.closureId) {
       const key = `${info.closureId}|${n.task_id}`;
       rows.push(`<div class="na-row"><span class="na-what">Closure requested for this task</span>
@@ -907,6 +911,7 @@ function notifActionsHTML(n) {
         ${act && act.kind === 'keepopen' && act.key === key ? form('Why does it stay open? (at least 5 characters)', 'Keep open', true) : ''}</div>`);
     }
   }
+  if (info && info.status !== 'open' && notifCat(n) === 'approval' && n.task_id) rows.push('<div class="na-done">✓ Task is closed — nothing to approve.</div>');
   if (n.ref_type === 'approval' && n.ref_id) {
     const r = (notifRefs.approval || {})[n.ref_id];
     if (r && r.status === 'pending' && !r.mine) {
@@ -1033,6 +1038,10 @@ function renderNotificationsView() {
   const statusChip = (key, label, count) => `<button class="notif-status ${filter === key ? 'active' : ''}" data-notif-filter="${key}">${label}${count != null ? `<span class="notif-status-count">${count}</span>` : ''}</button>`;
   const catTab = c => { const n = countIn(byStatus, c.key); return `<button class="notif-cat cat-${c.key} ${cat === c.key ? 'active' : ''}" data-notif-cat="${c.key}">${icon(c.icon, 15)}<span>${c.label}</span>${n ? `<span class="notif-cat-count">${n}</span>` : ''}</button>`; };
   const behind = cat === 'warning' || cat === 'flagged' ? notifBehindPeople(list) : [];
+  // The person picked keeps their task list while the panel is open (following up clears their notifications).
+  if (!ui.notifPerson) ui.notifPersonSnap = null;
+  else if (!ui.notifPersonSnap || ui.notifPersonSnap.username !== ui.notifPerson) { const p = behind.find(x => x.username === ui.notifPerson); ui.notifPersonSnap = p ? { ...p, tasks: new Set(p.tasks) } : null; if (!p) ui.notifPerson = null; }
+  const personSnap = ui.notifPerson && (cat === 'warning' || cat === 'flagged') ? ui.notifPersonSnap : null;
   const newFlag = countIn(unread, 'flagged');
   return `
   <div class="card notif-head">
@@ -1058,12 +1067,12 @@ function renderNotificationsView() {
       <span>✓ ${ui.notifUndo.ids.length > 1 ? `${ui.notifUndo.ids.length} notifications` : `"${esc(ui.notifUndo.label)}"`} moved to the <b>Seen</b> tab.</span>
       <span class="notif-undo-actions"><button class="btn btn-sm" data-act="notif-view-seen">View in Seen</button><button class="btn btn-sm" data-act="notif-undo">Undo</button></span>
     </div>` : ''}
-    ${behind.length ? `<div class="notif-behind">
+    ${behind.length || personSnap ? `<div class="notif-behind">
       <div class="notif-behind-title">${icon('users', 15)} People who have not completed their part</div>
       <div class="notif-behind-list">${behind.map(p => `<button type="button" class="notif-person ${p.flagged ? 'flagged' : ''} ${ui.notifPerson === p.username ? 'active' : ''}" data-notif-person="${esc(p.username)}"><b>${esc(p.name)}</b> · ${p.count} task${p.count > 1 ? 's' : ''}${p.flagged ? ' · flagged' : ''} ›</button>`).join('')}</div>
-      ${ui.notifPerson && behind.some(p => p.username === ui.notifPerson) ? notifPersonTasksHTML(behind.find(p => p.username === ui.notifPerson)) : ''}
+      ${personSnap ? notifPersonTasksHTML(personSnap) : ''}
     </div>` : ''}
-    ${list.length === 0 ? `<div class="notif-empty">${icon(catInfo.icon, 28)}<div>${filter === 'unread' ? (cat === 'all' ? 'Nothing new — you have seen everything.' : `No new ${catInfo.label.toLowerCase()}.`) : (cat === 'all' ? 'Nothing seen yet.' : `No seen ${catInfo.label.toLowerCase()} yet.`)}</div></div>` : groups.map(g => `
+    ${personSnap ? '' : list.length === 0 ? `<div class="notif-empty">${icon(catInfo.icon, 28)}<div>${filter === 'unread' ? (cat === 'all' ? 'Nothing new — you have seen everything.' : `No new ${catInfo.label.toLowerCase()}.`) : (cat === 'all' ? 'Nothing seen yet.' : `No seen ${catInfo.label.toLowerCase()} yet.`)}</div></div>` : groups.map(g => `
       <div class="notif-day">${filter === 'seen' ? 'Seen ' : ''}${esc(notifDayLabel(g.key))}</div>
       ${g.items.map(n => {
         const target = notifTarget(n);
@@ -1084,7 +1093,7 @@ function renderNotificationsView() {
           <button type="button" class="notif-seen-btn ${n.read ? 'done' : ''}" data-notif-seen="${n.id}" ${n.read ? 'disabled' : ''} title="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}" aria-label="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}">${n.read ? '✓' : ''}</button>
         </div>`;
       }).join('')}`).join('')}
-    ${filter === 'unread' && totalNew > unread.length ? `<div class="small muted" style="margin-top:10px;">Showing the newest ${unread.length} of your ${totalNew} new notifications — mark some as seen to see the rest.</div>` : ''}
+    ${!personSnap && filter === 'unread' && totalNew > unread.length ? `<div class="small muted" style="margin-top:10px;">Showing the newest ${unread.length} of your ${totalNew} new notifications — mark some as seen to see the rest.</div>` : ''}
     ${filter === 'seen' && list.length ? '<div class="small muted" style="margin-top:10px;">Showing the 100 notifications you saw most recently.</div>' : ''}
   </div>`;
 }
@@ -1158,6 +1167,17 @@ function bindNotificationsView() {
   });
   const snd = document.querySelector('[data-act="notif-sound"]');
   if (snd) snd.onclick = () => { const on = !dlvSoundOn(); try { safeStorage.setItem('ls_dlv_sound', on ? 'on' : 'off'); } catch (e) {} if (on) dlvPlaySound('notification'); render(); };
+  document.querySelectorAll('[data-notif-fu-all]').forEach(b => b.onclick = async (e) => {
+    e.preventDefault(); e.stopPropagation(); if (b.disabled) return;
+    const ids = b.dataset.notifFuAll.split(',').filter(Boolean); b.disabled = true; b.textContent = '📣 Sending…';
+    let ok = 0; const fails = [];
+    for (const id of ids) {
+      try { await api(`/api/tasks/${encodeURIComponent(id)}/nudge`, { method: 'POST' }); ok++; notifTaskInfo[id] = { ...(notifTaskInfo[id] || {}), followedUpAt: new Date().toISOString() }; notifClearForTask(id); }
+      catch (err) { fails.push(err.message); }
+    }
+    setBanner(`Followed up on ${ok} task${ok === 1 ? '' : 's'}.${fails.length ? ` ${fails.length} not sent: ${fails[0]}` : ''}`, ok ? 'ok' : undefined);
+    render();
+  });
   const undo = document.querySelector('[data-act="notif-undo"]'); if (undo) undo.onclick = () => undoNotifSeen();
   bindNotifExtras();
   const view = document.querySelector('[data-act="notif-view-seen"]'); if (view) view.onclick = () => { ui.notifUndo = null; ui.notifFilter = 'seen'; render(); window.scrollTo(0, 0); };

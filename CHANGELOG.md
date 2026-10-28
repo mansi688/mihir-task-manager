@@ -4,6 +4,15 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Notifications: person view shows only pending tasks; approvals never show Follow up
+### Changed
+- Flagged / Warnings: tapping a person shows **only their pending tasks** (completed ones left out) with **Follow up**
+  per task and **Follow up all**; the notification list is hidden until "✕ Show all notifications". The list stays
+  put after a follow-up (the task shows "Follow up again").
+- Approval notifications never show Follow up. When the request is already decided they say so ("✓ Already decided —
+  nothing is waiting for your approval", "✓ This closure request has already been handled", "✓ Task is closed");
+  pending ones show Approve / Send back (or Close task / Keep open) as before.
+
 ## [Unreleased] — Compliance due dates, sounds, JMR quantity only, view-only estimation files
 ### Added
 - **Compliance due dates** (Accounts Dept → 📅 Compliance; Accounts Department and Admin): TDS deposit 7th, **GST deposit
