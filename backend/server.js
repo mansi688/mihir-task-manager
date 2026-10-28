@@ -3509,10 +3509,21 @@ app.post('/api/ingestion/voice', auth(ALL_ROLES), aiCallLimiter, async (req, res
     res.json({ ingestionId: item.id, transcript: r.transcript, language: r.language, suggestions: r.suggestions, minConfidence: ingestion.MIN_CONF });
   } catch (e) { log('ERROR', 'voice ingestion failed', { requestId: req.id, error: e.message }); res.status(aiErrorStatus(e)).json({ error: e.code ? e.message : 'Voice processing failed. Please try again or create the task manually.' }); }
 });
+// Writing help: "✨ Fix" on any text box — spelling, grammar, punctuation, same language. Uses the AI service
+// (AI_API_KEY); counts towards the monthly AI budget like the other AI features.
+const writingLimiter = makeRateLimiter(400, 60 * 60 * 1000); // per IP (a whole office can share one)
+app.post('/api/ai/fix-text', auth(ALL_ROLES), writingLimiter, async (req, res) => {
+  if (!ai.configured) return res.status(503).json({ error: 'Grammar fixing needs the AI key (AI_API_KEY) set on the server.' });
+  const text = str((req.body || {}).text);
+  if (!text.trim()) return res.status(400).json({ error: 'Write something first.' });
+  if (text.length > 4000) return res.status(400).json({ error: 'That is too long to fix at once (max 4,000 characters).' });
+  try { res.json({ text: await ai.fixText({ text, username: req.user.username }) }); }
+  catch (e) { log('ERROR', 'fix-text failed', { requestId: req.id, error: e.message }); res.status(aiErrorStatus(e)).json({ error: e.code ? e.message : 'Could not fix the text right now — try again.' }); }
+});
 // Which optional features this page should show (no secrets — on/off only).
 app.get('/api/features', auth(ALL_ROLES), (req, res) => {
   const f = featureFlags();
-  res.json({ aiTaskExtraction: f.aiTaskExtraction && ai.configured, voiceTasks: f.voiceTasks && ai.configured, meetingAi: f.meetingAi && ai.configured, storage: storage.configured, meetingRetentionDays: MEETING_RETENTION_DAYS, locationTracking: f.locationTracking });
+  res.json({ aiTaskExtraction: f.aiTaskExtraction && ai.configured, voiceTasks: f.voiceTasks && ai.configured, meetingAi: f.meetingAi && ai.configured, storage: storage.configured, meetingRetentionDays: MEETING_RETENTION_DAYS, locationTracking: f.locationTracking, aiWriting: ai.configured });
 });
 // Document / photo / video → suggestions (PDF, Word, Excel, CSV, images, short videos).
 app.post('/api/ingestion/file', auth(ALL_ROLES), aiCallLimiter, async (req, res) => {

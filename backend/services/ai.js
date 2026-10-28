@@ -105,6 +105,41 @@ function createAI({ pool, env = process.env, fetchImpl = fetch, log = () => {}, 
       decisions: tasks.filter(t => t.kind === 'decision').map(t => t.title), risks: [], tasks };
   }
 
+  // Writing help: fix spelling, grammar and punctuation of a short message, same language, nothing added.
+  const FIX_RULES = [
+    'You proofread short workplace messages written by staff of a construction company in India (site, purchase, accounts, design teams).',
+    'Fix spelling, grammar, capitalisation and punctuation only. Keep the meaning, tone and length. Do not add or remove information, greetings or sign-offs.',
+    'Keep the SAME language and mix exactly as written (English, Hinglish, Hindi, Marathi or any mix) — never translate, and never change Devanagari to Latin script or back.',
+    'Keep unchanged: people and company names, @mentions (e.g. @tanishq.m), numbers, amounts, dates, units (sqm, cum, MT, bags), codes (TASK-…, BILL-…, JMR-…), product codes, emojis, line breaks and list layout.',
+    'If the text is already correct, return it unchanged. Return ONLY the corrected text — no quotes, notes or explanations.',
+  ].join('\n');
+  function mockFix(text) {
+    let t = String(text).replace(/[ \t]{2,}/g, ' ').replace(/ +([,.!?])/g, '$1').replace(/\bi\b/g, 'I').replace(/\b(dont|cant|wont|didnt|isnt)\b/gi, m => ({ dont: "don't", cant: "can't", wont: "won't", didnt: "didn't", isnt: "isn't" })[m.toLowerCase()] || m);
+    t = t.split('\n').map(l => l.replace(/^(\s*)([a-z])/, (m, sp, c) => sp + c.toUpperCase())).join('\n').trim();
+    if (t && !/[.!?…:)\]]$/.test(t) && !/^[-•*]/m.test(t)) t += '.';
+    return t;
+  }
+  async function fixText({ text, username }) {
+    if (!configured) throw new AINotConfigured();
+    await guardBudget();
+    if (provider === 'mock') {
+      await record({ feature: 'writing_fix', source: 'writing', username, inTokens: Math.ceil(text.length / 4), outTokens: Math.ceil(text.length / 4) });
+      return mockFix(text);
+    }
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+    const res = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.AI_API_KEY },
+      body: JSON.stringify({ systemInstruction: { parts: [{ text: FIX_RULES }] }, contents: [{ role: 'user', parts: [{ text }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: Math.min(4096, Math.ceil(text.length / 2) + 200) } }) });
+    if (!res.ok) throw new Error(`AI provider error (${res.status}): ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    const j = await res.json();
+    const out = ((((j.candidates || [])[0] || {}).content || {}).parts || []).map(x => x.text || '').join('').trim();
+    await record({ feature: 'writing_fix', source: 'writing', username, inTokens: (j.usageMetadata || {}).promptTokenCount || 0, outTokens: (j.usageMetadata || {}).candidatesTokenCount || 0 });
+    if (!out) throw new Error('AI returned nothing');
+    // Guard against a runaway answer (an explanation instead of the text)
+    if (out.length > text.length * 1.6 + 40) return text;
+    return out;
+  }
+
   async function run({ feature, source, username, parts, rawText, ctx, audio }) {
     if (!configured) throw new AINotConfigured();
     await guardBudget();
@@ -125,6 +160,7 @@ function createAI({ pool, env = process.env, fetchImpl = fetch, log = () => {}, 
     processMedia: ({ buffer, mime, source, username, ctx, contentType = 'document' }) => run({ feature: `${contentType}_extraction`, source, username, audio: contentType === 'video',
       parts: [{ inline_data: { mime_type: mime, data: buffer.toString('base64') } }, { text: contentType === 'video' ? 'Watch this site video (speech and visible notes) and extract the task(s). Put the spoken words in "transcript".' : 'Read this document / photo (including handwriting or scanned pages) and extract the task(s). Put the readable text in "transcript".' }],
       rawText: buffer.toString('utf8'), ctx: { ...ctx, mode: 'task' } }),
+    fixText,
     monthSpendInr, budgetInr,
     async usageSummary() {
       const r = await pool.query(`SELECT COALESCE(source, feature) AS k,

@@ -4,6 +4,18 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Writing help: spell-check everywhere and ✨ Fix grammar
+### Added
+- **Spell-check / autocorrect / auto-capitalise** switched on for every text box (red underlines and right-click
+  suggestions on a computer, keyboard autocorrect on phones). Usernames, passwords, codes, numbers, amounts and
+  searches are left alone. Free, no setup. `frontend/writing.js`.
+- **✨ Fix** chip in the corner of the text box being typed in (comments, task title / description, submission notes,
+  closure reasons, chat, announcements, estimation remarks …): one tap fixes spelling, grammar and punctuation in the
+  same language (English, Hinglish, Hindi, Marathi — never translated); names, @mentions, numbers, units and codes are
+  kept. "↩ Undo fix" restores the original. `POST /api/ai/fix-text` through the existing AI service (Gemini,
+  `AI_API_KEY`), logged in AI usage and counted in the monthly AI budget. The chip shows only when the key is set
+  (`/api/features` → `aiWriting`).
+
 ## [Unreleased] — Comment photos visible in task History
 ### Fixed
 - **Photos / files added to a comment were saved but not shown.** The task's History table only looked at the old

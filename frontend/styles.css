@@ -1613,3 +1613,9 @@ select.field-err,input.field-err{border-color:var(--danger);box-shadow:0 0 0 2px
 .notif-pt-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-weight:600;font-size:13px;margin:10px 0 4px;}
 .notif-pt-head .btn{margin-left:auto;}
 .notif-pt-sep{border-top:2px dashed color-mix(in srgb,var(--ink,#333) 18%,transparent);margin:14px 0 4px;}
+/* ---- Writing help: ✨ Fix chip (frontend/writing.js) ---- */
+.w-fix-chip{position:fixed;z-index:1200;padding:3px 9px;border-radius:999px;border:1px solid color-mix(in srgb,#7c3aed 45%,transparent);
+  background:color-mix(in srgb,#7c3aed 10%,var(--panel,#fff));color:#6d28d9;font-size:12px;font-weight:600;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.12);}
+.w-fix-chip:hover{background:color-mix(in srgb,#7c3aed 18%,var(--panel,#fff));}
+.w-fix-chip.undo{color:var(--ink,#333);border-color:var(--line,#ccc);background:var(--panel,#fff);}
+.w-fix-chip[disabled]{opacity:.75;cursor:wait;}
