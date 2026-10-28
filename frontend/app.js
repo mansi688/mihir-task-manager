@@ -2237,12 +2237,17 @@ function taskHistoryHTML(t) {
           const d = histDateParts(e.created_at);
           const meta = e.metadata || {};
           const change = (e.old_value || e.new_value) ? `<div class="history-change">${e.old_value ? `<span class="old">${esc(e.old_value)}</span> → ` : ''}<span class="new">${esc(e.new_value || '—')}</span></div>` : '';
-          const att = meta.attachment_name && meta.reply_id ? lazyAttachmentHTML(true, meta.attachment_name, `/api/tasks/${t.id}/replies/${meta.reply_id}/attachment`, `hist-att-${e.id}`) : (meta.attachment_name ? esc(meta.attachment_name) : '');
+          // A comment's files: every file on that comment (old single attachment or the newer several-per-comment ones).
+          const reply = meta.reply_id ? (t.replies || []).find(r => String(r.id) === String(meta.reply_id)) : null;
+          const replyFiles = reply ? replyAttachmentsHTML(t, reply) : '';
+          const att = replyFiles || (meta.attachment_name && meta.reply_id ? lazyAttachmentHTML(true, meta.attachment_name, `/api/tasks/${t.id}/replies/${meta.reply_id}/attachment`, `hist-att-${e.id}`) : (meta.attachment_name ? esc(meta.attachment_name) : ''));
+          const nFiles = reply ? ((reply.attachments || []).length || (reply.has_attachment ? 1 : 0)) : 0;
+          const emptyNote = !e.details && nFiles ? `<span class="muted">📎 Attached ${nFiles} file${nFiles > 1 ? 's' : ''} — see Attachment</span>` : '';
           return `<tr>
             <td class="nowrap">${esc(d.date)}</td><td class="nowrap mono small">${esc(d.time)}</td>
             <td><b>${esc(e.actor_name || 'System')}</b>${e.actor_team ? `<div class="small muted">${esc(e.actor_team)}</div>` : ''}</td>
             <td><span class="history-action ${HISTORY_ACTION_TONE[e.event_type] || ''}">${esc(histLabel(e.event_type))}</span></td>
-            <td class="history-details">${highlightMentions(e.details || '')}${change}${meta.backfilled ? '<div class="small muted">reconstructed from earlier records</div>' : ''}</td>
+            <td class="history-details">${highlightMentions(e.details || '')}${emptyNote}${change}${meta.backfilled ? '<div class="small muted">reconstructed from earlier records</div>' : ''}</td>
             <td class="small nowrap">${esc(HISTORY_SOURCE_LABEL[e.source_type] || e.source_type || '')}</td>
             <td class="small">${att}</td>
           </tr>`;

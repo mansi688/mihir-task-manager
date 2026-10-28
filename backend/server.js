@@ -2468,7 +2468,10 @@ app.post('/api/tasks/:id/reply', auth(ALL_ROLES), async (req, res) => {
     }
   }
   if (addedByMention.length) await taskEvent(req, task.id, 'FOLLOW_UP', `Kept informed (mentioned in a comment): ${(await Promise.all(addedByMention.map(displayName))).join(', ')}`, { meta: { usernames: addedByMention, via: 'mention' } });
-  await taskEvent(req, task.id, attachmentName ? 'ATTACHMENT_ADDED' : 'COMMENTED', message || (attachmentName ? `Attached ${attachmentName}` : ''), { meta: { reply_id: replyId, ...(attachmentName ? { attachment_name: attachmentName } : {}) } });
+  // Files added the newer way (several per comment) are named in the history too, so the row is never blank.
+  const fileNames = [...(attachmentName ? [attachmentName] : []), ...replyUploads.files.map(f => f.name)];
+  await taskEvent(req, task.id, fileNames.length ? 'ATTACHMENT_ADDED' : 'COMMENTED', message || (fileNames.length ? `Attached ${fileNames.join(', ')}` : ''),
+    { meta: { reply_id: replyId, ...(attachmentName ? { attachment_name: attachmentName } : {}), ...(replyUploads.files.length ? { file_names: replyUploads.files.map(f => f.name) } : {}) } });
   res.json({ ok: true });
 });
 

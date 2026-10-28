@@ -4,6 +4,15 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Comment photos visible in task History
+### Fixed
+- **Photos / files added to a comment were saved but not shown.** The task's History table only looked at the old
+  single attachment of a comment; files added the newer way (several per comment, `task_files`) never appeared, so a
+  photo-only comment showed as an empty "Comment" row. History now lists every file of that comment in the
+  Attachment column (View), and a comment with only files says "📎 Attached N files". Existing comments are fixed too
+  (looked up by the comment). New comments record "Attached <file names>" in History.
+- Who can open them is unchanged: the creator, people on the task, people kept informed, and Admin.
+
 ## [Unreleased] — Person panel: flagged tasks, then their other open tasks
 ### Changed
 - Flagged / Warnings → tap a person: **🚩 Flagged tasks** first, then a dashed line and **📋 Other open tasks**
