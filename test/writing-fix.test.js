@@ -8,7 +8,14 @@ test('Writing help: ✨ Fix corrects text through the AI service, logs usage, fe
   t.after(stop);
   const admin = await login(baseUrl, 'admin', 'admin123');
   const u = await createMember(baseUrl, admin, 'ruchita.w', 'Ruchita', 'Design Department');
-  assert.equal((await api(baseUrl, '/api/features', { token: u })).data.aiWriting, true);
+  const f = (await api(baseUrl, '/api/features', { token: u })).data;
+  assert.equal(f.aiWriting, true);
+  // with an AI key / provider and no ENABLE_… settings, the AI features are on by default
+  assert.equal(f.aiTaskExtraction, true); assert.equal(f.voiceTasks, true); assert.equal(f.meetingAi, true);
+  const { flags } = require('../backend/services/features');
+  assert.equal(flags({}).aiTaskExtraction, false, 'no key → off');
+  assert.equal(flags({ AI_API_KEY: 'k', ENABLE_VOICE_TASKS: 'false' }).voiceTasks, false, 'can still be switched off');
+  assert.equal(flags({ AI_API_KEY: 'k' }).meetingAi, true);
   const P = (body) => api(baseUrl, '/api/ai/fix-text', { method: 'POST', token: u, body });
   assert.equal((await P({ text: '   ' })).status, 400);
   assert.equal((await P({ text: 'x'.repeat(4001) })).status, 400);

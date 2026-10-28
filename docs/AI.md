@@ -9,7 +9,7 @@ same rules as the Excel import, dates checked, non-actions dropped, max 20 per m
 Nothing is created automatically (`ENABLE_AUTO_TASK_CREATION` does not exist on purpose).
 
 ## Provider
-`AI_PROVIDER=gemini` (default model `gemini-2.5-flash-lite`, structured JSON output) or `mock` (rule-based, free —
+`AI_PROVIDER=gemini` (default model `gemini-3.5-flash-lite`, falling back to newer/older models if Google retires one, structured JSON output) or `mock` (rule-based, free —
 tests/demos). Application code only calls `ai.extractTasks()` / `ai.processAudio()`; another provider is one new
 function in `ai.js`. Data sent: the message/audio, people's names + usernames, project names, today's date.
 Use the **paid** Gemini API tier (free-tier inputs may be used to improve Google's products).

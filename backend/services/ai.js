@@ -4,6 +4,8 @@
 // touches the database or sends anything — it returns proposals that the app validates and a
 // person confirms.
 const PRICES_USD_PER_M = { // approximate published 2026 list prices; adjust via AI_PRICE_* if they change
+  'gemini-3.5-flash-lite': { in: 0.10, out: 0.40, audioIn: 0.30 }, // estimate — set to the published price when known
+  'gemini-3.5-flash': { in: 0.30, out: 2.50, audioIn: 1.00 },       // estimate
   'gemini-2.5-flash-lite': { in: 0.10, out: 0.40, audioIn: 0.30 },
   'gemini-2.5-flash': { in: 0.30, out: 2.50, audioIn: 1.00 },
 };
@@ -26,6 +28,30 @@ const EXTRACT_SCHEMA = { type: 'OBJECT', properties: { language: { type: 'STRING
   summary: { type: 'STRING', nullable: true }, decisions: { type: 'ARRAY', items: { type: 'STRING' } }, risks: { type: 'ARRAY', items: { type: 'STRING' } },
   tasks: { type: 'ARRAY', items: TASK_ITEM_SCHEMA } }, required: ['language', 'tasks'] };
 
+// Voice / typed commands for the assistant (Marathi, Hindi, English or a mix).
+const COMMAND_SCHEMA = { type: 'OBJECT', properties: {
+  language: { type: 'STRING', enum: ['mr', 'hi', 'en'] }, transcript: { type: 'STRING' },
+  intent: { type: 'STRING', enum: ['show_tasks', 'mark_done', 'approve', 'send_back', 'follow_up', 'comment', 'create_task', 'unknown'] },
+  scope: { type: 'STRING', enum: ['mine', 'created_by_me', 'to_approve', 'person', 'all'], nullable: true },
+  when: { type: 'STRING', enum: ['overdue', 'today', 'tomorrow', 'this_week', 'any'], nullable: true },
+  project: { type: 'STRING', nullable: true }, person_name: { type: 'STRING', nullable: true },
+  task_id: { type: 'STRING', nullable: true }, task_words: { type: 'STRING', nullable: true }, note: { type: 'STRING', nullable: true },
+}, required: ['language', 'transcript', 'intent'] };
+function commandInstructions({ today, weekday, me, people, projects, tasks }) {
+  return [
+    'You are the voice assistant of the MIHIR Task Manager (a construction company in India). Understand ONE command in Marathi, Hindi, English or any mix and return JSON only.',
+    `Today is ${weekday} ${today} (Asia/Kolkata). The speaker is ${me.name} (${me.username}).`,
+    'language: the main language spoken (mr = Marathi, hi = Hindi, en = English). transcript: exactly what was said, in the original language and script.',
+    'intent: show_tasks (list / how many / which tasks …), mark_done (my work on a task is finished — "ho gaya", "jhala", "complete", "done"), approve (approve someone\'s submitted work), send_back (reject / return someone\'s work with a reason), follow_up (remind / chase people on a task or a person\'s tasks), comment (add a note / update on a task), create_task (give someone new work), unknown.',
+    'scope for show_tasks: mine (my own work, default), created_by_me (tasks I gave others), to_approve (work waiting for my approval), person (someone else\'s tasks — set person_name), all.',
+    'when: overdue / today / tomorrow / this_week / any. project: one of PROJECTS if mentioned (e.g. Amara → Mihir Amara, Equinox → Nyati Equinox, Tathawade → Sierra (Tathawade)).',
+    'person_name: the person mentioned, as in PEOPLE. task_id: the id from TASKS that the command is about, only if clearly identifiable; task_words: the words that describe the task. note: the comment / reason / what was done, in the original language.',
+    `PEOPLE: ${people.map(p => `${p.name} (${p.username})`).join('; ')}`,
+    `PROJECTS: ${projects.join('; ')}`,
+    `TASKS (id | title | project | people): ${tasks.map(t => `${t.id} | ${t.title} | ${t.project || ''} | ${t.people || ''}`).join('\n')}`,
+  ].join('\n');
+}
+
 function instructions({ mode, today, weekday, people, projects }) {
   return [
     'You turn construction-company messages into task proposals for the MIHIR Task Manager. Output JSON only.',
@@ -42,7 +68,10 @@ function instructions({ mode, today, weekday, people, projects }) {
 
 function createAI({ pool, env = process.env, fetchImpl = fetch, log = () => {}, onBudgetAlert = async () => {} }) {
   const provider = (env.AI_PROVIDER || (env.AI_API_KEY ? 'gemini' : '')).toLowerCase();
-  const model = env.AI_MODEL || 'gemini-2.5-flash-lite';
+  // Google retires older models for new keys; try the configured model first, then newer → older ones,
+  // and remember the first that works (e.g. "gemini-2.5-flash-lite is no longer available to new users").
+  const MODEL_CHAIN = [...new Set([env.AI_MODEL, 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'].filter(Boolean))];
+  let model = MODEL_CHAIN[0];
   const usdInr = Number(env.USD_INR) || 88;
   const budgetInr = Number(env.MONTHLY_AI_BUDGET_INR) || 1000;
   const alertAt = Number(env.AI_COST_ALERT_THRESHOLD) || 0.8;
@@ -60,19 +89,30 @@ function createAI({ pool, env = process.env, fetchImpl = fetch, log = () => {}, 
     if (spent >= budgetInr * alertAt) await onBudgetAlert({ spent, budget: budgetInr });
   }
   async function record({ feature, source, username, taskId, inTokens, outTokens, audio }) {
-    const p = PRICES_USD_PER_M[model] || PRICES_USD_PER_M['gemini-2.5-flash-lite'];
+    const p = PRICES_USD_PER_M[model] || PRICES_USD_PER_M['gemini-3.5-flash-lite'];
     const usd = provider === 'mock' ? 0 : ((inTokens * (audio ? p.audioIn : p.in)) + outTokens * p.out) / 1e6;
     await pool.query(`INSERT INTO ai_usage_events (feature, provider, model, input_tokens, output_tokens, cost_usd, cost_inr, username, task_id, source)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [feature, provider, provider === 'mock' ? 'mock' : model, inTokens, outTokens, usd, usd * usdInr, username || null, taskId || null, source || null]);
   }
 
+  async function geminiPost(body) {
+    let lastErr = null;
+    for (let i = Math.max(0, MODEL_CHAIN.indexOf(model)); i < MODEL_CHAIN.length; i++) {
+      const m = MODEL_CHAIN[i];
+      const res = await fetchImpl(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.AI_API_KEY }, body: JSON.stringify(body) });
+      if (res.ok) { if (m !== model) { log('WARN', 'AI model switched', { from: model, to: m }); model = m; } return res.json(); }
+      const text = await res.text().catch(() => '');
+      lastErr = new Error(`AI provider error (${res.status}): ${text.slice(0, 200)}`);
+      // Only a missing / retired model moves on to the next one; other errors (bad key, quota) stop here.
+      if (!(res.status === 404 || (res.status === 400 && /not (found|supported)|no longer available/i.test(text)))) throw lastErr;
+    }
+    throw lastErr;
+  }
+
   async function gemini(parts, systemText) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-    const res = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.AI_API_KEY },
-      body: JSON.stringify({ systemInstruction: { parts: [{ text: systemText }] }, contents: [{ role: 'user', parts }],
-        generationConfig: { temperature: 0.1, responseMimeType: 'application/json', responseSchema: EXTRACT_SCHEMA } }) });
-    if (!res.ok) throw new Error(`AI provider error (${res.status}): ${(await res.text().catch(() => '')).slice(0, 200)}`);
-    const j = await res.json();
+    const j = await geminiPost({ systemInstruction: { parts: [{ text: systemText }] }, contents: [{ role: 'user', parts }],
+        generationConfig: { temperature: 0.1, responseMimeType: 'application/json', responseSchema: EXTRACT_SCHEMA } });
     const text = (((j.candidates || [])[0] || {}).content || {}).parts?.map(x => x.text || '').join('') || '';
     let out; try { out = JSON.parse(text); } catch (e) { throw new Error('AI returned malformed output'); }
     return { out, inTokens: (j.usageMetadata || {}).promptTokenCount || 0, outTokens: (j.usageMetadata || {}).candidatesTokenCount || 0 };
@@ -126,18 +166,59 @@ function createAI({ pool, env = process.env, fetchImpl = fetch, log = () => {}, 
       await record({ feature: 'writing_fix', source: 'writing', username, inTokens: Math.ceil(text.length / 4), outTokens: Math.ceil(text.length / 4) });
       return mockFix(text);
     }
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-    const res = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.AI_API_KEY },
-      body: JSON.stringify({ systemInstruction: { parts: [{ text: FIX_RULES }] }, contents: [{ role: 'user', parts: [{ text }] }],
-        generationConfig: { temperature: 0, maxOutputTokens: Math.min(4096, Math.ceil(text.length / 2) + 200) } }) });
-    if (!res.ok) throw new Error(`AI provider error (${res.status}): ${(await res.text().catch(() => '')).slice(0, 200)}`);
-    const j = await res.json();
+    const j = await geminiPost({ systemInstruction: { parts: [{ text: FIX_RULES }] }, contents: [{ role: 'user', parts: [{ text }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: Math.min(4096, Math.ceil(text.length / 2) + 200) } });
     const out = ((((j.candidates || [])[0] || {}).content || {}).parts || []).map(x => x.text || '').join('').trim();
     await record({ feature: 'writing_fix', source: 'writing', username, inTokens: (j.usageMetadata || {}).promptTokenCount || 0, outTokens: (j.usageMetadata || {}).candidatesTokenCount || 0 });
     if (!out) throw new Error('AI returned nothing');
     // Guard against a runaway answer (an explanation instead of the text)
     if (out.length > text.length * 1.6 + 40) return text;
     return out;
+  }
+
+  // Short free-text answer (e.g. rephrasing a computed warning). Same budget and usage logging.
+  async function complete({ system, text, feature = 'text', username, maxTokens = 300 }) {
+    if (!configured) throw new AINotConfigured();
+    await guardBudget();
+    if (provider === 'mock') { await record({ feature, source: feature, username, inTokens: Math.ceil(text.length / 4), outTokens: 40 }); return text; }
+    const j = await geminiPost({ systemInstruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts: [{ text }] }], generationConfig: { temperature: 0.2, maxOutputTokens: maxTokens } });
+    await record({ feature, source: feature, username, inTokens: (j.usageMetadata || {}).promptTokenCount || 0, outTokens: (j.usageMetadata || {}).candidatesTokenCount || 0 });
+    return ((((j.candidates || [])[0] || {}).content || {}).parts || []).map(x => x.text || '').join('').trim();
+  }
+
+  // Rule-based stand-in for tests / demos (English words only).
+  function mockCommand(text, ctx) {
+    const t = String(text).trim(), low = t.toLowerCase();
+    const person = (ctx.people || []).find(p => low.includes(p.name.toLowerCase().split(' ')[0].toLowerCase()) || low.includes(p.username.toLowerCase()));
+    const proj = (ctx.projects || []).find(p => low.includes(p.toLowerCase().split(' ').pop().replace(/[()]/g, '')) || low.includes(p.toLowerCase()));
+    const when = /overdue|late/.test(low) ? 'overdue' : /today/.test(low) ? 'today' : /tomorrow/.test(low) ? 'tomorrow' : /this week|week/.test(low) ? 'this_week' : 'any';
+    const after = (re) => { const m = re.exec(t); return m ? m[1].trim() : null; };
+    const strip = (s) => s.replace(/\b(mark|as|the|task|done|complete|completed|approve|approved|send back|follow up|on|add|comment|note|please|of|for|'s)\b/gi, ' ').replace(/[:,.]/g, ' ').replace(/\s+/g, ' ').trim();
+    let intent = 'unknown', scope = null, note = null;
+    if (/^(show|list|what|which|how many)/.test(low)) { intent = 'show_tasks'; scope = /approv/.test(low) ? 'to_approve' : /i gave|created by me|i created/.test(low) ? 'created_by_me' : person ? 'person' : 'mine'; }
+    else if (/^(create|assign|new task|give)/.test(low) || /\btask for\b/.test(low)) intent = 'create_task';
+    else if (/send back|reject|return/.test(low)) { intent = 'send_back'; note = after(/(?:because|note|reason)[: ]+(.+)$/i); }
+    else if (/approve/.test(low)) intent = 'approve';
+    else if (/follow up|follow-up|remind/.test(low)) intent = 'follow_up';
+    else if (/^(add )?comment|^note/.test(low)) { intent = 'comment'; note = after(/:(.+)$/); }
+    else if (/\b(done|complete|completed|finished)\b/.test(low)) { intent = 'mark_done'; note = after(/(?:note|because)[: ]+(.+)$/i); }
+    const words = intent === 'comment' || intent === 'send_back' ? strip(t.split(/:|because/i)[0]) : strip(t.replace(person ? new RegExp(person.name.split(' ')[0], 'i') : /$^/, ''));
+    return { language: /[\u0900-\u097F]/.test(t) ? 'hi' : 'en', transcript: t, intent, scope, when, project: proj || null, person_name: person ? person.name : null, task_id: null, task_words: words || null, note };
+  }
+  async function parseCommand({ text, audio, username, ctx }) {
+    if (!configured) throw new AINotConfigured();
+    await guardBudget();
+    if (provider === 'mock') {
+      const raw = text != null ? text : audio.buffer.toString('utf8');
+      await record({ feature: 'assistant_command', source: audio ? 'voice' : 'text', username, inTokens: Math.ceil(raw.length / 4), outTokens: 60, audio: !!audio });
+      return mockCommand(raw, ctx);
+    }
+    const parts = audio ? [{ inline_data: { mime_type: audio.mime || 'audio/webm', data: audio.buffer.toString('base64') } }, { text: 'Transcribe this voice command and interpret it.' }] : [{ text: `COMMAND:\n${text}` }];
+    const j = await geminiPost({ systemInstruction: { parts: [{ text: commandInstructions(ctx) }] }, contents: [{ role: 'user', parts }],
+        generationConfig: { temperature: 0.1, responseMimeType: 'application/json', responseSchema: COMMAND_SCHEMA } });
+    const txt = ((((j.candidates || [])[0] || {}).content || {}).parts || []).map(x => x.text || '').join('');
+    await record({ feature: 'assistant_command', source: audio ? 'voice' : 'text', username, inTokens: (j.usageMetadata || {}).promptTokenCount || 0, outTokens: (j.usageMetadata || {}).candidatesTokenCount || 0, audio: !!audio });
+    try { return JSON.parse(txt); } catch (e) { throw new Error('AI returned malformed output'); }
   }
 
   async function run({ feature, source, username, parts, rawText, ctx, audio }) {
@@ -150,7 +231,7 @@ function createAI({ pool, env = process.env, fetchImpl = fetch, log = () => {}, 
     return result.out;
   }
   return {
-    configured, provider: configured ? provider : null, model: provider === 'mock' ? 'mock' : model,
+    configured, provider: configured ? provider : null, get model() { return provider === 'mock' ? 'mock' : model; },
     extractTasks: ({ text, source, username, ctx }) => run({ feature: 'task_extraction', source, username, parts: [{ text: `MESSAGE:\n${text}` }], rawText: text, ctx: { ...ctx, mode: 'task' } }),
     // Audio → transcript (original language) + tasks in ONE call. In mock mode the "audio" bytes are read as UTF-8 text.
     processAudio: ({ buffer, mime, source, username, ctx, mode = 'task' }) => run({ feature: mode === 'meeting' ? 'meeting_transcription' : 'voice_task', source, username, audio: true,
@@ -160,7 +241,7 @@ function createAI({ pool, env = process.env, fetchImpl = fetch, log = () => {}, 
     processMedia: ({ buffer, mime, source, username, ctx, contentType = 'document' }) => run({ feature: `${contentType}_extraction`, source, username, audio: contentType === 'video',
       parts: [{ inline_data: { mime_type: mime, data: buffer.toString('base64') } }, { text: contentType === 'video' ? 'Watch this site video (speech and visible notes) and extract the task(s). Put the spoken words in "transcript".' : 'Read this document / photo (including handwriting or scanned pages) and extract the task(s). Put the readable text in "transcript".' }],
       rawText: buffer.toString('utf8'), ctx: { ...ctx, mode: 'task' } }),
-    fixText,
+    fixText, complete, parseCommand,
     monthSpendInr, budgetInr,
     async usageSummary() {
       const r = await pool.query(`SELECT COALESCE(source, feature) AS k,

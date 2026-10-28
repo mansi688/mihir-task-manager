@@ -179,6 +179,8 @@ db.setNotificationHook(async ({ username, type, message, task_id, notificationId
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const AI_MODEL = 'claude-haiku-4-5-20251001';
 async function callClaude(systemPrompt, userPrompt, maxTokens) {
+  // No Anthropic key but the main AI key (Gemini) is set → use that, so one key runs every AI feature.
+  if (!ANTHROPIC_API_KEY && typeof ai !== 'undefined' && ai.configured) return ai.complete({ system: systemPrompt, text: userPrompt, maxTokens: maxTokens || 300, feature: 'rephrase' });
   if (!ANTHROPIC_API_KEY) {
     const err = new Error('AI features need ANTHROPIC_API_KEY set in your .env file — see .env.example.');
     err.status = 503;
@@ -1284,7 +1286,7 @@ async function generateReportSuggestions(task, computed) {
   const template = computed.flags.length > 0
     ? `Based on this task's history: ${computed.flags.join(' ')} Consider building in more review time or checking in earlier on similar future tasks.`
     : 'This task closed with no flagged issues — response times were reasonable and nothing needed escalation.';
-  if (!ANTHROPIC_API_KEY) return template;
+  if (!ANTHROPIC_API_KEY && !ai.configured) return template;
   try {
     const system = 'Given real, computed facts about a completed construction task (delays, rejections, response times), write 2-3 short, constructive sentences suggesting what to do differently for similar future tasks. Use ONLY the facts given — never invent a number or event not mentioned.';
     const text = (await callClaude(system, JSON.stringify({ title: task.title, flags: computed.flags, responseBars: computed.responseBars, delayFlag: computed.delayFlag }), 300)).trim();
@@ -3520,10 +3522,14 @@ app.post('/api/ai/fix-text', auth(ALL_ROLES), writingLimiter, async (req, res) =
   try { res.json({ text: await ai.fixText({ text, username: req.user.username }) }); }
   catch (e) { log('ERROR', 'fix-text failed', { requestId: req.id, error: e.message }); res.status(aiErrorStatus(e)).json({ error: e.code ? e.message : 'Could not fix the text right now — try again.' }); }
 });
+/* backend/assistant.js — voice / typed commands (Marathi, Hindi, English): show tasks, mark done, approve, send back,
+   follow up, comment, create. Changes happen only after the person confirms on screen (normal endpoints). */
+const { mountAssistant } = require('./assistant');
+mountAssistant(app, { db, auth, ALL_ROLES, ai, featureFlags, str, log, aiErrorStatus, dataUrlToBuffer, PROJECT_OPTIONS, rateLimiter: writingLimiter });
 // Which optional features this page should show (no secrets — on/off only).
 app.get('/api/features', auth(ALL_ROLES), (req, res) => {
   const f = featureFlags();
-  res.json({ aiTaskExtraction: f.aiTaskExtraction && ai.configured, voiceTasks: f.voiceTasks && ai.configured, meetingAi: f.meetingAi && ai.configured, storage: storage.configured, meetingRetentionDays: MEETING_RETENTION_DAYS, locationTracking: f.locationTracking, aiWriting: ai.configured });
+  res.json({ aiTaskExtraction: f.aiTaskExtraction && ai.configured, voiceTasks: f.voiceTasks && ai.configured, meetingAi: f.meetingAi && ai.configured, storage: storage.configured, meetingRetentionDays: MEETING_RETENTION_DAYS, locationTracking: f.locationTracking, aiWriting: ai.configured, assistant: ai.configured && (f.voiceTasks || f.aiTaskExtraction) });
 });
 // Document / photo / video → suggestions (PDF, Word, Excel, CSV, images, short videos).
 app.post('/api/ingestion/file', auth(ALL_ROLES), aiCallLimiter, async (req, res) => {

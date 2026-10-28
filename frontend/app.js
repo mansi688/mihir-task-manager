@@ -1659,7 +1659,7 @@ function renderSuggestionsView() {
 // Voice / message panel on My Tasks
 function assistantButtonsHTML() {
   if (!appFeatures.voiceTasks && !appFeatures.aiTaskExtraction) return '';
-  return `${appFeatures.voiceTasks ? '<button class="btn btn-sm" data-act="open-voice">🎤 Create Task by Voice</button>' : ''}${appFeatures.aiTaskExtraction ? '<button class="btn btn-sm" data-act="open-paste">📋 Tasks from a message</button><button class="btn btn-sm" data-act="open-file">📎 Tasks from a document or photo</button>' : ''}`;
+  return `${appFeatures.assistant ? '<button class="btn btn-sm btn-primary" onclick="window.openAssistant && window.openAssistant()">🎙 Ask the assistant</button>' : ''}${appFeatures.voiceTasks ? '<button class="btn btn-sm" data-act="open-voice">🎤 Create Task by Voice</button>' : ''}${appFeatures.aiTaskExtraction ? '<button class="btn btn-sm" data-act="open-paste">📋 Tasks from a message</button><button class="btn btn-sm" data-act="open-file">📎 Tasks from a document or photo</button>' : ''}`;
 }
 function assistantPanelHTML() {
   if (!ui.assistantPanel) return '';

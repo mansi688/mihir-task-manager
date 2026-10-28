@@ -4,6 +4,41 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Fix: AI calls failing with "model no longer available"
+### Fixed
+- Live logs showed every ✨ Fix call failing: Google answers `gemini-2.5-flash-lite is no longer available to new users`
+  for newly created API keys. Default model is now **gemini-3.5-flash-lite**, and every AI call (Fix, assistant,
+  tasks from messages / voice / documents, meetings, rephrasing) goes through one helper that moves to the next model
+  (3.5-flash-lite → 3.5-flash → 2.5-flash-lite → 2.5-flash) when a model is missing or retired, and remembers the one
+  that works. Other errors (bad key, quota) are reported, not retried. `AI_MODEL` still overrides.
+
+## [Unreleased] — 🎙 Voice assistant (Marathi, Hindi, English)
+### Added
+- **🎙 Assistant** button on every page (and "🎙 Ask the assistant" on My Tasks) — speak or type one command in
+  Marathi, Hindi, English or a mix:
+  - **Show tasks**: my pending / overdue / due today / tomorrow / this week, tasks I gave, waiting for my approval,
+    a person's tasks, by project ("Amara che pending tasks", "Harsh ke tasks", "show my overdue tasks").
+  - **Mark done** ("slab cha kaam jhala", "mark the scaffolding task done") → confirm card with the note → submits
+    your part.
+  - **Approve / send back** ("approve Ruchita's carpet task", "send back … because photos missing") → confirm card.
+  - **Follow up** on a task or all of a person's pending tasks; **comment** on a task; **create** a task (goes to
+    Suggestions for review as before).
+  - Nothing changes until **Confirm** is pressed; the confirm uses the normal endpoints, so every permission applies.
+    Lists only include tasks the person can see.
+  - The answer is shown and **read aloud in the same language** (🔊 on / off in the panel; Marathi falls back to a
+    Hindi voice where the phone has none).
+  - `POST /api/assistant/command` (`backend/assistant.js`, `ai.parseCommand`), counted in the AI budget.
+
+## [Unreleased] — AI features on with one key
+### Changed
+- With `AI_API_KEY` set, the AI features are **on by default** — no extra settings: 🎤 Create Task by Voice,
+  📋 Tasks from a message, 📎 Tasks from a document or photo (My Tasks), the Suggestions page (review / accept AI
+  proposals) and Meetings (record → summary, decisions, action items), plus ✨ Fix on text boxes. Any of them can still
+  be switched off with `ENABLE_AI_TASK_EXTRACTION=false`, `ENABLE_VOICE_TASKS=false`, `ENABLE_MEETING_AI=false`.
+- The deadline-risk warning wording and the task report suggestions use the same Gemini key when no
+  `ANTHROPIC_API_KEY` is set (`ai.complete`), so one key runs every AI feature. All AI use counts in the monthly AI
+  budget (`MONTHLY_AI_BUDGET_INR`, default ₹1,000) — Admin → System Health shows the spend.
+
 ## [Unreleased] — Writing help: spell-check everywhere and ✨ Fix grammar
 ### Added
 - **Spell-check / autocorrect / auto-capitalise** switched on for every text box (red underlines and right-click
