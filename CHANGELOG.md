@@ -4,6 +4,13 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Person panel: flagged tasks, then their other open tasks
+### Changed
+- Flagged / Warnings → tap a person: **🚩 Flagged tasks** first, then a dashed line and **📋 Other open tasks**
+  (everything else they have not completed), each with Follow up per task and Follow up all.
+  `GET /api/notifications/person/:username/open-tasks` — Admin / Directors see all; others only tasks they created,
+  are on or follow.
+
 ## [Unreleased] — Steady menu after login
 ### Fixed
 - The menu no longer jumps after login (Accounts Dept first, Estimation / Budget appearing a moment later): until

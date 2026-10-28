@@ -3047,6 +3047,21 @@ app.get('/api/notifications', auth(ALL_ROLES), async (req, res) => {
   res.json({ items, unread: await db.countUnreadNotifications(req.user.username), tasks: await db.notificationTaskInfo(req.user.username, items.map(n => n.task_id)),
     refs: await db.notificationRefInfo(req.user.username, items) });
 });
+// Flagged / Warnings → a person: their other open tasks (part not completed), for the second section of the panel.
+// Admin / Directors see all of them; others only tasks they created, are on, or follow.
+app.get('/api/notifications/person/:username/open-tasks', auth(ALL_ROLES), async (req, res) => {
+  const who = str(req.params.username).trim();
+  const viewer = req.user.username;
+  const all = req.user.role === 'admin' || req.user.role === 'director';
+  const rows = await db.pool.query(`SELECT a.task_id FROM task_assignees a JOIN tasks t ON t.id = a.task_id
+    WHERE a.username = $1 AND t.status = 'open' AND NOT (a.decision = 'approve' AND a.completed_at IS NOT NULL)
+      AND ($2::boolean OR t.created_by_username = $3
+        OR EXISTS (SELECT 1 FROM task_assignees v WHERE v.task_id = t.id AND v.username = $3)
+        OR EXISTS (SELECT 1 FROM task_followups f WHERE f.task_id = t.id AND f.username = $3))
+    ORDER BY t.deadline NULLS LAST, t.created_at LIMIT 200`, [who, all, viewer]);
+  const ids = rows.rows.map(r => r.task_id);
+  res.json({ username: who, ids, tasks: await db.notificationTaskInfo(viewer, ids) });
+});
 app.post('/api/notifications/:id/read', auth(ALL_ROLES), async (req, res) => {
   await db.markNotificationRead(req.params.id, req.user.username);
   res.json({ ok: true });

@@ -869,8 +869,8 @@ function notifPersonOf(n) {
   const m = /^([A-Za-z0-9._-]+) has not completed/.exec(n.message || '');
   return m ? m[1] : session.username;
 }
-function notifIncompleteText(taskId, username) {
-  const info = notifTaskInfo[taskId];
+function notifIncompleteText(taskId, username, infoIn) {
+  const info = infoIn || notifTaskInfo[taskId];
   if (!info) return null;
   if (info.status !== 'open') return { done: true, text: 'Task is closed' };
   const p = (info.people || []).find(x => x.u === username);
@@ -892,18 +892,34 @@ function notifIncompleteHTML(n) {
   if (!r) return '';
   return `<div class="notif-dur ${r.done ? 'done' : r.late ? 'late' : ''}">${r.done ? '✓ ' : '⏱ '}${r.done ? esc(r.text) : r.text}</div>`;
 }
+// Info for a task in the person panel: from the notifications, or from that person's open-task list.
+function notifPTInfo(id) {
+  const o = ui.notifPersonOpen && ui.notifPersonOpen.tasks ? ui.notifPersonOpen.tasks[id] : null;
+  const n = notifTaskInfo[id];
+  return o || n ? { ...(o || {}), ...(n || {}) } : null;
+}
+function notifPTRowHTML(id, username) {
+  const info = notifPTInfo(id); const r = notifIncompleteText(id, username, info) || { text: '' };
+  return `<div class="notif-pt"><div style="min-width:0;flex:1;"><div class="notif-pt-title">${esc(info.title || id)} <span class="mono small muted">${esc(id)}</span></div>
+    <div class="notif-dur ${r.done ? 'done' : r.late ? 'late' : ''}">${r.done ? '✓ ' + esc(r.text) : '⏱ ' + r.text}</div></div>
+    <span class="na-btns">${!r.done && info.status === 'open' ? `<button type="button" class="btn btn-sm notif-fu ${info.followedUpAt ? 'done' : ''}" data-notif-followup="${esc(id)}" title="Remind everyone on this task">📣 ${info.followedUpAt ? 'Follow up again' : 'Follow up'}</button>` : ''}
+    <button type="button" class="btn btn-sm" data-na-open-task="${esc(id)}">Open ›</button></span></div>`;
+}
 function notifPersonTasksHTML(p) {
-  const ids = [...p.tasks].filter(id => { const r = notifTaskInfo[id] ? notifIncompleteText(id, p.username) : null; return r && !r.done; });
+  const pending = (id) => { const info = notifPTInfo(id); const r = info ? notifIncompleteText(id, p.username, info) : null; return r && !r.done; };
+  const ids = [...p.tasks].filter(pending);
+  const open = ui.notifPersonOpen && ui.notifPersonOpen.username === p.username ? ui.notifPersonOpen : null;
+  const others = open && open.ids ? open.ids.filter(id => !p.tasks.has(id) && pending(id)) : [];
+  const head = (label, list, extra) => `<div class="notif-pt-head">${label} <span class="notif-status-count">${list.length}</span>${list.length > 1 ? `<button type="button" class="btn btn-sm" data-notif-fu-all="${esc(list.join(','))}">📣 Follow up all</button>` : ''}${extra || ''}</div>`;
   return `<div class="notif-person-tasks">
-    <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="small"><b>${esc(p.name)}</b> — pending tasks${p.flagged ? ' (flagged)' : ''}: ${ids.length}</div>
-      <span class="na-btns">${ids.length > 1 ? `<button type="button" class="btn btn-sm" data-notif-fu-all="${esc(ids.join(','))}">📣 Follow up all</button>` : ''}<button type="button" class="btn btn-sm" data-notif-person="${esc(p.username)}">✕ Show all notifications</button></span></div>
-    ${ids.length ? ids.map(id => {
-      const info = notifTaskInfo[id]; const r = notifIncompleteText(id, p.username) || { text: '' };
-      return `<div class="notif-pt"><div style="min-width:0;flex:1;"><div class="notif-pt-title">${esc(info.title || id)} <span class="mono small muted">${esc(id)}</span></div>
-        <div class="notif-dur ${r.done ? 'done' : r.late ? 'late' : ''}">${r.done ? '✓ ' + esc(r.text) : '⏱ ' + r.text}</div></div>
-        <span class="na-btns">${!r.done && info.status === 'open' ? `<button type="button" class="btn btn-sm notif-fu ${info.followedUpAt ? 'done' : ''}" data-notif-followup="${esc(id)}" title="Remind everyone on this task">📣 ${info.followedUpAt ? 'Follow up again' : 'Follow up'}</button>` : ''}
-        <button type="button" class="btn btn-sm" data-na-open-task="${esc(id)}">Open ›</button></span></div>`;
-    }).join('') : '<div class="small muted">No pending tasks — everything is completed.</div>'}
+    <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="small"><b>${esc(p.name)}</b> — tasks not completed</div>
+      <button type="button" class="btn btn-sm" data-notif-person="${esc(p.username)}">✕ Show all notifications</button></div>
+    ${head(`${p.flagged ? '🚩 Flagged' : '⚠️ Warned'} tasks`, ids)}
+    ${ids.length ? ids.map(id => notifPTRowHTML(id, p.username)).join('') : '<div class="small muted">None pending — all completed.</div>'}
+    <div class="notif-pt-sep"></div>
+    ${head('📋 Other open tasks', others)}
+    ${!open ? '<div class="small muted">Loading their other open tasks…</div>' : open.error ? `<div class="small muted">${esc(open.error)}</div>`
+      : others.length ? others.map(id => notifPTRowHTML(id, p.username)).join('') : '<div class="small muted">No other open tasks.</div>'}
   </div>`;
 }
 // ---- Approve / send back / close / verify — right on the notification ----
@@ -995,7 +1011,7 @@ function notifReadsViewHTML() {
 }
 function bindNotifExtras() {
   const on = (sel, fn) => document.querySelectorAll(sel).forEach(b => b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(b); });
-  on('[data-notif-person]', b => { ui.notifPerson = ui.notifPerson === b.dataset.notifPerson ? null : b.dataset.notifPerson; render(); });
+  on('[data-notif-person]', b => { ui.notifPerson = ui.notifPerson === b.dataset.notifPerson ? null : b.dataset.notifPerson; ui.notifPersonOpen = null; render(); });
   on('[data-na-open-task]', b => openTaskOnMyTasks(b.dataset.naOpenTask));
   const seen = nid => { const id = Number(nid); if (id) { const n = myNotifications.find(x => x.id === id); if (n && !n.read) markNotifSeen(id, true); } };
   const run = async (b, fn, ok) => {
@@ -1179,7 +1195,7 @@ function bindNotificationsView() {
     if (b.disabled) return; b.disabled = true; const label = b.textContent; b.textContent = '📣 Sending…';
     try {
       const r = await api(`/api/tasks/${encodeURIComponent(id)}/nudge`, { method: 'POST' });
-      notifTaskInfo[id] = { ...(notifTaskInfo[id] || {}), followedUpAt: new Date().toISOString() };
+      notifTaskInfo[id] = { ...(notifTaskInfo[id] || {}), followedUpAt: new Date().toISOString() }; if (ui.notifPersonOpen && ui.notifPersonOpen.tasks && ui.notifPersonOpen.tasks[id]) ui.notifPersonOpen.tasks[id].followedUpAt = new Date().toISOString();
       // Followed up = dealt with: clear this task's unread notifications so they stop adding to the count.
       notifClearForTask(id);
       setBanner(`Follow-up sent to ${r.sent.map(u => personName(u)).join(', ')}.${r.skipped.length ? ` Not re-sent to ${r.skipped.map(x => personName(x.username)).join(', ')} (followed up recently).` : ''}`, 'ok');
@@ -1188,12 +1204,19 @@ function bindNotificationsView() {
   });
   const snd = document.querySelector('[data-act="notif-sound"]');
   if (snd) snd.onclick = () => { const on = !dlvSoundOn(); try { safeStorage.setItem('ls_dlv_sound', on ? 'on' : 'off'); } catch (e) {} if (on) dlvPlaySound('notification'); render(); };
+  const snapP = ui.notifPersonSnap;
+  if (snapP && ui.notifPerson && !(ui.notifPersonOpen && ui.notifPersonOpen.username === snapP.username)) {
+    const who = snapP.username; ui.notifPersonOpen = { username: who, loading: true };
+    api(`/api/notifications/person/${encodeURIComponent(who)}/open-tasks`)
+      .then(r => { if (ui.notifPersonOpen && ui.notifPersonOpen.username === who) { ui.notifPersonOpen = { username: who, ids: r.ids || [], tasks: r.tasks || {} }; render(); } })
+      .catch(e => { if (ui.notifPersonOpen && ui.notifPersonOpen.username === who) { ui.notifPersonOpen = { username: who, error: e.message }; render(); } });
+  }
   document.querySelectorAll('[data-notif-fu-all]').forEach(b => b.onclick = async (e) => {
     e.preventDefault(); e.stopPropagation(); if (b.disabled) return;
     const ids = b.dataset.notifFuAll.split(',').filter(Boolean); b.disabled = true; b.textContent = '📣 Sending…';
     let ok = 0; const fails = [];
     for (const id of ids) {
-      try { await api(`/api/tasks/${encodeURIComponent(id)}/nudge`, { method: 'POST' }); ok++; notifTaskInfo[id] = { ...(notifTaskInfo[id] || {}), followedUpAt: new Date().toISOString() }; notifClearForTask(id); }
+      try { await api(`/api/tasks/${encodeURIComponent(id)}/nudge`, { method: 'POST' }); ok++; notifTaskInfo[id] = { ...(notifTaskInfo[id] || {}), followedUpAt: new Date().toISOString() }; if (ui.notifPersonOpen && ui.notifPersonOpen.tasks && ui.notifPersonOpen.tasks[id]) ui.notifPersonOpen.tasks[id].followedUpAt = new Date().toISOString(); notifClearForTask(id); }
       catch (err) { fails.push(err.message); }
     }
     setBanner(`Followed up on ${ok} task${ok === 1 ? '' : 's'}.${fails.length ? ` ${fails.length} not sent: ${fails[0]}` : ''}`, ok ? 'ok' : undefined);

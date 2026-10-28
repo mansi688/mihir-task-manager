@@ -1610,3 +1610,6 @@ select.field-err,input.field-err{border-color:var(--danger);box-shadow:0 0 0 2px
 .linklike{background:none;border:0;padding:0;color:var(--accent,#2563eb);text-decoration:underline;cursor:pointer;font:inherit;}
 .comp-file{display:inline-flex;align-items:center;gap:2px;margin:2px 6px 2px 0;}
 .comp-main .dlv-files{margin-top:2px;}
+.notif-pt-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-weight:600;font-size:13px;margin:10px 0 4px;}
+.notif-pt-head .btn{margin-left:auto;}
+.notif-pt-sep{border-top:2px dashed color-mix(in srgb,var(--ink,#333) 18%,transparent);margin:14px 0 4px;}
