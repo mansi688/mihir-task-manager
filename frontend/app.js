@@ -114,7 +114,7 @@ if (token) {
   if (safeStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; if (typeof estData !== 'undefined') { estData = null; estSummary = { canView: false }; } if (typeof apData !== 'undefined') { apData = null; apSummary = { canView: false }; } if (typeof compData !== 'undefined') compData = null;
+  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; if (typeof estData !== 'undefined') { estData = null; estSummary = { canView: false }; } if (typeof apData !== 'undefined') { apData = null; apSummary = { canView: false }; } if (typeof compData !== 'undefined') compData = null; menuLoaded = {};
   ui = defaultUiState(); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
   announcements = []; canPostAnnouncements = false; chat.rooms = []; chat.messages = {}; chat.hasOlder = {}; chat.lastVersion = null;
 }
@@ -574,6 +574,27 @@ const CAD_DRAWING_EXTENSIONS = ['.dwg', '.dxf', '.rvt', '.rfa', '.skp', '.dgn', 
 
 /* ==================== ROLES / NAV ==================== */
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
+// ---- Steady menu: Budget / Estimation / Accounts Dept depend on data that arrives a moment after login, which made
+// the menu jump. Until it arrives, use what this person had last time (saved on this device), or else their department.
+let menuLoaded = {};
+function menuMemory() { try { return JSON.parse(safeStorage.getItem('ls_menu:' + session.username) || '{}') || {}; } catch (e) { return {}; } }
+function menuGuess(key) {
+  const team = String(session.team || ''), admin = session.role === 'admin';
+  if (key === 'estimation') return admin || /estimat|billing|purchase/i.test(team) || session.username === 'dnyaneshwar.k';
+  if (key === 'accountsdept') return admin || /account|purchase/i.test(team);
+  if (key === 'budget') return admin || session.role === 'director' || /account|purchase/i.test(team);
+  return false;
+}
+function menuShows(key, liveFn) {
+  if (menuLoaded[key]) {
+    const v = !!liveFn();
+    const mem = menuMemory();
+    if (mem[key] !== v) { mem[key] = v; try { safeStorage.setItem('ls_menu:' + session.username, JSON.stringify(mem)); } catch (e) {} }
+    return v;
+  }
+  const mem = menuMemory();
+  return key in mem ? !!mem[key] : menuGuess(key);
+}
 const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries', budget: 'Budget', estimation: 'Estimation & Billing', accountsdept: 'Accounts Department' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
@@ -687,7 +708,7 @@ function renderSidebar() {
       items.splice(at >= 0 ? at + 1 : items.length, 0, { key: 'approvals', label: 'Approvals', icon: 'clipboard', badge: () => approvalsNeedingMeCount() },
         { key: 'closure', label: 'Task Closure', icon: 'checkCircle', badge: () => (closureData.toDecide || []).length },
         { key: 'deliveries', label: 'Deliveries', icon: 'truck', badge: () => (typeof deliveriesNeedingMeCount === 'function' ? deliveriesNeedingMeCount() : 0) });
-      if (typeof budgetTabVisible === 'function' && budgetTabVisible()) {
+      if (typeof budgetTabVisible === 'function' && menuShows('budget', budgetTabVisible)) {
         const di = items.findIndex(i => i.key === 'deliveries');
         items.splice(di + 1, 0, { key: 'budget', label: 'Budget', icon: 'wallet', badge: () => budgetAttentionCount() });
       }
@@ -696,8 +717,8 @@ function renderSidebar() {
   });
   // Departments: Estimation & Billing (JMR, reconciliation) and the Accounts Department page.
   const deptItems = [];
-  if (typeof estimationTabVisible === 'function' && estimationTabVisible()) deptItems.push({ key: 'estimation', label: 'Estimation', icon: 'clipboard', badge: () => estimationBadge() });
-  if (typeof accountsDeptTabVisible === 'function' && accountsDeptTabVisible()) deptItems.push({ key: 'accountsdept', label: 'Accounts Dept', icon: 'wallet', badge: () => (typeof accountsDeptBadge === 'function' ? accountsDeptBadge() : 0) });
+  if (typeof estimationTabVisible === 'function' && menuShows('estimation', estimationTabVisible)) deptItems.push({ key: 'estimation', label: 'Estimation', icon: 'clipboard', badge: () => estimationBadge() });
+  if (typeof accountsDeptTabVisible === 'function' && menuShows('accountsdept', accountsDeptTabVisible)) deptItems.push({ key: 'accountsdept', label: 'Accounts Dept', icon: 'wallet', badge: () => (typeof accountsDeptBadge === 'function' ? accountsDeptBadge() : 0) });
   if (deptItems.length) { const ti = groups.findIndex(g => g.group === 'Tasks'); groups.splice(ti >= 0 ? ti + 1 : groups.length, 0, { group: 'Departments', items: deptItems }); }
   if (window.LocationUI) window.LocationUI.navGroups(groups); // frontend/location.js (only when switched on)
   const active = currentTabKey();
@@ -1946,12 +1967,12 @@ function applyData(key, v) {
       break;
     case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; notifTaskInfo = v.tasks || {}; notifRefs = v.refs || { approval: {}, payment: {} }; if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items); break;
     case 'closureData': closureData = v || { toDecide: [], mine: [], keptOpen: [] }; break;
-    case 'apSummaryResp': if (typeof apSummary !== 'undefined') apSummary = v || { canView: false }; break;
+    case 'apSummaryResp': if (typeof apSummary !== 'undefined') apSummary = v || { canView: false }; menuLoaded.accountsdept = true; break;
     case 'complianceResp': if (typeof compData !== 'undefined') compData = v && Array.isArray(v.items) ? v : compData; break;
     case 'payablesResp': if (typeof apData !== 'undefined') apData = v && Array.isArray(v.bills) ? v : apData; break;
-    case 'estSummaryResp': if (typeof estSummary !== 'undefined') estSummary = v || { canView: false }; break;
+    case 'estSummaryResp': if (typeof estSummary !== 'undefined') estSummary = v || { canView: false }; menuLoaded.estimation = true; break;
     case 'estimationResp': if (typeof estData !== 'undefined') estData = v && Array.isArray(v.jmr) ? v : estData; break;
-    case 'budgetResp': if (typeof budgetData !== 'undefined') budgetData = v && Array.isArray(v.payments) ? v : { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; break;
+    case 'budgetResp': if (typeof budgetData !== 'undefined') budgetData = v && Array.isArray(v.payments) ? v : { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; menuLoaded.budget = true; break;
     case 'deliveriesResp': if (typeof deliveriesData !== 'undefined') deliveriesData = v && Array.isArray(v.items) ? v : { canManage: false, items: [] }; break;
     case 'myApprovalRequests': myApprovalRequests = v; break;
     case 'announcementsResp': announcements = v.items || []; canPostAnnouncements = !!v.canPost; break;

@@ -4,6 +4,12 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Steady menu after login
+### Fixed
+- The menu no longer jumps after login (Accounts Dept first, Estimation / Budget appearing a moment later): until
+  their data arrives, Budget / Estimation / Accounts Dept use what the person had last time on this device, or their
+  department (Estimation & Billing, Purchase, Accounts, Admin, Directors).
+
 ## [Unreleased] — Notifications: person view shows only pending tasks; approvals never show Follow up
 ### Changed
 - Flagged / Warnings: tapping a person shows **only their pending tasks** (completed ones left out) with **Follow up**
