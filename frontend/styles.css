@@ -1660,3 +1660,5 @@ select.field-err,input.field-err{border-color:var(--danger);box-shadow:0 0 0 2px
 .notif-lu-text{margin-top:2px;white-space:pre-wrap;word-break:break-word;}
 .notif-lu-reply{display:flex;gap:8px;margin-top:8px;}
 .notif-lu-reply input{flex:1;margin:0;min-width:0;}
+.notif-waiting{flex:none;align-self:center;width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;
+  background:color-mix(in srgb,#e0a100 14%,transparent);border:2px solid color-mix(in srgb,#e0a100 55%,transparent);}

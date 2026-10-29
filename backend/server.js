@@ -813,11 +813,14 @@ const BOOT_ID = Math.random().toString(36).slice(2, 8);
 const responseCache = new Map(); // key -> { version, at, body }
 const inFlight = new Map();      // key -> Promise<{ status, body }>
 const RESPONSE_CACHE_MAX = 400;
+// Task-list endpoints are keyed on the task-data version only (see db.js TASK_TABLES).
+const TASK_LIST_PATHS = [/^\/api\/tasks$/, /^\/api\/tasks\/mine$/, /^\/api\/tasks\/watching$/, /^\/api\/tasks\/open-titles$/];
 function cacheResponse(maxAgeMs = 120000) {
   return async (req, res, next) => {
     if (req.method !== 'GET' || !req.user) return next();
     const key = `${req.user.username}|${req.originalUrl}`;
-    const version = db.getDataVersion();
+    const isTaskList = TASK_LIST_PATHS.some(rx => rx.test(req.path));
+    const version = isTaskList ? `t${db.getTaskVersion()}` : db.getDataVersion();
     const hit = responseCache.get(key);
     if (hit && hit.version === version && Date.now() - hit.at < maxAgeMs) { res.setHeader('X-Cache', 'hit'); return res.json(hit.body); }
     const pending = inFlight.get(key);
@@ -844,7 +847,7 @@ function cacheResponse(maxAgeMs = 120000) {
 }
 // Everything a refreshing screen reads goes through the cache.
 const CACHED_GET_PATHS = [
-  /^\/api\/tasks$/, /^\/api\/tasks\/mine$/, /^\/api\/tasks\/open-titles$/, /^\/api\/users\/directory$/, /^\/api\/teams$/,
+  /^\/api\/tasks$/, /^\/api\/tasks\/mine$/, /^\/api\/tasks\/watching$/, /^\/api\/tasks\/open-titles$/, /^\/api\/users\/directory$/, /^\/api\/teams$/,
   /^\/api\/projects$/, /^\/api\/drawing-sections$/, /^\/api\/task-phases$/, /^\/api\/notifications$/, /^\/api\/approvals(\/mine)?$/,
   /^\/api\/auth\/me$/, /^\/api\/reports\/[a-z-]+$/,
 ];

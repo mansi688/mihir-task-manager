@@ -4,6 +4,18 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Approvals don't vanish; faster task lists for people with thousands of tasks
+### Fixed
+- **Approval notifications disappeared** after being opened: tapping a notification marked it seen, which moved a still-
+  pending "Awaiting your approval" / closure / document request out of New. Now an approval that still needs your
+  decision is **not** marked seen when opened, and stays in New (with ⏳, even if seen earlier) until you approve,
+  send back, close / keep open — then it moves to Seen.
+- **Speed / stability**: the live logs showed My Tasks taking 3.4–3.8 s on every refresh for the two people with
+  ~3,800 open tasks (Anshul, Vaibhav), holding up the single server for everyone. Task lists were rebuilt after *any*
+  write (a notification marked seen, a location ping, a reminder). Task lists now have their own version
+  (`db.getTaskVersion`, task tables + users only) and are reused until task data actually changes; the "Kept
+  informed" list is cached too.
+
 ## [Unreleased] — Task updates: latest update + reply; assistant answers questions about one task
 ### Added
 - **Task updates** (Notifications): each card shows the task's **latest comment** (who, when, text, number of files)

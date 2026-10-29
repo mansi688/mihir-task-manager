@@ -75,6 +75,11 @@ writeListeners.push((table) => { if (table === 'users') { usersVersion++; userRo
 // data (which dataVersion triggers). Clients watch chatVersion separately and refresh only chat.
 const UNTRACKED_TABLES = new Set(['sessions', 'audit_log', 'chat_messages', 'chat_files', 'chat_reads', 'chat_private', 'chat_private_members']);
 let chatVersion = 0;
+// Task lists (My Tasks, All Tasks, Kept informed, open titles) depend only on these tables. Their own counter means
+// a notification being marked seen, a location ping or a reminder no longer forces the server to rebuild a list of
+// thousands of tasks (3–4 s each for people with ~3,800 tasks) on the next refresh.
+const TASK_TABLES = new Set(['tasks', 'task_assignees', 'task_followups', 'task_checklist_items', 'task_replies', 'task_files', 'task_closure_requests', 'users']);
+let taskVersion = 0;
 function noteWrite(text) {
   const m = /^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?(\w+)/i.exec(text);
   if (!m) return;
@@ -82,6 +87,7 @@ function noteWrite(text) {
   if (table.startsWith('chat_')) chatVersion++;
   if (UNTRACKED_TABLES.has(table)) return;
   dataVersion++;
+  if (TASK_TABLES.has(table)) taskVersion++;
   for (const fn of writeListeners) { try { fn(table); } catch (e) { /* listeners must never break a write */ } }
 }
 async function query(executor, sql, params) {
@@ -133,7 +139,7 @@ async function runInTransaction(fn) {
     return result;
   } catch (e) {
     await client.query('ROLLBACK');
-    dataVersion++;
+    dataVersion++; taskVersion++;
     throw e;
   } finally {
     client.release();
@@ -630,10 +636,11 @@ module.exports = {
   pool, // exposed for a clean shutdown (pool.end()) and for /ready health checks
   runInTransaction,
   getDataVersion() { return dataVersion; },
+  getTaskVersion() { return taskVersion; },
   // Real database round-trip for readiness checks (never served from a cache).
   async ping() { await pool.query('SELECT 1'); return { schemaVersion }; },
   getChatVersion() { return chatVersion; },
-  bumpDataVersion() { dataVersion++; },
+  bumpDataVersion() { dataVersion++; taskVersion++; },
   onWrite(fn) { writeListeners.push(fn); },
   getQueryCount() { return queryCount; },
 

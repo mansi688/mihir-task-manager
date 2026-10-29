@@ -848,6 +848,14 @@ function notifFollowUpHTML(n) {
   return `<div class="notif-fu-row"><button type="button" class="notif-fu ${at ? 'done' : ''}" data-notif-followup="${esc(n.task_id)}" data-nid="${n.id}"
     title="${at ? 'You already followed up — tap to remind everyone on the task again' : 'Ask everyone else on this task to look into it'}">📣 ${at ? `Followed up${day} ${esc(when)} · Follow up again` : 'Follow up'}</button></div>`;
 }
+// An approval notification whose decision is still yours to make (it must not vanish until decided).
+function notifStillNeedsMe(n) {
+  const info = n.task_id ? notifTaskInfo[n.task_id] : null;
+  if (n.type === 'task_submitted') return !!(info && info.status === 'open' && (info.toApprove || []).length);
+  if (n.type === 'closure_requested') return !!(info && info.status === 'open' && info.closureId);
+  if (n.type === 'approval_requested' && n.ref_type === 'approval' && n.ref_id) { const r = (notifRefs.approval || {})[n.ref_id]; return !!(r && r.status === 'pending' && !r.mine); }
+  return false;
+}
 // ---- Task updates: the task's latest comment and a reply box, right on the notification ----
 function notifLastUpdateHTML(n) {
   if (!n.task_id || notifCat(n) !== 'task') return '';
@@ -1068,7 +1076,8 @@ function bindNotifExtras() {
 function renderNotificationsView() {
   if (ui.notifFilter === 'reads' && (session.role === 'admin' || session.role === 'director')) return notifReadsViewHTML();
   const all = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  const unread = all.filter(n => !n.read);
+  // New = not yet seen, plus approvals still waiting for your decision (even if opened before) — they stay until decided.
+  const unread = all.filter(n => !n.read || notifStillNeedsMe(n));
   // Seen tab: most recently seen first, so whatever you just ticked is always at the top.
   const seenAt = n => new Date(n.read_at || n.created_at);
   const seenList = all.filter(n => n.read).sort((a, b) => seenAt(b) - seenAt(a));
@@ -1144,7 +1153,7 @@ function renderNotificationsView() {
             ${notifFollowUpHTML(n)}
             ${n.read ? `<div class="notif-seen">✓ ${esc(seenTimeText(n))}</div>` : ''}
           </div>
-          <button type="button" class="notif-seen-btn ${n.read ? 'done' : ''}" data-notif-seen="${n.id}" ${n.read ? 'disabled' : ''} title="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}" aria-label="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}">${n.read ? '✓' : ''}</button>
+          ${n.read && filter === 'unread' && notifStillNeedsMe(n) ? '<span class="notif-waiting" title="Stays here until you approve or send it back">⏳</span>' : `<button type="button" class="notif-seen-btn ${n.read ? 'done' : ''}" data-notif-seen="${n.id}" ${n.read ? 'disabled' : ''} title="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}" aria-label="${n.read ? esc(seenTimeText(n)) : 'Mark as seen'}">${n.read ? '✓' : ''}</button>`}
         </div>`;
       }).join('')}`).join('')}
     ${!personSnap && filter === 'unread' && totalNew > unread.length ? `<div class="small muted" style="margin-top:10px;">Showing the newest ${unread.length} of your ${totalNew} new notifications — mark some as seen to see the rest.</div>` : ''}
@@ -6543,8 +6552,11 @@ function bindGlobal() {
   document.querySelectorAll('[data-mark-notif-read]').forEach(el => el.onclick = async () => {
     const id = Number(el.dataset.markNotifRead);
     const n = myNotifications.find(x => x.id === id);
-    if (n && !n.read) { n.read = 1; n.read_at = new Date().toISOString(); unreadNotifCount = Math.max(0, unreadNotifCount - 1); }
-    api(`/api/notifications/${id}/read`, { method: 'POST' }).catch(() => {});
+    // Opening an approval that still needs your decision does not mark it seen — it stays in New until decided.
+    if (n && !notifStillNeedsMe(n)) {
+      if (!n.read) { n.read = 1; n.read_at = new Date().toISOString(); unreadNotifCount = Math.max(0, unreadNotifCount - 1); }
+      api(`/api/notifications/${id}/read`, { method: 'POST' }).catch(() => {});
+    }
     if (el.dataset.notifGotoTask) { openTaskOnMyTasks(el.dataset.notifGotoTask); return; }
     if (el.dataset.notifGotoTab) { if (ui.adminTab !== el.dataset.notifGotoTab) collapseTaskCards(); ui.adminTab = el.dataset.notifGotoTab; safeStorage.setItem('ls_last_tab', ui.adminTab); if (el.dataset.notifApTab && typeof apState === 'function') apState().tab = el.dataset.notifApTab; window.scrollTo(0, 0); if (ui.adminTab === 'chat') { if (el.dataset.notifChatRoom) { ui.chatRoom = el.dataset.notifChatRoom; ui.chatPrivForm = null; } openChatTab(); } loadTabExtras(); }
     render();
