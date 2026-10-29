@@ -2035,7 +2035,7 @@ function applyData(key, v) {
         needsGuide: typeof v.needsGuide === 'boolean' ? (v.needsGuide && Date.now() - (typeof guideCompletedAt === 'number' ? guideCompletedAt : 0) > 120000) : !!session.needsGuide };
       safeStorage.setItem('ls_session', JSON.stringify(session));
       break;
-    case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; notifTaskInfo = v.tasks || {}; notifRefs = v.refs || { approval: {}, payment: {} }; if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items); break;
+    case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; setTimeout(updateTabTitle, 0); notifTaskInfo = v.tasks || {}; notifRefs = v.refs || { approval: {}, payment: {} }; if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items); break;
     case 'closureData': closureData = v || { toDecide: [], mine: [], keptOpen: [] }; break;
     case 'apSummaryResp': if (typeof apSummary !== 'undefined') apSummary = v || { canView: false }; menuLoaded.accountsdept = true; break;
     case 'complianceResp': if (typeof compData !== 'undefined') compData = v && Array.isArray(v.items) ? v : compData; break;
@@ -2189,13 +2189,56 @@ async function clearDataSnapshots() {
    ~4ms request with no database work — and reload only when something changed anywhere. Coming
    back to the tab / app, or the connection returning, checks immediately. */
 let lastSyncVersion = null, lastFullRefreshAt = 0, syncBusy = false;
+// The version of the code this page is running (stamped into index.html by the server).
+const PAGE_APP_VERSION = (document.querySelector('meta[name="app-version"]') || {}).content || null;
+let newVersionShown = false;
+// Something typed but not sent (a draft, an open form, files picked, a recording) — don't reload under it.
+function hasUnsavedWork() {
+  if (ui.taskFormOpen || (typeof rec !== 'undefined' && rec.recorder)) return true;
+  if (Object.keys(pendingFiles).some(k => (pendingFiles[k] || []).length)) return true;
+  return [...document.querySelectorAll('textarea, input[type="text"]:not([type="search"])')].some(el => el.offsetParent && String(el.value || '').trim() && !/search|filter|-q$/i.test(el.id || ''));
+}
+function checkAppVersion(serverVersion) {
+  if (!PAGE_APP_VERSION || !serverVersion || serverVersion === PAGE_APP_VERSION) return;
+  if (!hasUnsavedWork() && !userIsActivelyTyping()) { location.reload(); return; }
+  if (newVersionShown) return;
+  newVersionShown = true;
+  const bar = document.createElement('div');
+  bar.className = 'new-version-bar';
+  bar.innerHTML = '<span>✨ A new version of the app is ready.</span><button type="button" class="btn btn-sm btn-primary">Reload now</button>';
+  bar.querySelector('button').onclick = () => location.reload();
+  document.body.appendChild(bar);
+}
+// While the tab is in the background (another tab open), still look for new notifications every 30 s — only the
+// notifications, nothing heavy — so the notification sound rings and the tab title shows the count.
+let lastBgCheckAt = 0, lastBgVersion = null;
+async function backgroundNotifCheck() {
+  if (Date.now() - lastBgCheckAt < 30000) return;
+  lastBgCheckAt = Date.now(); syncBusy = true;
+  try {
+    const r = await api('/api/sync');
+    if (r && r.v && r.v !== lastBgVersion && r.v !== lastSyncVersion) {
+      lastBgVersion = r.v;
+      const v = await api('/api/notifications');
+      if (v && Array.isArray(v.items)) {
+        myNotifications = v.items; unreadNotifCount = v.unread; notifTaskInfo = v.tasks || {}; notifRefs = v.refs || { approval: {}, payment: {} };
+        if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items);
+        updateTabTitle();
+      }
+    }
+  } catch (e) { /* offline — try again later */ }
+  syncBusy = false;
+}
+const BASE_TITLE = document.title;
+function updateTabTitle() { try { document.title = unreadNotifCount ? `(${unreadNotifCount > 99 ? '99+' : unreadNotifCount}) ${BASE_TITLE}` : BASE_TITLE; } catch (e) {} }
 async function syncTick(force) {
   // (Accounts still on a temporary password sync too — they use the app normally until they change it.)
   if (!session || !token || syncBusy) return;
-  if (document.hidden && !force) return;
+  if (document.hidden && !force) { backgroundNotifCheck(); return; }
   syncBusy = true;
   try {
     const r = await api('/api/sync');
+    if (r && r.a) checkAppVersion(r.a);
     // Chat has its own version: new messages refresh only chat (rooms/unread + the open room),
     // and they keep arriving even while you're typing a reply.
     if (r && r.c && r.c !== chat.lastVersion) { chat.lastVersion = r.c; await refreshChat(); }

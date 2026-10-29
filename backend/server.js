@@ -6,6 +6,7 @@ process.env.TZ = process.env.APP_TIMEZONE || 'Asia/Kolkata';
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
@@ -271,6 +272,27 @@ app.use((req, res, next) => {
 // before using it. Without it, browsers guess how long to reuse app.js/styles.css, so after a
 // deploy one machine can keep running an old cached app.js against the new server and break
 // while every other device works fine. Images can still be cached normally.
+// App version = a fingerprint of the page's own files, taken at start-up. It is stamped into index.html and returned
+// by /api/sync, so a tab opened before an upload notices the new version and reloads itself (an old page talking to a
+// new server was the source of "works on one computer, not on another" after deploys).
+const APP_VERSION = (() => {
+  try {
+    const dir = path.join(__dirname, '..', 'frontend');
+    const h = require('crypto').createHash('sha1');
+    for (const f of fs.readdirSync(dir).filter(f => /\.(js|css|html)$/i.test(f)).sort()) h.update(f).update(fs.readFileSync(path.join(dir, f)));
+    return h.digest('hex').slice(0, 12);
+  } catch (e) { return BOOT_ID_FALLBACK(); }
+})();
+function BOOT_ID_FALLBACK() { return Math.random().toString(36).slice(2, 10); }
+let indexHtmlCache = null;
+app.get(['/', '/index.html'], (req, res, next) => {
+  try {
+    if (!indexHtmlCache) indexHtmlCache = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'index.html'), 'utf8')
+      .replace('<head>', `<head>\n<meta name="app-version" content="${APP_VERSION}">`);
+    res.setHeader('Cache-Control', 'no-cache');
+    res.type('html').send(indexHtmlCache);
+  } catch (e) { next(); }
+});
 app.use(express.static(path.join(__dirname, '..', 'frontend'), {
   setHeaders(res, filePath) {
     if (/\.(html|js|css|json)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
@@ -581,7 +603,7 @@ app.get('/api/device/notifications', async (req, res) => {
 // every device — website or phone app — picks up changes within seconds of each other.
 app.get('/api/sync', auth(ALL_ROLES), (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ v: `${BOOT_ID}.${db.getDataVersion()}`, c: `${BOOT_ID}.${db.getChatVersion()}` });
+  res.json({ v: `${BOOT_ID}.${db.getDataVersion()}`, c: `${BOOT_ID}.${db.getChatVersion()}`, a: APP_VERSION });
 });
 
 /* ============ CHAT ROOM ============

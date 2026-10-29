@@ -4,6 +4,18 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Pages update themselves after an upload; notifications ring in a background tab
+### Fixed
+- **Open pages kept running old code after an upload** (until someone pressed reload) — so a fix could be live on the
+  server but not on a computer whose tab was already open. The server now fingerprints the app's files at start-up,
+  stamps it into the page (`<meta name="app-version">`) and returns it from `/api/sync`; a page running older code
+  reloads itself within ~10 s, or shows "✨ A new version is ready — Reload now" if something is being typed / a form,
+  draft, file or recording is open.
+- **Notification sound didn't ring with the app in a background tab** (the page only checked while visible). Now a
+  background tab checks for new notifications every 30 s (notifications only, nothing heavy), rings, and shows the
+  count in the tab title ("(12) MIHIR Task Manager"). Sounds are unlocked on the first click, so the browser doesn't
+  block them. With the tab closed, only phone-style notifications ("Turn on notifications for this device") ring.
+
 ## [Unreleased] — Approvals don't vanish; faster task lists for people with thousands of tasks
 ### Fixed
 - **Approval notifications disappeared** after being opened: tapping a notification marked it seen, which moved a still-

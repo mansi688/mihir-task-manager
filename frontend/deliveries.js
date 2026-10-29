@@ -54,6 +54,17 @@ const DLV_SOUND_FOR_TYPE = { delivery_scheduled: 'placed', delivery_delivered: '
 const dlvSoundKind = (n) => DLV_SOUND_FOR_TYPE[n.type] || 'notification';
 const dlvSoundCache = {};
 let dlvLastNotifId = null;
+// Browsers block sounds until the person has clicked on the page once — load and unlock them on the first click / tap,
+// so a notification arriving later (even with the tab in the background) can ring.
+(function () {
+  const unlock = () => {
+    document.removeEventListener('pointerdown', unlock, true); document.removeEventListener('keydown', unlock, true);
+    for (const k of Object.keys(DLV_SOUND_FILES)) {
+      try { const a = dlvSoundCache[k] || (dlvSoundCache[k] = new Audio(DLV_SOUND_FILES[k])); a.muted = true; const p = a.play(); if (p && p.then) p.then(() => { a.pause(); a.currentTime = 0; a.muted = false; }).catch(() => { a.muted = false; }); else a.muted = false; } catch (e) {}
+    }
+  };
+  document.addEventListener('pointerdown', unlock, true); document.addEventListener('keydown', unlock, true);
+})();
 function dlvSoundOn() { try { return safeStorage.getItem('ls_dlv_sound') !== 'off'; } catch (e) { return true; } }
 function dlvPlaySound(kind) {
   if (!dlvSoundOn() || !DLV_SOUND_FILES[kind]) return;
