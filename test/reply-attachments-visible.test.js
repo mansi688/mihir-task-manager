@@ -27,6 +27,10 @@ test('Comment with photos only: files listed on the comment and in history, view
   assert.ok(row, JSON.stringify(list.map(e => e.event_type)));
   assert.match(row.details, /Attached 306- L-Grey\.jpg, shot\.jpg/);
   assert.equal(String((row.metadata || {}).reply_id), String(reply.id));
+  // Task updates: the kept-informed person's notification carries the task's latest update (with the file count)
+  const nt = (await api(baseUrl, '/api/notifications', { token: watcher })).data;
+  assert.ok(nt.items.some(n => n.task_id === task.id && n.type === 'task_reply'));
+  assert.equal(nt.tasks[task.id].lastUpdate.by, 'ruchita.x'); assert.equal(nt.tasks[task.id].lastUpdate.files, 2);
   // the file opens for the creator, the person kept informed, Admin — not for someone not on the task
   const url = `/api/tasks/${task.id}/replies/${reply.id}/files/${reply.attachments[0].id}`;
   for (const tok of [owner, watcher, admin, designer]) assert.equal((await api(baseUrl, url, { token: tok })).data.data, JPG);

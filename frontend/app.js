@@ -848,6 +848,22 @@ function notifFollowUpHTML(n) {
   return `<div class="notif-fu-row"><button type="button" class="notif-fu ${at ? 'done' : ''}" data-notif-followup="${esc(n.task_id)}" data-nid="${n.id}"
     title="${at ? 'You already followed up — tap to remind everyone on the task again' : 'Ask everyone else on this task to look into it'}">📣 ${at ? `Followed up${day} ${esc(when)} · Follow up again` : 'Follow up'}</button></div>`;
 }
+// ---- Task updates: the task's latest comment and a reply box, right on the notification ----
+function notifLastUpdateHTML(n) {
+  if (!n.task_id || notifCat(n) !== 'task') return '';
+  const info = notifTaskInfo[n.task_id]; if (!info) return '';
+  const lu = info.lastUpdate;
+  const when = lu ? new Date(lu.at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '';
+  const draft = (ui.notifReplyDraft || {})[n.id] || '';
+  const sending = ui.notifReplySending === n.id;
+  return `<div class="notif-lu" data-notif-lu="${n.id}">
+    ${lu ? `<div class="notif-lu-msg"><div class="small muted">💬 Latest update — <b>${esc(lu.by === session.username ? 'You' : (lu.byName || personName(lu.by)))}</b> · ${esc(when)}</div>
+      <div class="notif-lu-text">${lu.message ? highlightMentions(lu.message) : '<span class="muted">(no text)</span>'}${lu.files ? ` <span class="small muted">· 📎 ${lu.files} file${lu.files > 1 ? 's' : ''} — Open the task to view</span>` : ''}</div></div>`
+      : '<div class="small muted">💬 No comments on this task yet.</div>'}
+    ${info.status === 'open' ? `<div class="notif-lu-reply"><input type="text" id="nreply-${n.id}" data-notif-reply-input="${n.id}" value="${esc(draft)}" placeholder="Reply on this task… (use @name to tag)" ${sending ? 'disabled' : ''}>
+      <button type="button" class="btn btn-sm btn-primary" data-notif-reply="${esc(n.task_id)}|${n.id}" ${sending ? 'disabled' : ''}>${sending ? 'Sending…' : 'Reply'}</button></div>` : ''}
+  </div>`;
+}
 // ---- How long a task has been incomplete (warnings / flagged) ----
 function notifDeadlineTime(d) {
   if (!d) return null;
@@ -1123,6 +1139,7 @@ function renderNotificationsView() {
             <div class="notif-msg">${esc(n.message)}</div>
             <div class="notif-meta"><span title="${esc(fmtTime(n.created_at))}">${esc(notifAgo(n.created_at))}</span>${target ? ' · <span class="notif-open">Open ›</span>' : ''}</div>
             ${notifIncompleteHTML(n)}
+            ${notifLastUpdateHTML(n)}
             ${notifActionsHTML(n)}
             ${notifFollowUpHTML(n)}
             ${n.read ? `<div class="notif-seen">✓ ${esc(seenTimeText(n))}</div>` : ''}
@@ -1221,6 +1238,27 @@ function bindNotificationsView() {
     }
     setBanner(`Followed up on ${ok} task${ok === 1 ? '' : 's'}.${fails.length ? ` ${fails.length} not sent: ${fails[0]}` : ''}`, ok ? 'ok' : undefined);
     render();
+  });
+  // Reply from Task updates (clicks inside the box must not open the task)
+  document.querySelectorAll('[data-notif-lu]').forEach(el => { el.onclick = (e) => e.stopPropagation(); });
+  document.querySelectorAll('[data-notif-reply-input]').forEach(inp => {
+    inp.oninput = () => { ui.notifReplyDraft = { ...(ui.notifReplyDraft || {}), [inp.dataset.notifReplyInput]: inp.value }; };
+    inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); const b = document.querySelector(`[data-notif-reply$="|${inp.dataset.notifReplyInput}"]`); if (b) b.click(); } };
+  });
+  document.querySelectorAll('[data-notif-reply]').forEach(b => b.onclick = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const [taskId, nid] = b.dataset.notifReply.split('|');
+    const msg = String((ui.notifReplyDraft || {})[nid] || '').trim();
+    if (!msg) { setBanner('Write the reply first.'); render(); return; }
+    ui.notifReplySending = Number(nid); render();
+    try {
+      await api(`/api/tasks/${encodeURIComponent(taskId)}/reply`, { method: 'POST', body: JSON.stringify({ message: msg }) });
+      ui.notifReplySending = null; ui.notifReplyDraft[nid] = '';
+      if (notifTaskInfo[taskId]) notifTaskInfo[taskId] = { ...notifTaskInfo[taskId], lastUpdate: { by: session.username, byName: session.name, message: msg, at: new Date().toISOString(), files: 0 } };
+      setBanner('Reply posted on the task — everyone on it has been told.', 'ok');
+      markNotifSeen(Number(nid));
+      render();
+    } catch (err) { ui.notifReplySending = null; setBanner(err.message); render(); }
   });
   const undo = document.querySelector('[data-act="notif-undo"]'); if (undo) undo.onclick = () => undoNotifSeen();
   bindNotifExtras();

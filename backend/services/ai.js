@@ -31,7 +31,7 @@ const EXTRACT_SCHEMA = { type: 'OBJECT', properties: { language: { type: 'STRING
 // Voice / typed commands for the assistant (Marathi, Hindi, English or a mix).
 const COMMAND_SCHEMA = { type: 'OBJECT', properties: {
   language: { type: 'STRING', enum: ['mr', 'hi', 'en'] }, transcript: { type: 'STRING' },
-  intent: { type: 'STRING', enum: ['show_tasks', 'mark_done', 'approve', 'send_back', 'follow_up', 'comment', 'create_task', 'unknown'] },
+  intent: { type: 'STRING', enum: ['show_tasks', 'task_info', 'mark_done', 'approve', 'send_back', 'follow_up', 'comment', 'create_task', 'unknown'] },
   scope: { type: 'STRING', enum: ['mine', 'created_by_me', 'to_approve', 'person', 'all'], nullable: true },
   when: { type: 'STRING', enum: ['overdue', 'today', 'tomorrow', 'this_week', 'any'], nullable: true },
   project: { type: 'STRING', nullable: true }, person_name: { type: 'STRING', nullable: true },
@@ -42,7 +42,7 @@ function commandInstructions({ today, weekday, me, people, projects, tasks }) {
     'You are the voice assistant of the MIHIR Task Manager (a construction company in India). Understand ONE command in Marathi, Hindi, English or any mix and return JSON only.',
     `Today is ${weekday} ${today} (Asia/Kolkata). The speaker is ${me.name} (${me.username}).`,
     'language: the main language spoken (mr = Marathi, hi = Hindi, en = English). transcript: exactly what was said, in the original language and script.',
-    'intent: show_tasks (list / how many / which tasks …), mark_done (my work on a task is finished — "ho gaya", "jhala", "complete", "done"), approve (approve someone\'s submitted work), send_back (reject / return someone\'s work with a reason), follow_up (remind / chase people on a task or a person\'s tasks), comment (add a note / update on a task), create_task (give someone new work), unknown.',
+    'intent: task_info (a question about ONE specific task — its deadline, status, who is on it, latest update: "what is the deadline of task X", "X kab tak hai", "X chi deadline kay"; put the task\'s name in task_words), show_tasks (list / how many / which tasks …), mark_done (my work on a task is finished — "ho gaya", "jhala", "complete", "done"), approve (approve someone\'s submitted work), send_back (reject / return someone\'s work with a reason), follow_up (remind / chase people on a task or a person\'s tasks), comment (add a note / update on a task), create_task (give someone new work), unknown.',
     'scope for show_tasks: mine (my own work, default), created_by_me (tasks I gave others), to_approve (work waiting for my approval), person (someone else\'s tasks — set person_name), all.',
     'when: overdue / today / tomorrow / this_week / any. project: one of PROJECTS if mentioned (e.g. Amara → Mihir Amara, Equinox → Nyati Equinox, Tathawade → Sierra (Tathawade)).',
     'person_name: the person mentioned, as in PEOPLE. task_id: the id from TASKS that the command is about, only if clearly identifiable; task_words: the words that describe the task. note: the comment / reason / what was done, in the original language.',
@@ -195,7 +195,8 @@ function createAI({ pool, env = process.env, fetchImpl = fetch, log = () => {}, 
     const after = (re) => { const m = re.exec(t); return m ? m[1].trim() : null; };
     const strip = (s) => s.replace(/\b(mark|as|the|task|done|complete|completed|approve|approved|send back|follow up|on|add|comment|note|please|of|for|'s)\b/gi, ' ').replace(/[:,.]/g, ' ').replace(/\s+/g, ' ').trim();
     let intent = 'unknown', scope = null, note = null;
-    if (/^(show|list|what|which|how many)/.test(low)) { intent = 'show_tasks'; scope = /approv/.test(low) ? 'to_approve' : /i gave|created by me|i created/.test(low) ? 'created_by_me' : person ? 'person' : 'mine'; }
+    if (/\b(deadline|due date|status|who is on|latest update|last update)\b/.test(low) && /\b(of|for|on)\b/.test(low)) { intent = 'task_info'; }
+    else if (/^(show|list|what|which|how many)/.test(low)) { intent = 'show_tasks'; scope = /approv/.test(low) ? 'to_approve' : /i gave|created by me|i created/.test(low) ? 'created_by_me' : person ? 'person' : 'mine'; }
     else if (/^(create|assign|new task|give)/.test(low) || /\btask for\b/.test(low)) intent = 'create_task';
     else if (/send back|reject|return/.test(low)) { intent = 'send_back'; note = after(/(?:because|note|reason)[: ]+(.+)$/i); }
     else if (/approve/.test(low)) intent = 'approve';

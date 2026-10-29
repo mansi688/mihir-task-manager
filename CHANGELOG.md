@@ -4,6 +4,18 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Task updates: latest update + reply; assistant answers questions about one task
+### Added
+- **Task updates** (Notifications): each card shows the task's **latest comment** (who, when, text, number of files)
+  and a **reply box** — type and press Reply (or Enter) to post on the task without opening it; the card then moves
+  to Seen. `notificationTaskInfo` now carries `lastUpdate`.
+- **Assistant: questions about one task** — "what is the deadline of task industrial DB IPV6", "X kab tak hai",
+  "X chi deadline kay": answers the deadline (days left / overdue), shows who is on it (✓ done, ⏳ submitted) and the
+  latest update, plus up to 5 other tasks with similar names. Searches every task the person can see.
+### Fixed
+- The assistant no longer lists every open task (3,800+ for Admin) for a vague question: "all" with no date, project
+  or person narrows to the person's own tasks.
+
 ## [Unreleased] — Fix: AI calls failing with "model no longer available"
 ### Fixed
 - Live logs showed every ✨ Fix call failing: Google answers `gemini-2.5-flash-lite is no longer available to new users`

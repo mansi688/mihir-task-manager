@@ -30,6 +30,15 @@ test('Assistant commands: show tasks, mark done, approve, send back, follow up, 
   assert.equal(r.data.list.scope, 'person'); assert.equal(r.data.list.project, 'Mihir Amara'); assert.equal(r.data.list.total, 2);
   assert.match(r.data.reply, /Harsh Patil has 2/);
   assert.equal((await C(outsider, 'show Harsh tasks')).data.list.total, 0, 'only tasks the asker can see');
+  // a question about one task: deadline + people + latest update, not a list of everything
+  await api(baseUrl, `/api/tasks/${carpet}/reply`, { method: 'POST', token: boss, body: { message: 'Vendor confirmed Solutia 306' } });
+  r = await C(admin, 'what is the deadline of task carpet sample');
+  assert.equal(r.data.intent, 'task_info', JSON.stringify(r.data));
+  assert.equal(r.data.info.task.id, carpet); assert.match(r.data.reply, /"Carpet sample confirmation" is due on .* 3 days left/);
+  assert.equal(r.data.info.people[0].username, 'ruchita.v'); assert.match(r.data.info.lastUpdate.message, /Solutia 306/);
+  assert.equal(r.data.list, null);
+  assert.equal((await C(admin, 'what is the deadline of task zebra unicorn')).data.intent, 'task_info');
+  assert.equal((await C(admin, 'what is the deadline of task zebra unicorn')).data.info, undefined, 'unknown task → not found, no list');
   // mark done → a confirm card, nothing changed yet
   r = await C(ruchita, 'mark the carpet sample task done');
   assert.equal(r.data.action.kind, 'submit'); assert.equal(r.data.action.task.id, carpet);

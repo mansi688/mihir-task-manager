@@ -76,6 +76,10 @@
         ${r ? `<div class="asst-result">
           ${r.transcript ? `<div class="small muted">You said: “${e(r.transcript)}”</div>` : ''}
           <div class="asst-reply">${e(r.reply || '')} <button type="button" class="asst-icon" data-asst-repeat="1" title="Read aloud">🔈</button></div>
+          ${r.info ? `<div class="asst-list">${taskRow(r.info.task)}
+            <div class="asst-people small">${r.info.people.map(p => `<span class="asst-person ${p.done ? 'done' : p.submitted ? 'sub' : ''}">${p.done ? '✓' : p.submitted ? '⏳' : '•'} ${e(p.name)}</span>`).join('')}</div>
+            ${r.info.lastUpdate ? `<div class="asst-last"><div class="small muted">Latest update — ${e(r.info.lastUpdate.by)}, ${e(new Date(r.info.lastUpdate.at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }))}</div><div>${e(r.info.lastUpdate.message || '📎 (attachment)')}</div></div>` : '<div class="small muted">No updates on this task yet.</div>'}</div>` : ''}
+          ${r.list && r.list.label ? `<div class="small muted" style="margin-top:4px;">${e(r.list.label)}:</div>` : ''}
           ${r.list ? `<div class="asst-list">${r.list.tasks.map(t => taskRow(t)).join('')}${r.list.total > r.list.tasks.length ? `<div class="small muted">Showing ${r.list.tasks.length} of ${r.list.total}.</div>` : ''}</div>` : ''}
           ${r.action ? actionHTML(r.action) : ''}
           ${!r.action && r.choices && r.choices.length ? `<div class="small muted" style="margin-top:6px;">Did you mean one of these?</div><div class="asst-list">${r.choices.map(t => taskRow(t, r.intent === 'mark_done' ? `<button type="button" class="btn btn-sm" data-asst-pick="${e(t.id)}">This one</button>` : '')).join('')}</div>` : ''}

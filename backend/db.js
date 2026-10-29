@@ -2078,11 +2078,15 @@ module.exports = {
     if (!ids.length) return {};
     const me = await get('SELECT role FROM users WHERE username=?', [username]);
     const isAdmin = !!(me && me.role === 'admin');
-    const [tasks, fu, people, closures] = await Promise.all([
+    const [tasks, fu, people, closures, lastReplies] = await Promise.all([
       all('SELECT id, status, title, deadline, created_at, created_by_username FROM tasks WHERE id = ANY(?::text[])', [ids]),
       all("SELECT task_id, MAX(created_at) AS last FROM task_activity_events WHERE event_type='FOLLOW_UP_SENT' AND actor_username=? AND task_id = ANY(?::text[]) GROUP BY task_id", [username, ids]),
       all('SELECT task_id, username, submitted_at, completed_at, decision, individual_deadline, COALESCE(released_at, escalation_baseline_at) AS since FROM task_assignees WHERE task_id = ANY(?::text[])', [ids]),
       all("SELECT id, task_id FROM task_closure_requests WHERE status='pending' AND task_id = ANY(?::text[])", [ids]),
+      // The latest comment on each task — shown on Task updates so it can be read (and answered) without opening the task.
+      all(`SELECT DISTINCT ON (r.task_id) r.task_id, r.id, r.by_username, r.by_name, r.message, r.created_at,
+          ((r.attachment IS NOT NULL)::int + (SELECT COUNT(*) FROM task_files f WHERE f.reply_id = r.id)::int) AS files
+        FROM task_replies r WHERE r.task_id = ANY(?::text[]) ORDER BY r.task_id, r.created_at DESC, r.id DESC`, [ids]),
     ]);
     const out = {};
     for (const t of tasks) {
@@ -2096,6 +2100,7 @@ module.exports = {
         closureId: null };
     }
     for (const c of closures) if (out[c.task_id] && out[c.task_id].canDecide) out[c.task_id].closureId = c.id;
+    for (const r of lastReplies) if (out[r.task_id]) out[r.task_id].lastUpdate = { id: r.id, by: r.by_username, byName: r.by_name, message: String(r.message || '').slice(0, 600), at: r.created_at, files: Number(r.files) || 0 };
     for (const f of fu) if (out[f.task_id]) out[f.task_id].followedUpAt = f.last ? new Date(f.last).toISOString() : null;
     return out;
   },

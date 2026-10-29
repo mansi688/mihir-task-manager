@@ -24,6 +24,7 @@ const L = {
     confirm: { submit: (t) => `Mark your part of "${t}" as done?`, approve: (t, p) => `Approve ${p}'s work on "${t}"?`, sendback: (t, p) => `Send ${p}'s work on "${t}" back?`,
       followup: (n) => n === 1 ? 'Send a follow-up on this task?' : `Send follow-ups on these ${n} tasks?`, comment: (t) => `Add this comment on "${t}"?` },
     create: 'Making the task from what you said — check it and press Create.',
+    info: (t, d, n, late) => !d ? `"${t}" has no deadline.` : late ? `"${t}" was due on ${d} — overdue by ${-n} day${n === -1 ? '' : 's'}.` : n === 0 ? `"${t}" is due today (${d}).` : `"${t}" is due on ${d} — ${n} day${n === 1 ? '' : 's'} left.`,
     unknown: 'Sorry, I did not understand. Try: "show my overdue tasks", "mark the slab task done", "approve Ruchita\'s carpet task".',
   },
   hi: {
@@ -37,6 +38,7 @@ const L = {
     confirm: { submit: (t) => `"${t}" में आपका काम पूरा मार्क करें?`, approve: (t, p) => `"${t}" पर ${p} का काम मंज़ूर करें?`, sendback: (t, p) => `"${t}" पर ${p} का काम वापस भेजें?`,
       followup: (n) => n === 1 ? 'इस टास्क पर फ़ॉलो-अप भेजें?' : `इन ${n} टास्क पर फ़ॉलो-अप भेजें?`, comment: (t) => `"${t}" पर यह कमेंट जोड़ें?` },
     create: 'आपकी बात से टास्क बना रहे हैं — जाँच कर Create दबाइए।',
+    info: (t, d, n, late) => !d ? `"${t}" की कोई डेडलाइन नहीं है।` : late ? `"${t}" की डेडलाइन ${d} थी — ${-n} दिन ओवरड्यू।` : n === 0 ? `"${t}" आज (${d}) ड्यू है।` : `"${t}" की डेडलाइन ${d} है — ${n} दिन बाकी।`,
     unknown: 'माफ़ कीजिए, समझ नहीं आया। ऐसे बोलिए: "मेरे ओवरड्यू टास्क दिखाओ", "स्लैब वाला टास्क पूरा हो गया"।',
   },
   mr: {
@@ -50,6 +52,7 @@ const L = {
     confirm: { submit: (t) => `"${t}" मधले तुमचे काम पूर्ण म्हणून नोंदवायचे?`, approve: (t, p) => `"${t}" वरचे ${p} यांचे काम मंजूर करायचे?`, sendback: (t, p) => `"${t}" वरचे ${p} यांचे काम परत पाठवायचे?`,
       followup: (n) => n === 1 ? 'या टास्कवर फॉलो-अप पाठवायचा?' : `या ${n} टास्कवर फॉलो-अप पाठवायचे?`, comment: (t) => `"${t}" वर ही कमेंट जोडायची?` },
     create: 'तुम्ही सांगितल्याप्रमाणे टास्क तयार करत आहोत — तपासून Create दाबा.',
+    info: (t, d, n, late) => !d ? `"${t}" ला डेडलाइन नाही.` : late ? `"${t}" ची डेडलाइन ${d} होती — ${-n} दिवस उशीर.` : n === 0 ? `"${t}" आज (${d}) देय आहे.` : `"${t}" ची डेडलाइन ${d} आहे — ${n} दिवस बाकी.`,
     unknown: 'माफ करा, समजले नाही. असे बोला: "माझे मुदत संपलेले टास्क दाखव", "स्लॅबचे काम झाले".',
   },
 };
@@ -94,17 +97,24 @@ function mountAssistant(app, deps) {
     return hits.length === 1 ? hits[0] : (hits.find(u => norm(u.name).includes(n)) || hits[0] || null);
   }
   // Pick a task: the id the AI chose (if it is one of the candidates), else the best word match.
-  function pickTask(list, id, words) {
-    if (id) { const t = list.find(x => x.id.toUpperCase() === String(id).toUpperCase()); if (t) return t; }
-    const w = norm(words).split(' ').filter(x => x.length > 1);
-    if (!w.length) return list.length === 1 ? list[0] : null;
-    let best = null, score = 0;
+  // Words that say what kind of question it is, not which task.
+  const STOP = new Set('what is the of task tasks deadline due date status when who on for a an my me please tell show give latest last update about kab tak hai ka ki ke kya kaun chi cha che kay kadhi ahe aahe la var madhe मध्ये ची चा चे काय कधी आहे का की के है क्या कब तक'.split(' '));
+  function rankTasks(list, words) {
+    const w = norm(words).split(' ').filter(x => x.length > 1 && !STOP.has(x));
+    if (!w.length) return [];
+    const out = [];
     for (const t of list) {
       const title = norm(`${t.title} ${t.project || ''} ${t.id}`);
       const s = w.reduce((a, x) => a + (title.includes(x) ? (x.length > 3 ? 2 : 1) : 0), 0) / w.length;
-      if (s > score) { score = s; best = t; }
+      if (s >= 0.5) out.push({ t, s });
     }
-    return score >= 0.5 ? best : null;
+    return out.sort((a, b) => b.s - a.s).map(x => x.t);
+  }
+  function pickTask(list, id, words) {
+    if (id) { const t = list.find(x => x.id.toUpperCase() === String(id).toUpperCase()); if (t) return t; }
+    const r = rankTasks(list, words);
+    if (r.length) return r[0];
+    return !norm(words).split(' ').some(x => x && !STOP.has(x)) && list.length === 1 ? list[0] : null;
   }
   const brief = (t, who) => {
     const p = who ? t.parts.find(x => x.username === who) : null;
@@ -154,8 +164,28 @@ function mountAssistant(app, deps) {
       return true;
     };
 
+    // A question about one task: deadline, status, people, latest update.
+    if (out.intent === 'task_info' || (out.intent === 'show_tasks' && (c.task_id || (c.task_words && rankTasks(tasks, c.task_words).length && !c.when && !c.project && !person)))) {
+      const ranked = c.task_id ? [pickTask(tasks, c.task_id, '')].filter(Boolean) : rankTasks(tasks, c.task_words || out.transcript);
+      const t = ranked[0];
+      if (!t) { out.intent = 'task_info'; out.reply = T.notFound; return res.json(out); }
+      out.intent = 'task_info';
+      const last = (await q(`SELECT by_name, by_username, message, created_at FROM task_replies WHERE task_id = $1 ORDER BY created_at DESC LIMIT 1`, [t.id])).rows[0] || null;
+      const nm = (u) => (users.find(x => x.username === u) || {}).name || u;
+      const at = dueAt(t.deadline);
+      const days = at ? Math.round((Date.parse(`${at.slice(0, 10)}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 864e5) : null;
+      const dateTxt = t.deadline ? new Date(`${String(t.deadline).slice(0, 10)}T12:00:00Z`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : null;
+      out.reply = T.info(t.title, dateTxt, days, at && at < now);
+      out.info = { task: brief(t), people: t.parts.map(p => ({ username: p.username, name: nm(p.username), done: p.done, submitted: p.submitted, deadline: p.deadline })),
+        lastUpdate: last ? { by: last.by_name || nm(last.by_username), message: String(last.message || '').slice(0, 400), at: last.created_at } : null };
+      out.list = ranked.length > 1 ? { scope: 'match', total: ranked.length - 1, tasks: ranked.slice(1, 6).map(x => brief(x)) } : null;
+      if (out.list) out.list.label = 'Other matching tasks';
+      return res.json(out);
+    }
     if (out.intent === 'show_tasks') {
       let scope = c.scope || 'mine';
+      // "all" with nothing to narrow it (Admin would get thousands) means my own tasks.
+      if (scope === 'all' && (!c.when || c.when === 'any') && !c.project && !person) scope = 'mine';
       if (scope === 'person' && !person) { out.reply = T.personNotFound; return res.json(out); }
       if (person && person.username === user.username) scope = 'mine';
       const when = c.when || 'any';
