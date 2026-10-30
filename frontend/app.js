@@ -2459,6 +2459,30 @@ function renderTaskActivityFeed(t) {
   rows.sort((a, b) => new Date(a.at) - new Date(b.at));
   return `<div style="margin-top:8px;">${historyTableHTML(rows)}</div>`;
 }
+// ---- Task title / ID: selectable text, plus a copy button ----
+function taskCopyBtnHTML(t) {
+  return `<button type="button" class="task-copy" data-copy-task="${esc(t.id)}" data-copy-title="${esc(t.title)}" title="Copy task ID and title" aria-label="Copy task ID and title">📋</button>`;
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) {
+    const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (e2) {} ta.remove(); return ok;
+  }
+}
+// Selecting text in a task's header must not open/close the card; the copy button copies "ID — title".
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('[data-copy-task]');
+  if (btn) {
+    e.preventDefault(); e.stopPropagation();
+    copyText(`${btn.dataset.copyTask} — ${btn.dataset.copyTitle}`).then(ok => {
+      btn.textContent = ok ? '✓' : '✗'; btn.classList.add('copied');
+      setTimeout(() => { btn.textContent = '📋'; btn.classList.remove('copied'); }, 1400);
+    });
+    return;
+  }
+  const sum = e.target.closest && e.target.closest('summary.task-row-summary');
+  if (sum) { const sel = window.getSelection && window.getSelection(); if (sel && String(sel).trim() && sum.contains(sel.anchorNode)) e.preventDefault(); }
+}, true);
 // ---- Deadline extension requests (shared by the task card, the Approvals page and notifications)
 function extRequestBoxHTML(r, opts = {}) {
   const st = (ui.extDecide || {})[r.id] || {};
@@ -2601,7 +2625,7 @@ function renderTaskItem(t) {
       <summary class="task-row-summary">
         <span class="task-row-chevron" aria-hidden="true"></span>
         <span class="task-row-text">
-          <span class="task-row-title"><b>${esc(t.title)}</b> <span class="mono small muted">${esc(t.id)}</span></span>
+          <span class="task-row-title"><b>${esc(t.title)}</b> <span class="mono small muted">${esc(t.id)}</span>${taskCopyBtnHTML(t)}</span>
           <span class="task-row-meta">
             ${t.project ? `<span>📁 ${esc(t.project)}</span>` : ''}
             <span>${isCancelled ? `Cancelled by ${esc(t.cancelled_by || '—')} · ${fmtTime(t.cancelled_at)}` : `Closed by ${esc(t.closed_by || '—')} · ${fmtTime(t.closed_at)}`}</span>
@@ -2649,7 +2673,7 @@ function renderTaskItem(t) {
     <summary class="task-row-summary">
       <span class="task-row-chevron" aria-hidden="true"></span>
       <span class="task-row-text">
-        <span class="task-row-title"><b>${esc(t.title)}</b> <span class="mono small muted">${esc(t.id)}</span></span>
+        <span class="task-row-title"><b>${esc(t.title)}</b> <span class="mono small muted">${esc(t.id)}</span>${taskCopyBtnHTML(t)}</span>
         <span class="task-row-meta">
           ${priorityBadgeHTML(t)}
           ${t.project ? `<span>📁 ${esc(t.project)}</span>` : ''}${t.phase ? `<span>${esc(t.phase)}</span>` : ''}

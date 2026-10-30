@@ -1691,3 +1691,8 @@ select.field-err,input.field-err{border-color:var(--danger);box-shadow:0 0 0 2px
 .ext-actions input[type="date"] { width: auto; }
 .ext-mine { margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: rgba(217,142,4,.08); }
 .na-ext .ext-box { margin-top: 0; width: 100%; }
+
+/* Task title and ID can be selected and copied */
+.task-row-title{user-select:text;-webkit-user-select:text;cursor:text;}
+.task-copy{border:0;background:transparent;cursor:pointer;font-size:13px;padding:0 4px;margin-left:4px;opacity:.55;vertical-align:baseline;line-height:1;}
+.task-copy:hover,.task-copy.copied{opacity:1;}

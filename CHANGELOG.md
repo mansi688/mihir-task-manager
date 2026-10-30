@@ -19,6 +19,8 @@ previous deploy → Rollback (all migrations are additive).
 - **Accounts compliance**: Suspense clearance, Debit balance clearance, GST reconciliation, Vendor ageing reports —
   added with **no date yet** ("📅 Date not set"; set it with ✏️). They get no reminders and cannot be marked done until
   the day is set. `compliance_items.due_day` is now nullable.
+- **Copy a task's title and ID** — the title and ID in a task's header can now be selected (selecting does not
+  open or close the card), and a 📋 button next to the ID copies "TASK-ID — Title".
 ### Fixed
 - **Part approvals and closure requests missing from Approvals.** A task with a part or closure waiting for your
   decision now always shows in the Notifications → Approvals tab, even when the only notification about it was another
