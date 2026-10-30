@@ -154,7 +154,7 @@ test('bulk task import from CSV and Excel', async (t) => {
     assert.equal(count, 4, 'no duplicates');
     // A deadline changed inside the app survives re-uploading an unchanged file…
     const appDate = futureDate(60);
-    await api(baseUrl, `/api/tasks/${i1.data.created[1].id}/deadline`, { method: 'POST', token: admin, body: { deadline: appDate } });
+    await api(baseUrl, `/api/tasks/${i1.data.created[1].id}/deadline`, { method: 'POST', token: admin, body: { deadline: appDate, reason: 'Changed in the app' } });
     const p3 = await api(baseUrl, '/api/tasks/import/preview', { method: 'POST', token: admin, body: { fileData: csvDataUrl(v2), fileName: 'v2.csv' } });
     const row2 = p3.data.rows.find(r => r.taskKey === 'EQX-T-2');
     assert.equal(row2.action, 'unchanged'); assert.equal(row2.existing.keptAppChange, true);

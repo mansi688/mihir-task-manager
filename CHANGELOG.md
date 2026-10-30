@@ -4,6 +4,52 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Deadline extensions by request, approvals visibility, new Accounts compliance items
+### Changed
+- **Deadlines can no longer be changed freely.** "Change deadline" and "Set individual deadlines" on a task are now
+  **Admin only**, and a reason is required. Everyone else goes through an extension request.
+### Added
+- **⏳ Request more time** — anyone tagged on an open task (part not yet done) asks for a new date with a reason.
+  The **task creator** reviews it (Admin when the creator asks on their own task): give more time (the date can be
+  changed), or reject with a reason. Approving moves that person's own deadline (and the task deadline when they are
+  the only person on it). One pending request per person per task; it can be withdrawn. Shown on the task card, on
+  the **Approvals** page ("Asking for more time") and as an Approvals notification with the buttons on it. Logged in
+  task History. Table `deadline_requests`; routes `POST /api/tasks/:id/extension-request`,
+  `GET /api/extension-requests`, `POST /api/extension-requests/:id/decide|cancel`.
+- **Accounts compliance**: Suspense clearance, Debit balance clearance, GST reconciliation, Vendor ageing reports —
+  added with **no date yet** ("📅 Date not set"; set it with ✏️). They get no reminders and cannot be marked done until
+  the day is set. `compliance_items.due_day` is now nullable.
+### Fixed
+- **Part approvals and closure requests missing from Approvals.** A task with a part or closure waiting for your
+  decision now always shows in the Notifications → Approvals tab, even when the only notification about it was another
+  kind (e.g. "flagged"). The Approvals page now also lists closure requests waiting for you, and Admin sees all
+  pending approvals by default.
+### Database
+- New table `deadline_requests`; `ALTER TABLE compliance_items ALTER COLUMN due_day DROP NOT NULL`; 4 compliance
+  rows inserted if missing. All additive.
+
+## [Unreleased] — Estimation workflow: estimate → project-head approval → JMR → final JMR → reconciliation
+### Added
+- **Estimate (work package)** — new first step on the Estimation page (📁 Estimates tab): project, work item /
+  package, contractor, scope, and **two required files attached separately: the HighRise document and the estimate
+  Excel** (.xlsx / .xls / .csv). Table `est_estimates`.
+- **Approval by the project heads** (PROJECT_HEADS: Amara → Suraj Kathale & Rahul Paigude, Equinox → Anil Wagh &
+  Siddheshwar Puri, Tathawade → Dnyaneshwar Kolekar; Mihir Projects → Admin). **Both heads must approve**; Admin can
+  approve on their behalf. Each decision is recorded per round (`est_approvals`); the page shows ✓ / ⏳ / ✗ per head.
+- **Rejection**: any head or Admin can reject with a reason (required) → the writer is told, corrects it and sends it
+  again (new approval round). Applies to estimates, JMRs and reconciliations.
+- **Stages**: estimate approved → **JMR open** (notification `est_jmr_open` to the writer and the Estimation team) →
+  JMRs, each approved by the heads → the estimator ticks **Final JMR** → when it is approved, JMR closes and the
+  **reconciliation report is requested** (`est_recon_due`) → reconciliation approved → **Completed** (`est_completed`).
+- JMRs and reconciliations are linked to their estimate (`estimate_id`); a JMR can only be written against an
+  estimate open for JMR, a reconciliation only after its final JMR; JMR import asks for the estimate too.
+### Changed
+- Estimation approvals no longer go to Dnyaneshwar Kolekar for every project — they go to the project's heads.
+  Project heads can now see the Estimation page. The HighRise requirement moved from each JMR to the estimate.
+### Database
+- New tables `est_estimates`, `est_approvals`; columns `est_jmr.estimate_id / is_final / round`,
+  `est_recon.estimate_id / round` — additive.
+
 ## [Unreleased] — Pages update themselves after an upload; notifications ring in a background tab
 ### Fixed
 - **Open pages kept running old code after an upload** (until someone pressed reload) — so a fix could be live on the

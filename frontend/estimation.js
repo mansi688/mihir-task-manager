@@ -2,7 +2,7 @@
    Data: GET /api/estimation (estData, loaded with the page) and GET /api/estimation/summary (estSummary, for the menu
    and badge). Loaded after budget.js and before app.js; everything runs at call time, driven by ui.* state. */
 
-let estData = null;          // { me, projects, jmr: [...], recon: [...] }
+let estData = null;          // { me, projects, heads, estimates: [...], jmr: [...], recon: [...] }
 let estSummary = { canView: false };
 
 const EST_UNITS = ['cum', 'sqm', 'rmt', 'nos', 'kg', 'MT', 'bags', 'sqft', 'cft', 'rft', 'LS', 'litre'];
@@ -10,8 +10,18 @@ const EST_STATUS = {
   draft: { label: 'Draft', cls: '' },
   submitted: { label: 'Waiting for approval', cls: 'warn' },
   approved: { label: 'Approved', cls: 'good' },
-  returned: { label: 'Returned', cls: 'bad' },
+  returned: { label: 'Rejected — to correct', cls: 'bad' },
 };
+// After an estimate is approved: JMR open → reconciliation due → completed.
+const EST_STAGE = { jmr: { label: '📐 JMR open', cls: 'good' }, reconciliation: { label: '⚖️ Reconciliation due', cls: 'warn' }, completed: { label: '🏁 Completed', cls: 'good' } };
+function estStageChip(e) { if (e.status !== 'approved' || !EST_STAGE[e.stage]) return estChip(e.status); const s = EST_STAGE[e.stage]; return `<span class="bud-chip ${s.cls}">${s.label}</span>`; }
+// Waiting for MY approval in this round (both heads approve; Admin approves for all).
+function estMyTurn(x) {
+  if (x.status !== 'submitted' || !estCanApprove(x.project)) return false;
+  const me = estMe().username || session.username;
+  return !((x.approval && x.approval.decisions) || []).some(d => d.username === me && d.decision === 'approve');
+}
+function estHeadNames(project) { const h = ((estData && estData.heads) || {})[project] || []; return h.length ? h.map(x => x.name).join(' & ') : 'Admin'; }
 function estEsc(s) { return typeof esc === 'function' ? esc(s) : String(s == null ? '' : s); }
 function estNum(n, d = 3) { if (n == null || n === '' || !isFinite(Number(n))) return '—'; return Number(n).toLocaleString('en-IN', { maximumFractionDigits: d }); }
 function estInr(n) { return n == null ? '—' : '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
@@ -20,7 +30,7 @@ function estChip(st) { const s = EST_STATUS[st] || EST_STATUS.draft; return `<sp
 function estMe() { return (estData && estData.me) || { canEdit: !!estSummary.canEdit, approveAll: !!estSummary.approveAll, headOf: estSummary.headOf || [] }; }
 function estCanApprove(project) { const m = estMe(); return m.approveAll || (m.headOf || []).includes(project); }
 function estState() {
-  if (!ui.est) ui.est = { view: 'jmr', project: '', status: '', q: '', open: null, form: null };
+  if (!ui.est) ui.est = { view: 'estimate', project: '', status: '', q: '', open: null, form: null };
   return ui.est;
 }
 // Menu
@@ -53,30 +63,33 @@ function estReconCalc(r) {
 function renderEstimationView() {
   if (!estData) return `<div class="card"><div class="small muted">Loading Estimation…</div></div>`;
   const s = estState(); const m = estMe();
-  const views = [{ key: 'jmr', label: '📐 JMR', n: estData.jmr.length }, { key: 'recon', label: '⚖️ Reconciliation', n: estData.recon.length }, { key: 'summary', label: '📊 Summary' }];
-  const view = views.some(v => v.key === s.view) ? s.view : 'jmr';
-  const waiting = [...estData.jmr, ...estData.recon].filter(x => x.status === 'submitted' && estCanApprove(x.project)).length;
+  const views = [{ key: 'estimate', label: '📁 Estimates', n: (estData.estimates || []).length }, { key: 'jmr', label: '📐 JMR', n: estData.jmr.length }, { key: 'recon', label: '⚖️ Reconciliation', n: estData.recon.length }, { key: 'summary', label: '📊 Summary' }];
+  const view = views.some(v => v.key === s.view) ? s.view : 'estimate';
+  const waiting = [...(estData.estimates || []), ...estData.jmr, ...estData.recon].filter(estMyTurn).length;
+  const returnedMine = [...(estData.estimates || []), ...estData.jmr, ...estData.recon].filter(x => x.status === 'returned' && x.created_by === session.username).length;
   return `
   <div class="card">
     <div class="flex-between" style="flex-wrap:wrap;gap:10px;">
       <div><div class="card-title" style="margin:0;">Estimation & Billing</div>
-        <div class="small muted">JMR — joint measurement of work done (quantity and material), with previous / this / cumulative quantity. Reconciliation — material issued to a contractor against the work done, with wastage allowed and recovery.
-          ${m.canEdit ? 'Write it, then send it for approval — it goes to Dnyaneshwar Kolekar and Admin.' : m.approveAll ? 'You approve these entries.' : 'You can view them.'}</div></div>
-      ${m.canEdit && !s.form && !s.imp ? `<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary btn-sm" data-est-act="new-jmr">+ New JMR</button><button class="btn btn-sm" data-est-act="import">⬆ Import JMR from Excel</button><button class="btn btn-sm" data-est-act="new-recon">+ New reconciliation</button></div>` : ''}
+        <div class="est-flow small">${['📁 Estimate — HighRise + Excel', '✓ Project heads approve', '📐 JMRs (each approved)', '🏁 Final JMR', '⚖️ Reconciliation', '✅ Completed'].map(x => `<span>${x}</span>`).join('<b>→</b>')}</div>
+        <div class="small muted">Every step goes to the project's heads (Amara: Suraj Kathale & Rahul Paigude · Equinox: Anil Wagh & Siddheshwar Puri · Tathawade: Dnyaneshwar Kolekar) — both must approve; Admin can approve for them. A rejection comes back with the reason to correct and send again.
+          ${m.canEdit ? '' : (m.headOf || []).length || m.approveAll ? ' You approve these entries.' : ' You can view them.'}</div></div>
+      ${m.canEdit && !s.form && !s.imp ? `<div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-primary btn-sm" data-est-act="new-estimate">+ New estimate</button><button class="btn btn-sm" data-est-act="new-jmr">+ New JMR</button><button class="btn btn-sm" data-est-act="import">⬆ Import JMR from Excel</button><button class="btn btn-sm" data-est-act="new-recon">+ Reconciliation</button></div>` : ''}
     </div>
     ${waiting ? `<div class="notice dlv-warn" style="margin-top:10px;">⏳ ${waiting} waiting for your approval.</div>` : ''}
+    ${returnedMine ? `<div class="notice dlv-warn" style="margin-top:10px;">✗ ${returnedMine} of yours rejected — open it, correct it and send it again.</div>` : ''}
   </div>
   ${s.imp ? estImportHTML(s.imp) : ''}
-  ${s.form ? (s.form.type === 'jmr' ? estJmrFormHTML(s.form) : estReconFormHTML(s.form)) : ''}
+  ${s.form ? (s.form.type === 'estimate' ? estEstimateFormHTML(s.form) : s.form.type === 'jmr' ? estJmrFormHTML(s.form) : estReconFormHTML(s.form)) : ''}
   <div class="card">
     <div class="task-tabs" role="tablist">${views.map(v => `<button class="task-tab${view === v.key ? ' active' : ''}" data-est-view="${v.key}">${v.label}${v.n != null ? ` <span class="task-tab-count">${v.n}</span>` : ''}</button>`).join('')}</div>
     <div class="bud-filters">
       <div><label for="est-project">Project</label><select id="est-project"><option value="">All projects</option>${(estData.projects || []).map(p => `<option ${s.project === p ? 'selected' : ''}>${estEsc(p)}</option>`).join('')}</select></div>
       ${view !== 'summary' ? `<div><label for="est-status">Status</label><select id="est-status"><option value="">All</option>${Object.entries(EST_STATUS).map(([k, v]) => `<option value="${k}" ${s.status === k ? 'selected' : ''}>${v.label}</option>`).join('')}</select></div>` : ''}
-      <div class="bud-search"><label for="est-q">Search</label><input type="text" id="est-q" value="${estEsc(s.q)}" placeholder="JMR / REC number, work item, contractor, location…"></div>
-      ${view !== 'summary' ? `<div style="align-self:flex-end;"><button class="btn btn-sm" data-est-act="csv">⬇ CSV</button></div>` : ''}
+      <div class="bud-search"><label for="est-q">Search</label><input type="text" id="est-q" value="${estEsc(s.q)}" placeholder="EST / JMR / REC number, work item, contractor, location…"></div>
+      ${view === 'jmr' || view === 'recon' ? `<div style="align-self:flex-end;"><button class="btn btn-sm" data-est-act="csv">⬇ CSV</button></div>` : ''}
     </div>
-    ${view === 'jmr' ? estJmrListHTML() : view === 'recon' ? estReconListHTML() : estSummaryHTML()}
+    ${view === 'estimate' ? estEstimateListHTML() : view === 'jmr' ? estJmrListHTML() : view === 'recon' ? estReconListHTML() : estSummaryHTML()}
   </div>
   ${estViewerHTML()}`;
 }
@@ -149,11 +162,29 @@ function estFilter(list, fields) {
 }
 function estFilesHTML(x, type) {
   const m = estMe();
-  const src = (x.files || []).filter(f => f.kind === 'source'), other = (x.files || []).filter(f => f.kind !== 'source');
-  return `<div class="est-src ${src.length ? '' : 'missing'}"><b>📊 HighRise / estimation document:</b> ${src.length ? src.map(f => `<button type="button" class="dlv-file" data-est-file="${f.id}">📊 ${estEsc(f.name)}</button>`).join(' ') : '<span class="dlv-nobill">not attached — needed before sending for approval</span>'}
-    ${m.canEdit ? `<label class="btn btn-sm">+ ${src.length ? 'Add another' : 'Attach'}<input type="file" data-est-addfile="${type}:${x.id}:source" multiple hidden></label>` : ''}</div>
-  <div class="dlv-files" style="margin-top:8px;">${other.map(f => `<button type="button" class="dlv-file" data-est-file="${f.id}">📎 ${estEsc(f.name)}</button>`).join('')}
+  const chip = (f, ic) => `<button type="button" class="dlv-file" data-est-file="${f.id}">${ic} ${estEsc(f.name)}</button>`;
+  const canAdd = m.canEdit && ['draft', 'returned'].includes(x.status);
+  const add = (kind, label, accept) => canAdd ? `<label class="btn btn-sm">+ ${label}<input type="file" data-est-addfile="${type}:${x.id}:${kind}" ${accept ? `accept="${accept}"` : ''} multiple hidden></label>` : '';
+  const other = (x.files || []).filter(f => !['highrise', 'excel', 'source'].includes(f.kind));
+  let head = '';
+  if (type === 'estimate') {
+    const hr = (x.files || []).filter(f => f.kind === 'highrise'), xl = (x.files || []).filter(f => f.kind === 'excel');
+    head = `<div class="est-src ${hr.length ? '' : 'missing'}"><b>🏗 HighRise document *</b> ${hr.length ? hr.map(f => chip(f, '🏗')).join(' ') : '<span class="dlv-nobill">not attached — required</span>'} ${add('highrise', hr.length ? 'Add revised' : 'Attach')}</div>
+      <div class="est-src ${xl.length ? '' : 'missing'}" style="margin-top:6px;"><b>📊 Estimate Excel *</b> ${xl.length ? xl.map(f => chip(f, '📊')).join(' ') : '<span class="dlv-nobill">not attached — required</span>'} ${add('excel', xl.length ? 'Add revised' : 'Attach', '.xlsx,.xls,.xlsm,.csv')}</div>`;
+  } else {
+    const src = (x.files || []).filter(f => f.kind === 'source');
+    if (src.length) head = `<div class="est-src"><b>📊 Supporting sheet:</b> ${src.map(f => chip(f, '📊')).join(' ')}</div>`;
+  }
+  return `${head}<div class="dlv-files" style="margin-top:8px;">${other.map(f => chip(f, '📎')).join('')}
     ${m.canEdit || estCanApprove(x.project) ? `<label class="btn btn-sm">+ Add file${x.status === 'approved' ? ' (e.g. signed copy)' : ''}<input type="file" data-est-addfile="${type}:${x.id}" accept="image/*,application/pdf,.pdf,.xlsx,.xls,.doc,.docx" multiple hidden></label>` : ''}</div>`;
+}
+// Who has approved in this round; who is still to approve.
+function estApprovalHTML(x) {
+  const a = x.approval || { heads: [], decisions: [] };
+  if (x.status === 'draft') return `<div class="small muted" style="margin-top:8px;">Approval by: <b>${estEsc(estHeadNames(x.project))}</b>${(a.heads || []).length > 1 ? ' — both must approve' : ''} (or Admin).</div>`;
+  const adminOk = (a.decisions || []).find(d => d.onBehalf && d.decision === 'approve');
+  const heads = (a.heads || []).map(h => `<span class="est-appr ${h.decision === 'approve' || adminOk ? 'ok' : h.decision === 'reject' ? 'no' : 'wait'}">${h.decision === 'approve' ? '✓' : h.decision === 'reject' ? '✗' : adminOk ? '✓' : '⏳'} ${estEsc(h.name)}</span>`).join('');
+  return `<div class="est-appr-row"><span class="small muted">Approval (round ${x.round || 1}):</span> ${heads || '<span class="est-appr wait">Admin</span>'}${adminOk ? `<span class="small muted">· approved by ${estEsc(adminOk.name)} (Admin) for the heads</span>` : ''}</div>`;
 }
 function estRemarksHTML(x, type) {
   const s = estState(); const icon = { submit: '📤', approved: '✓', returned: '↩', remark: '💬' };
@@ -168,20 +199,89 @@ function estActionsHTML(x, type) {
   const mineEdit = m.canEdit && ['draft', 'returned'].includes(x.status);
   const dec = s.decide && s.decide.type === type && s.decide.id === x.id ? s.decide : null;
   return `
-    ${x.status === 'returned' && x.decision_note ? `<div class="notice dlv-warn" style="margin-top:8px;">↩ Returned by <b>${estEsc(x.decided_by_name || x.decided_by)}</b>: “${estEsc(x.decision_note)}”</div>` : ''}
+    ${estApprovalHTML(x)}
+    ${x.status === 'returned' && x.decision_note ? `<div class="notice dlv-warn" style="margin-top:8px;">✗ Rejected by <b>${estEsc(x.decided_by_name || x.decided_by)}</b>: “${estEsc(x.decision_note)}” — correct it and send it again.</div>` : ''}
     ${x.status === 'approved' ? `<div class="small" style="margin-top:8px;">✓ Approved by <b>${estEsc(x.decided_by_name || x.decided_by)}</b> · ${estEsc(estDate(x.decided_at))}${x.decision_note ? ` — “${estEsc(x.decision_note)}”` : ''}</div>` : ''}
     <div class="dlv-actions">
-      ${mineEdit ? `<button class="btn btn-sm" data-est-edit="${type}:${x.id}">✏️ Edit</button><button class="btn btn-primary btn-sm" data-est-sendbox="${type}:${x.id}" ${(x.files || []).some(f => f.kind === 'source') ? '' : 'disabled title="Attach the HighRise / estimation document first"'}>📤 Send for approval</button>` : ''}
-      ${x.status === 'submitted' && estCanApprove(x.project) && !dec ? `<button class="btn btn-primary btn-sm" data-est-approve="${type}:${x.id}">✓ Approve</button><button class="btn btn-sm" data-est-return="${type}:${x.id}">↩ Return for correction</button>` : ''}
-      ${type === 'jmr' ? `<button class="btn btn-sm" data-est-print="${x.id}">🖨 Print</button>` : `<button class="btn btn-sm" data-est-print-recon="${x.id}">🖨 Print</button>`}
+      ${mineEdit ? `<button class="btn btn-sm" data-est-edit="${type}:${x.id}">✏️ Edit</button><button class="btn btn-primary btn-sm" data-est-sendbox="${type}:${x.id}" ${type !== 'estimate' || ((x.files || []).some(f => f.kind === 'highrise') && (x.files || []).some(f => f.kind === 'excel')) ? '' : 'disabled title="Attach the HighRise document and the estimate Excel first"'}>📤 ${x.status === 'returned' ? 'Send again' : 'Send for approval'}</button>` : ''}
+      ${estMyTurn(x) && !dec ? `<button class="btn btn-primary btn-sm" data-est-approve="${type}:${x.id}">✓ Approve</button><button class="btn btn-sm btn-danger" data-est-return="${type}:${x.id}">✗ Reject</button>` : ''}
+      ${x.status === 'submitted' && !estMyTurn(x) && estCanApprove(x.project) ? '<span class="small muted">✓ You approved — waiting for the other head.</span>' : ''}
+      ${type === 'jmr' ? `<button class="btn btn-sm" data-est-print="${x.id}">🖨 Print</button>` : type === 'recon' ? `<button class="btn btn-sm" data-est-print-recon="${x.id}">🖨 Print</button>` : ''}
       ${(m.canEdit && x.status !== 'approved') || session.role === 'admin' ? `<button class="btn btn-sm btn-danger" data-est-del="${type}:${x.id}">🗑 Delete</button>` : ''}
     </div>
-    ${s.send && s.send.type === type && s.send.id === x.id ? `<div class="dlv-proof"><label for="est-send-remarks">Remarks for Dnyaneshwar Kolekar / Admin <span class="muted small">(optional)</span></label><textarea id="est-send-remarks" placeholder="Anything they should know before approving">${estEsc(s.send.remarks || '')}</textarea>
+    ${s.send && s.send.type === type && s.send.id === x.id ? `<div class="dlv-proof"><label for="est-send-remarks">Remarks for ${estEsc(estHeadNames(x.project))} <span class="muted small">(optional)</span></label><textarea id="est-send-remarks" placeholder="Anything they should know before approving">${estEsc(s.send.remarks || '')}</textarea>
       <div style="margin-top:8px;display:flex;gap:8px;"><button class="btn btn-primary btn-sm" data-est-submit="${type}:${x.id}">📤 Send for approval</button><button class="btn btn-sm" data-est-act="send-cancel">Cancel</button></div></div>` : ''}
-    ${dec ? `<div class="dlv-proof"><label for="est-dec-note">${dec.decision === 'return' ? 'What needs correcting?' : 'Note (optional)'}</label><input type="text" id="est-dec-note" value="${estEsc(dec.note || '')}">
-      <div style="margin-top:8px;display:flex;gap:8px;"><button class="btn btn-sm ${dec.decision === 'return' ? 'btn-danger' : 'btn-primary'}" data-est-dec-send="1">${dec.decision === 'return' ? '↩ Return' : '✓ Approve'}</button><button class="btn btn-sm" data-est-act="dec-cancel">Cancel</button></div></div>` : ''}`;
+    ${dec ? `<div class="dlv-proof"><label for="est-dec-note">${dec.decision === 'return' ? 'Why is it rejected — what should be corrected? *' : 'Note (optional)'}</label><input type="text" id="est-dec-note" value="${estEsc(dec.note || '')}">
+      <div style="margin-top:8px;display:flex;gap:8px;"><button class="btn btn-sm ${dec.decision === 'return' ? 'btn-danger' : 'btn-primary'}" data-est-dec-send="1">${dec.decision === 'return' ? '✗ Reject' : '✓ Approve'}</button><button class="btn btn-sm" data-est-act="dec-cancel">Cancel</button></div></div>` : ''}`;
 }
 
+// ---- Estimates (work packages)
+function estEstRef(id) { const e = (estData.estimates || []).find(x => x.id === id); return e ? e.ref : ''; }
+function estEstimateListHTML() {
+  const list = estFilter(estData.estimates || [], ['ref', 'title', 'contractor', 'project', 'description']);
+  if (!list.length) return `<div class="empty">No estimate yet.${estMe().canEdit ? ' Tap “+ New estimate” — attach the HighRise document and the estimate Excel, then send it to the project heads.' : ''}</div>`;
+  const s = estState();
+  return `<div class="est-list">${list.map(e => {
+    const open = s.open === `estimate:${e.id}`;
+    return `<div class="est-item ${open ? 'open' : ''}">
+      <button type="button" class="est-row" data-est-open="estimate:${e.id}">
+        <span class="est-row-main"><b>${estEsc(e.title)}</b> <span class="mono small muted">${estEsc(e.ref)}</span>
+          <span class="small muted">${estEsc([e.project, e.contractor].filter(Boolean).join(' · '))}${e.jmrCount ? ` · ${e.jmrApproved}/${e.jmrCount} JMR approved` : ''}${e.reconCount ? ` · ${e.reconApproved}/${e.reconCount} reconciliation` : ''}</span></span>
+        ${estMyTurn(e) ? '<span class="bud-chip warn">Your approval</span>' : ''}
+        ${estStageChip(e)}
+      </button>
+      ${open ? estEstimateDetailHTML(e) : ''}
+    </div>`;
+  }).join('')}</div>`;
+}
+function estEstimateDetailHTML(e) {
+  const m = estMe();
+  const js = estData.jmr.filter(j => j.estimate_id === e.id), rs = estData.recon.filter(r => r.estimate_id === e.id);
+  const steps = [['Estimate', e.status === 'approved' ? 'done' : e.status === 'submitted' ? 'now' : e.status === 'returned' ? 'bad' : 'now'],
+    ['JMR', e.stage === 'jmr' ? 'now' : ['reconciliation', 'completed'].includes(e.stage) ? 'done' : ''],
+    ['Reconciliation', e.stage === 'reconciliation' ? 'now' : e.stage === 'completed' ? 'done' : ''], ['Completed', e.stage === 'completed' ? 'done' : '']];
+  return `<div class="est-detail">
+    <div class="est-steps">${steps.map(([l, c]) => `<span class="est-step ${c}">${c === 'done' ? '✓ ' : c === 'bad' ? '✗ ' : ''}${l}</span>`).join('')}</div>
+    <div class="dlv-grid" style="margin-top:8px;">${[['Project', e.project], ['Contractor', e.contractor], ['Approvers', estHeadNames(e.project)], ['Written by', `${e.created_by_name || e.created_by} · ${estDate(e.created_at)}`],
+      ['Approved', e.approved_at ? estDate(e.approved_at) : ''], ['JMR approved', e.jmrCount ? `${e.jmrApproved} of ${e.jmrCount}${e.jmrQty ? ` · ${estNum(e.jmrQty)} total` : ''}` : '']].filter(r => r[1]).map(r => `<div class="dlv-kv"><span>${r[0]}</span><b>${estEsc(r[1])}</b></div>`).join('')}</div>
+    ${e.description ? `<div class="doc-note" style="margin-top:8px;">${estEsc(e.description)}</div>` : ''}
+    ${estFilesHTML(e, 'estimate')}
+    ${e.status === 'approved' ? `<div class="dlv-section" style="margin-top:12px;">JMRs ${e.stage === 'jmr' && m.canEdit ? `<button class="btn btn-sm btn-primary" data-est-new-jmr-for="${e.id}">+ New JMR for ${estEsc(e.ref)}</button>` : ''}</div>
+      ${js.length ? `<div class="est-mini">${js.map(j => `<button type="button" class="est-mini-row" data-est-goto="jmr:${j.id}"><span>${estEsc(j.ref)}${j.ra_bill_no ? ` · RA ${estEsc(j.ra_bill_no)}` : ''}${j.is_final ? ' · <b>FINAL</b>' : ''}</span><span>${estNum(j.total_qty)} ${estEsc(j.unit)}</span>${estChip(j.status)}</button>`).join('')}</div>` : `<div class="small muted">No JMR yet.${e.stage === 'jmr' ? ' Record the measurements; tick “Final JMR” on the last one.' : ''}</div>`}
+      ${['reconciliation', 'completed'].includes(e.stage) ? `<div class="dlv-section" style="margin-top:12px;">Reconciliation report ${m.canEdit ? `<button class="btn btn-sm btn-primary" data-est-new-recon-for="${e.id}">+ Reconciliation for ${estEsc(e.ref)}</button>` : ''}</div>
+        ${rs.length ? `<div class="est-mini">${rs.map(r => `<button type="button" class="est-mini-row" data-est-goto="recon:${r.id}"><span>${estEsc(r.ref)} · ${estEsc(r.material)}</span><span>${r.calc.excess > 0 ? `Excess ${estNum(r.calc.excess)} ${estEsc(r.unit)}` : 'Within allowance'}</span>${estChip(r.status)}</button>`).join('')}</div>` : '<div class="notice dlv-warn">📋 Final JMR approved — the reconciliation report is due.</div>'}` : ''}` : ''}
+    ${estRemarksHTML(e, 'estimate')}
+    ${estActionsHTML(e, 'estimate')}
+  </div>`;
+}
+function estEstimateFormHTML(f) {
+  const inp = (k, label, ph = '') => `<div class="col"><label for="esf-${k}">${label}</label><input type="text" id="esf-${k}" data-esf="${k}" value="${estEsc(f[k] || '')}" placeholder="${estEsc(ph)}"></div>`;
+  const names = (list) => (list || []).map(x => estEsc(x.name)).join(', ');
+  return `<div class="card est-form" id="est-form">
+    <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">${f.id ? `Edit estimate ${estEsc(f.ref)}` : 'New estimate'} <span class="small muted">— work package for approval</span></div><button class="btn btn-sm" data-est-act="form-cancel">Cancel</button></div>
+    <div class="row">
+      <div class="col"><label for="esf-project">Project *</label><select id="esf-project" data-esf="project"><option value="">— Pick —</option>${estData.projects.map(p => `<option ${f.project === p ? 'selected' : ''}>${estEsc(p)}</option>`).join('')}</select></div>
+      ${inp('title', 'Work item / package *', 'e.g. Block work 150 mm — Tower B')}
+    </div>
+    <div class="row">${inp('contractor', 'Contractor', 'e.g. Shree Builders')}<div class="col"></div></div>
+    ${f.project ? `<div class="small muted">Goes for approval to <b>${estEsc(estHeadNames(f.project))}</b>${(((estData.heads || {})[f.project]) || []).length > 1 ? ' — both must approve' : ''} (Admin can approve for them).</div>` : ''}
+    <label for="esf-description">Description / scope</label><textarea id="esf-description" data-esf="description" placeholder="Scope, floors, specification, basis of rates…">${estEsc(f.description || '')}</textarea>
+    <div class="est-src ${(f.highrise || []).length || f.hasHighrise ? '' : 'missing'}" style="margin-top:10px;"><b>🏗 HighRise document *</b> <span class="small muted">— required</span><br>
+      <label class="btn btn-sm" style="margin-top:6px;">📎 Choose HighRise file<input type="file" id="esf-highrise" multiple hidden></label>
+      ${(f.highrise || []).length ? `<span class="small">${names(f.highrise)}</span>` : f.hasHighrise ? '<span class="small muted">Already attached — add a revised one if it changed.</span>' : ''}</div>
+    <div class="est-src ${(f.excel || []).length || f.hasExcel ? '' : 'missing'}" style="margin-top:8px;"><b>📊 Estimate Excel *</b> <span class="small muted">— required, separately (.xlsx / .xls / .csv)</span><br>
+      <label class="btn btn-sm" style="margin-top:6px;">📎 Choose Excel file<input type="file" id="esf-excel" accept=".xlsx,.xls,.xlsm,.csv" multiple hidden></label>
+      ${(f.excel || []).length ? `<span class="small">${names(f.excel)}</span>` : f.hasExcel ? '<span class="small muted">Already attached — add a revised one if it changed.</span>' : ''}</div>
+    <label class="btn btn-sm" style="margin-top:8px;">📎 Other attachments (drawings, quotations)<input type="file" id="esf-files" accept="image/*,application/pdf,.pdf,.xlsx,.xls,.doc,.docx" multiple hidden></label>
+    ${(f.files || []).length ? `<div class="small muted">${names(f.files)}</div>` : ''}
+    <label for="est-remarks">Remarks for the approvers <span class="muted small">(sent with it)</span></label><textarea id="est-remarks" placeholder="e.g. Rates as per HighRise revision 2">${estEsc(f.remarks || '')}</textarea>
+    ${f.err ? `<div class="err">${estEsc(f.err)}</div>` : ''}
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-sm" data-est-save="draft" ${f.saving ? 'disabled' : ''}>💾 Save draft</button>
+      <button class="btn btn-primary btn-sm" data-est-save="submit" ${f.saving ? 'disabled' : ''}>${f.saving ? 'Saving…' : '📤 Save & send to the project heads'}</button>
+    </div>
+  </div>`;
+}
 // ---- JMR list / detail
 function estJmrListHTML() {
   const list = estFilter(estData.jmr, ['ref', 'work_item', 'material', 'contractor', 'location', 'ra_bill_no', 'project']);
@@ -192,7 +292,7 @@ function estJmrListHTML() {
     return `<div class="est-item ${open ? 'open' : ''}">
       <button type="button" class="est-row" data-est-open="jmr:${j.id}">
         <span class="est-row-main"><b>${estEsc(j.work_item)}</b> <span class="mono small muted">${estEsc(j.ref)}</span>
-          <span class="small muted">${estEsc([j.project, j.location, j.contractor, j.material ? `Material: ${j.material}` : '', j.ra_bill_no ? `RA ${j.ra_bill_no}` : ''].filter(Boolean).join(' · '))}</span></span>
+          <span class="small muted">${estEsc([estEstRef(j.estimate_id), j.project, j.location, j.contractor, j.material ? `Material: ${j.material}` : '', j.ra_bill_no ? `RA ${j.ra_bill_no}` : ''].filter(Boolean).join(' · '))}${j.is_final ? ' · <b>FINAL JMR</b>' : ''}</span></span>
         <span class="est-row-num"><b>${estNum(j.total_qty)} ${estEsc(j.unit)}</b>${estHasLines(j) ? `<span class="small muted">${j.lines.length} line${j.lines.length === 1 ? '' : 's'}</span>` : ''}</span>
         ${estChip(j.status)}
       </button>
@@ -239,7 +339,7 @@ function estImportHTML(im) {
       ${r.warnings.length ? `<div class="notice dlv-warn" style="margin-top:8px;">⚠ ${r.warnings.length} row${r.warnings.length > 1 ? 's' : ''} to check:<br>${r.warnings.slice(0, 8).map(estEsc).join('<br>')}${r.warnings.length > 8 ? `<br>… and ${r.warnings.length - 8} more` : ''}</div>` : ''}
       <div class="dlv-section">For all of them <span class="muted small">— details in the sheet are used where given</span></div>
       <div class="row">
-        <div class="col"><label for="imp-project">Project *</label><select id="imp-project"><option value="">— Pick —</option>${estData.projects.map(p => `<option ${im.project === p ? 'selected' : ''}>${estEsc(p)}</option>`).join('')}</select></div>
+        <div class="col"><label for="imp-estimate">Approved estimate *</label><select id="imp-estimate"><option value="">— Pick the estimate —</option>${(estData.estimates || []).filter(e => e.status === 'approved' && e.stage === 'jmr').map(e => `<option value="${e.id}" ${Number(im.estimate_id) === e.id ? 'selected' : ''}>${estEsc(e.ref)} — ${estEsc(e.title)} (${estEsc(e.project)})</option>`).join('')}</select></div>
         <div class="col"><label for="imp-contractor">Contractor</label><input type="text" id="imp-contractor" value="${estEsc(im.contractor || '')}" list="ejf-contractors"></div>
         <div class="col"><label for="imp-location">Location</label><input type="text" id="imp-location" value="${estEsc(im.location || '')}"></div>
       </div>
@@ -274,10 +374,14 @@ function estJmrFormHTML(f) {
   const inp = (k, label, ph = '', type = 'text', extra = '') => `<div class="col"><label for="ejf-${k}">${label}</label><input type="${type}" id="ejf-${k}" data-ejf="${k}" value="${estEsc(f[k] == null ? '' : f[k])}" placeholder="${estEsc(ph)}" ${extra}></div>`;
   return `<div class="card est-form" id="est-form">
     <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">${f.id ? `Edit JMR ${estEsc(f.ref)}` : 'New JMR'} <span class="small muted">— Joint Measurement Record</span></div><button class="btn btn-sm" data-est-act="form-cancel">Cancel</button></div>
-    <div class="row">
-      <div class="col"><label for="ejf-project">Project *</label><select id="ejf-project" data-ejf="project"><option value="">— Pick —</option>${estData.projects.map(p => `<option ${f.project === p ? 'selected' : ''}>${estEsc(p)}</option>`).join('')}</select></div>
+    ${(() => {
+      const openEst = (estData.estimates || []).filter(e => (e.status === 'approved' && e.stage === 'jmr') || e.id === Number(f.estimate_id));
+      return `<div class="row">
+      <div class="col"><label for="ejf-estimate_id">Approved estimate *</label><select id="ejf-estimate_id" ${f.id ? 'disabled' : ''}><option value="">— Pick the estimate —</option>${openEst.map(e => `<option value="${e.id}" ${Number(f.estimate_id) === e.id ? 'selected' : ''}>${estEsc(e.ref)} — ${estEsc(e.title)} (${estEsc(e.project)})</option>`).join('')}</select>
+        ${!openEst.length ? '<div class="small muted">No estimate is open for JMR yet — an estimate opens for JMR when the project heads approve it.</div>' : ''}</div>
       ${inp('location', 'Location (tower / floor / area)', 'e.g. Tower B, 4th floor')}
-    </div>
+    </div>`;
+    })()}
     <div class="row">${inp('work_item', 'Work item *', 'e.g. Block work 150 mm', 'text', 'list="ejf-items"')}${inp('material', 'Material', 'e.g. AAC blocks 150 mm', 'text', 'list="ejf-materials"')}
       <div class="col"><label for="ejf-unit">Unit *</label><select id="ejf-unit" data-ejf="unit"><option value="">—</option>${EST_UNITS.map(u => `<option ${f.unit === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div></div>
     <datalist id="ejf-materials">${[...new Set(['Cement OPC 53', 'TMT Steel', 'AAC blocks', 'Bricks', 'Sand', 'Aggregate 20 mm', 'RMC M25', 'Tiles', ...estData.jmr.map(j => j.material), ...estData.recon.map(r => r.material)].filter(Boolean))].map(w => `<option value="${estEsc(w)}">`).join('')}</datalist>
@@ -286,6 +390,7 @@ function estJmrFormHTML(f) {
     <datalist id="ejf-contractors">${[...new Set([...estData.jmr.map(j => j.contractor), ...estData.recon.map(r => r.contractor)].filter(Boolean))].map(w => `<option value="${estEsc(w)}">`).join('')}</datalist>
     <div class="row">${inp('measured_on', 'Measured on', '', 'date')}${inp('period_from', 'Work period from', '', 'date')}${inp('period_to', 'to', '', 'date')}</div>
     <div class="row">${inp('client_rep', 'Our representative', 'e.g. Site engineer name')}${inp('contractor_rep', "Contractor's representative", 'Name')}</div>
+    <label class="est-final"><input type="checkbox" id="ejf-final" ${f.is_final ? 'checked' : ''}> <b>Final JMR</b> — all measurement for this estimate is done. When it is approved, JMR closes and the reconciliation report is asked for.</label>
     <div class="row"><div class="col"><label for="ejf-qty">Quantity this JMR *${f.unit ? ` (${estEsc(f.unit)})` : ''}</label><input type="number" step="any" min="0" inputmode="decimal" id="ejf-qty" data-ejf="qty" value="${estEsc(f.qty == null ? '' : f.qty)}" placeholder="e.g. 40.4"></div><div class="col"></div></div>
     ${f.origLines && f.origLines.length > 1 ? '<div class="small muted">This JMR came with measurement lines from Excel — they are kept unless you change the quantity.</div>' : ''}
     <div class="dlv-money-tiles bud-tiles" style="margin-top:10px;" id="ej-tiles">
@@ -294,11 +399,8 @@ function estJmrFormHTML(f) {
       <div class="dlv-tile"><span>Cumulative</span><b>${estNum(estR3(prev + total))} ${estEsc(f.unit || '')}</b></div>
     </div>
     <label for="ejf-notes">Notes</label><textarea id="ejf-notes" data-ejf="notes" placeholder="Notes kept on the JMR">${estEsc(f.notes || '')}</textarea>
-    <label for="est-remarks">Remarks for the approver <span class="muted small">(sent with it when you send it for approval)</span></label><textarea id="est-remarks" placeholder="e.g. Measured with the contractor's engineer; lift wall height to be confirmed">${estEsc(f.remarks || '')}</textarea>
-    <div class="est-src ${(f.sourceFiles || []).length || f.hasSource ? '' : 'missing'}" style="margin-top:10px;"><b>📊 HighRise / estimation document *</b> <span class="small muted">— Excel, PDF or any format; required to send for approval</span><br>
-      <label class="btn btn-sm" style="margin-top:6px;">📎 Choose file<input type="file" id="est-src-files" multiple hidden></label>
-      ${(f.sourceFiles || []).length ? `<span class="small">${f.sourceFiles.map(x => estEsc(x.name)).join(', ')}</span>` : f.hasSource ? '<span class="small muted">Already attached — add another if it changed.</span>' : ''}</div>
-    <label class="btn btn-sm" style="margin-top:8px;">📎 Other attachments (sketch, photos, signed sheet)<input type="file" id="ejf-files" accept="image/*,application/pdf,.pdf,.xlsx,.xls" multiple hidden></label>
+    <label for="est-remarks">Remarks for the approvers <span class="muted small">(sent with it when you send it for approval)</span></label><textarea id="est-remarks" placeholder="e.g. Measured with the contractor's engineer; lift wall height to be confirmed">${estEsc(f.remarks || '')}</textarea>
+    <label class="btn btn-sm" style="margin-top:8px;">📎 Attachments (measurement sheet, sketch, photos, signed sheet)<input type="file" id="ejf-files" accept="image/*,application/pdf,.pdf,.xlsx,.xls" multiple hidden></label>
     ${(f.files || []).length ? `<div class="small muted">${f.files.map(x => estEsc(x.name)).join(', ')}</div>` : ''}
     ${f.err ? `<div class="err">${estEsc(f.err)}</div>` : ''}
     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
@@ -328,7 +430,7 @@ function estReconListHTML() {
     return `<div class="est-item ${open ? 'open' : ''}">
       <button type="button" class="est-row" data-est-open="recon:${r.id}">
         <span class="est-row-main"><b>${estEsc(r.material)}</b> <span class="mono small muted">${estEsc(r.ref)}</span>
-          <span class="small muted">${estEsc([r.project, r.contractor, r.work_item, [estDate(r.period_from), estDate(r.period_to)].filter(Boolean).join(' – ')].filter(Boolean).join(' · '))}</span></span>
+          <span class="small muted">${estEsc([estEstRef(r.estimate_id), r.project, r.contractor, r.work_item, [estDate(r.period_from), estDate(r.period_to)].filter(Boolean).join(' – ')].filter(Boolean).join(' · '))}</span></span>
         <span class="est-row-num"><b class="${c.excess > 0 ? 'dlv-over' : ''}">${c.excess > 0 ? `Excess ${estNum(c.excess)} ${estEsc(r.unit)}` : c.saving > 0 ? `Saving ${estNum(c.saving)} ${estEsc(r.unit)}` : 'Within allowance'}</b><span class="small muted">${c.excess > 0 && c.recovery != null ? `Recovery ${estInr(c.recovery)}` : `Used ${estNum(c.actual)} ${estEsc(r.unit)}`}</span></span>
         ${estChip(r.status)}
       </button>
@@ -351,7 +453,8 @@ function estReconFormHTML(f) {
   return `<div class="card est-form" id="est-form">
     <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">${f.id ? `Edit reconciliation ${estEsc(f.ref)}` : 'New material reconciliation'}</div><button class="btn btn-sm" data-est-act="form-cancel">Cancel</button></div>
     <div class="row">
-      <div class="col"><label for="erf-project">Project *</label><select id="erf-project" data-erf="project"><option value="">— Pick —</option>${estData.projects.map(p => `<option ${f.project === p ? 'selected' : ''}>${estEsc(p)}</option>`).join('')}</select></div>
+      ${(() => { const due = (estData.estimates || []).filter(e => ['reconciliation', 'completed'].includes(e.stage) || e.id === Number(f.estimate_id));
+        return `<div class="col"><label for="erf-estimate_id">Estimate *</label><select id="erf-estimate_id" ${f.id ? 'disabled' : ''}><option value="">— Pick the estimate —</option>${due.map(e => `<option value="${e.id}" ${Number(f.estimate_id) === e.id ? 'selected' : ''}>${estEsc(e.ref)} — ${estEsc(e.title)} (${estEsc(e.project)})</option>`).join('')}</select>${!due.length ? '<div class="small muted">The reconciliation report opens after the final JMR of an estimate is approved.</div>' : ''}</div>`; })()}
       ${inp('material', 'Material *', 'e.g. Cement OPC 53', 'text', 'list="erf-materials"')}
       <div class="col"><label for="erf-unit">Unit *</label><select id="erf-unit" data-erf="unit"><option value="">—</option>${EST_UNITS.map(u => `<option ${f.unit === u ? 'selected' : ''}>${u}</option>`).join('')}</select></div>
     </div>
@@ -367,10 +470,7 @@ function estReconFormHTML(f) {
     ${f.work_item ? `<div class="small muted">Approved JMR quantity for “${estEsc(f.work_item)}”${f.contractor ? ` (${estEsc(f.contractor)})` : ''}: <b>${estNum(estR3(estData.jmr.filter(j => j.status === 'approved' && j.project === f.project && String(j.work_item).toLowerCase() === String(f.work_item).toLowerCase() && (!f.contractor || String(j.contractor || '').toLowerCase() === String(f.contractor).toLowerCase())).reduce((a, j) => a + j.total_qty, 0)))}</b> <button type="button" class="linkish" data-est-act="use-jmr-qty">Use it as work done</button></div>` : ''}
     <div id="er-calc">${estReconCalcHTML(c, f)}</div>
     <label for="erf-notes">Notes</label><textarea id="erf-notes" data-erf="notes">${estEsc(f.notes || '')}</textarea>
-    <label for="est-remarks">Remarks for the approver <span class="muted small">(sent with it when you send it for approval)</span></label><textarea id="est-remarks" placeholder="e.g. Store register checked; 10 bags damaged in rain">${estEsc(f.remarks || '')}</textarea>
-    <div class="est-src ${(f.sourceFiles || []).length || f.hasSource ? '' : 'missing'}" style="margin-top:10px;"><b>📊 HighRise / estimation document *</b> <span class="small muted">— Excel, PDF or any format; required to send for approval</span><br>
-      <label class="btn btn-sm" style="margin-top:6px;">📎 Choose file<input type="file" id="est-src-files" multiple hidden></label>
-      ${(f.sourceFiles || []).length ? `<span class="small">${f.sourceFiles.map(x => estEsc(x.name)).join(', ')}</span>` : f.hasSource ? '<span class="small muted">Already attached — add another if it changed.</span>' : ''}</div>
+    <label for="est-remarks">Remarks for the approvers <span class="muted small">(sent with it when you send it for approval)</span></label><textarea id="est-remarks" placeholder="e.g. Store register checked; 10 bags damaged in rain">${estEsc(f.remarks || '')}</textarea>
     <label class="btn btn-sm" style="margin-top:8px;">📎 Other attachments (stock register, issue slips)<input type="file" id="erf-files" accept="image/*,application/pdf,.pdf,.xlsx,.xls" multiple hidden></label>
     ${(f.files || []).length ? `<div class="small muted">${f.files.map(x => estEsc(x.name)).join(', ')}</div>` : ''}
     ${f.err ? `<div class="err">${estEsc(f.err)}</div>` : ''}
@@ -493,12 +593,13 @@ function bindEstimationView() {
   on('[data-est-print-recon]', b => { const r = estData.recon.find(x => x.id === Number(b.dataset.estPrintRecon)); if (r) estPrintRecon(r); });
   // workflow
   const call = async (b, url, body, ok) => { if (b.disabled) return; b.disabled = true; try { await api(url, { method: 'POST', body: JSON.stringify(body || {}) }); setBanner(ok, 'ok'); s.decide = null; await estReload(); } catch (e) { b.disabled = false; setBanner(e.message); render(); } };
-  on('[data-est-submit]', b => { const [t, id] = b.dataset.estSubmit.split(':'); const remarks = s.send && s.send.id === Number(id) ? s.send.remarks : ''; s.send = null; call(b, `/api/estimation/${t}/${id}/submit`, { remarks }, 'Sent for approval to Dnyaneshwar Kolekar / Admin.'); });
+  on('[data-est-submit]', b => { const [t, id] = b.dataset.estSubmit.split(':'); const x = (t === 'estimate' ? estData.estimates : t === 'jmr' ? estData.jmr : estData.recon).find(y => y.id === Number(id)); const remarks = s.send && s.send.id === Number(id) ? s.send.remarks : ''; s.send = null; call(b, `/api/estimation/${t}/${id}/submit`, { remarks }, `Sent for approval to ${x ? estHeadNames(x.project) : 'the project heads'}.`); });
+  on('[data-est-goto]', b => { const [t] = b.dataset.estGoto.split(':'); s.view = t; s.open = b.dataset.estGoto; s.project = ''; s.status = ''; s.q = ''; render(); });
   on('[data-est-approve]', b => { const [t, id] = b.dataset.estApprove.split(':'); s.decide = { type: t, id: Number(id), decision: 'approve', note: '' }; render(); });
   on('[data-est-return]', b => { const [t, id] = b.dataset.estReturn.split(':'); s.decide = { type: t, id: Number(id), decision: 'return', note: '' }; render(); const n = document.getElementById('est-dec-note'); if (n) n.focus(); });
   on('[data-est-act="dec-cancel"]', () => { s.decide = null; render(); });
   const dn = document.getElementById('est-dec-note'); if (dn && s.decide) dn.oninput = () => { s.decide.note = dn.value; };
-  on('[data-est-dec-send]', b => { const d = s.decide; if (!d) return; call(b, `/api/estimation/${d.type}/${d.id}/decide`, { decision: d.decision, note: d.note }, d.decision === 'approve' ? 'Approved ✓' : 'Returned for correction.'); });
+  on('[data-est-dec-send]', b => { const d = s.decide; if (!d) return; call(b, `/api/estimation/${d.type}/${d.id}/decide`, { decision: d.decision, note: d.note }, d.decision === 'approve' ? 'Approved ✓' : 'Rejected — sent back with your reason.'); });
   on('[data-est-del]', b => {
     if (b.dataset.armed !== '1') { b.dataset.armed = '1'; b.textContent = 'Tap again to delete'; return; }
     const [t, id] = b.dataset.estDel.split(':'); call(b, `/api/estimation/${t}/${id}/delete`, {}, 'Deleted.');
@@ -526,12 +627,12 @@ function bindEstimationView() {
       });
     };
     const bindIn = (id, k) => { const el = document.getElementById(id); if (el) { el.oninput = () => { im[k] = el.value; }; el.onchange = () => { im[k] = el.value; }; } };
-    bindIn('imp-project', 'project'); bindIn('imp-contractor', 'contractor'); bindIn('imp-location', 'location');
+    bindIn('imp-estimate', 'estimate_id'); bindIn('imp-contractor', 'contractor'); bindIn('imp-location', 'location');
     const src = document.getElementById('imp-source'); if (src) src.onchange = () => { im.asSource = src.checked; };
     document.querySelectorAll('[data-imp-pick]').forEach(el => el.onchange = () => { im.picked[el.dataset.impPick] = el.checked; render(); });
     document.querySelectorAll('[data-imp-wi]').forEach(el => el.oninput = () => { im.result.jmrs[Number(el.dataset.impWi)].work_item = el.value; });
     document.querySelectorAll('[data-imp-unit]').forEach(el => el.onchange = () => { im.result.jmrs[Number(el.dataset.impUnit)].unit = el.value; });
-    const bodyFor = j => ({ project: im.project, location: j.location || im.location || '', work_item: j.work_item, material: j.material || im.material || '', contractor: j.contractor || im.contractor || '', unit: j.unit,
+    const bodyFor = j => ({ estimate_id: im.estimate_id, project: ((estData.estimates || []).find(e => e.id === Number(im.estimate_id)) || {}).project || '', location: j.location || im.location || '', work_item: j.work_item, material: j.material || im.material || '', contractor: j.contractor || im.contractor || '', unit: j.unit,
       measured_on: j.measured_on || '', ra_bill_no: j.ra_bill_no || '', lines: j.lines });
     const fileObj = () => ({ name: im.fileName, data: im.fileData });
     on('[data-est-act="import-open"]', () => {
@@ -542,7 +643,7 @@ function bindEstimationView() {
     });
     on('[data-est-act="import-create"]', async () => {
       if (im.creating) return;
-      if (!im.project) { im.err = 'Pick the project.'; render(); return; }
+      if (!im.estimate_id) { im.err = 'Pick the approved estimate these JMRs belong to.'; render(); return; }
       const list = im.result.jmrs.filter((_, i) => im.picked[i]);
       if (!list.length) { im.err = 'Tick at least one JMR.'; render(); return; }
       const noUnit = list.find(j => !j.unit); if (noUnit) { im.err = `Pick the unit for “${noUnit.work_item}”.`; render(); return; }
@@ -561,19 +662,42 @@ function bindEstimationView() {
   }
   // forms
   const today = typeof istDayKey === 'function' ? istDayKey(new Date().toISOString()) : '';
-  on('[data-est-act="new-jmr"]', () => { s.form = { type: 'jmr', project: s.project || '', unit: '', measured_on: today, qty: '', files: [] }; render(); window.scrollTo(0, 0); });
-  on('[data-est-act="new-recon"]', () => { s.form = { type: 'recon', project: s.project || '', unit: '', files: [] }; render(); window.scrollTo(0, 0); });
+  const fromEst = (id) => { const e = (estData.estimates || []).find(x => x.id === Number(id)); return e ? { estimate_id: e.id, project: e.project, work_item: e.title, contractor: e.contractor || '' } : {}; };
+  on('[data-est-act="new-estimate"]', () => { s.form = { type: 'estimate', project: s.project || '', highrise: [], excel: [], files: [] }; s.imp = null; render(); window.scrollTo(0, 0); });
+  on('[data-est-act="new-jmr"]', () => { s.form = { type: 'jmr', project: '', unit: '', measured_on: today, qty: '', files: [] }; render(); window.scrollTo(0, 0); });
+  on('[data-est-act="new-recon"]', () => { s.form = { type: 'recon', project: '', unit: '', files: [] }; render(); window.scrollTo(0, 0); });
+  on('[data-est-new-jmr-for]', b => { s.form = { type: 'jmr', unit: '', measured_on: today, qty: '', files: [], ...fromEst(b.dataset.estNewJmrFor) }; render(); window.scrollTo(0, 0); });
+  on('[data-est-new-recon-for]', b => { s.form = { type: 'recon', unit: '', files: [], ...fromEst(b.dataset.estNewReconFor) }; render(); window.scrollTo(0, 0); });
   on('[data-est-act="form-cancel"]', () => { s.form = null; render(); });
   on('[data-est-edit]', b => {
     const [t, id] = b.dataset.estEdit.split(':');
-    const x = (t === 'jmr' ? estData.jmr : estData.recon).find(y => y.id === Number(id)); if (!x) return;
+    const x = (t === 'estimate' ? estData.estimates : t === 'jmr' ? estData.jmr : estData.recon).find(y => y.id === Number(id)); if (!x) return;
     const blank = v => v == null ? '' : v;
+    if (t === 'estimate') {
+      s.form = { type: 'estimate', id: x.id, ref: x.ref, project: x.project, title: x.title, contractor: blank(x.contractor), description: blank(x.description), highrise: [], excel: [], files: [],
+        hasHighrise: (x.files || []).some(y => y.kind === 'highrise'), hasExcel: (x.files || []).some(y => y.kind === 'excel') };
+      render(); window.scrollTo(0, 0); return;
+    }
     s.form = t === 'jmr' ? { type: 'jmr', ...Object.fromEntries(Object.entries(x).map(([k, v]) => [k, blank(v)])), files: [], qty: x.total_qty, origTotal: x.total_qty, origLines: x.lines.map(l => ({ description: blank(l.description), nos: blank(l.nos), length: blank(l.length), breadth: blank(l.breadth), height: blank(l.height), qty: l.manual ? Math.abs(l.qty) : '', manual: l.manual, deduct: l.deduct, remarks: blank(l.remarks) })) }
       : { type: 'recon', ...Object.fromEntries(Object.entries(x).filter(([k]) => k !== 'calc').map(([k, v]) => [k, blank(v)])), files: [] };
     s.form.hasSource = (x.files || []).some(y => y.kind === 'source'); s.form.sourceFiles = [];
     render(); window.scrollTo(0, 0);
   });
   const f = s.form;
+  const pickFiles = (input, cb) => { const list = Array.from(input.files || []).slice(0, 10); const out = []; let left = list.length; if (!left) return; list.forEach(file => readAnyFile(file, data => { if (data) out.push({ name: file.name, data }); if (--left === 0) cb(out); })); };
+  if (f && f.type === 'estimate') {
+    document.querySelectorAll('[data-esf]').forEach(el => { const k = el.dataset.esf; el.oninput = () => { f[k] = el.value; }; el.onchange = () => { f[k] = el.value; if (k === 'project') render(); }; });
+    const hr = document.getElementById('esf-highrise'); if (hr) hr.onchange = () => pickFiles(hr, out => { f.highrise = out; f.err = ''; render(); });
+    const xl = document.getElementById('esf-excel'); if (xl) xl.onchange = () => pickFiles(xl, out => {
+      const bad = out.find(x => !/\.(xlsx|xlsm|xls|csv)$/i.test(x.name)); if (bad) { f.err = `“${bad.name}” is not an Excel file — choose the .xlsx / .xls estimate sheet.`; render(); return; }
+      f.excel = out; f.err = ''; render(); });
+    const of = document.getElementById('esf-files'); if (of) of.onchange = () => pickFiles(of, out => { f.files = out; render(); });
+  }
+  if (f && (f.type === 'jmr' || f.type === 'recon')) {
+    const es = document.getElementById(f.type === 'jmr' ? 'ejf-estimate_id' : 'erf-estimate_id');
+    if (es) es.onchange = () => { Object.assign(f, fromEst(es.value)); if (!es.value) f.estimate_id = ''; render(); };
+    const fin = document.getElementById('ejf-final'); if (fin) fin.onchange = () => { f.is_final = fin.checked; };
+  }
   if (f && f.type === 'jmr') {
     const refreshTiles = () => { const el = document.getElementById('ej-tiles'); if (!el) return; const tmp = document.createElement('div'); tmp.innerHTML = estJmrFormHTML(f); const n = tmp.querySelector('#ej-tiles'); if (n) el.innerHTML = n.innerHTML; };
     document.querySelectorAll('[data-ejf]').forEach(el => { const k = el.dataset.ejf; el.oninput = () => { f[k] = el.value; if (k === 'qty') refreshTiles(); }; el.onchange = () => { f[k] = el.value; if (['project', 'unit', 'work_item', 'contractor'].includes(k)) { render(); const n = document.getElementById(el.id); if (n && n.focus && el.tagName === 'INPUT') n.focus(); } }; });
@@ -595,12 +719,19 @@ function bindEstimationView() {
     on('[data-est-save]', async b => {
       if (f.saving) return;
       const submit = b.dataset.estSave === 'submit';
+      if (f.type !== 'estimate' && !f.estimate_id) { f.err = 'Pick the estimate this is for.'; render(); return; }
       if (f.type === 'jmr' && !(Number(f.qty) > 0)) { f.err = 'Enter the quantity for this JMR.'; render(); return; }
-      if (submit && !(f.sourceFiles || []).length && !f.hasSource) { f.err = 'Attach the HighRise / estimation document (Excel, PDF or any format) before sending it for approval.'; render(); return; }
-      const body = f.type === 'jmr'
-        ? { project: f.project, location: f.location, work_item: f.work_item, material: f.material, contractor: f.contractor, unit: f.unit, measured_on: f.measured_on, period_from: f.period_from, period_to: f.period_to,
+      if (f.type === 'estimate') {
+        if (!f.project || !String(f.title || '').trim()) { f.err = 'Pick the project and write the work item / package.'; render(); return; }
+        if (submit && !(f.highrise || []).length && !f.hasHighrise) { f.err = 'Attach the HighRise document — it is required.'; render(); return; }
+        if (submit && !(f.excel || []).length && !f.hasExcel) { f.err = 'Attach the estimate Excel sheet separately — it is required.'; render(); return; }
+      }
+      const body = f.type === 'estimate'
+        ? { project: f.project, title: f.title, contractor: f.contractor, description: f.description, highrise_files: f.highrise || [], excel_files: f.excel || [], attachments: f.files, remarks: submit ? (f.remarks || '') : '', submit }
+        : f.type === 'jmr'
+        ? { estimate_id: f.estimate_id, is_final: !!f.is_final, project: f.project, location: f.location, work_item: f.work_item, material: f.material, contractor: f.contractor, unit: f.unit, measured_on: f.measured_on, period_from: f.period_from, period_to: f.period_to,
             ra_bill_no: f.ra_bill_no, client_rep: f.client_rep, contractor_rep: f.contractor_rep, notes: f.notes, lines: estJmrLinesFor(f), attachments: f.files, source_files: f.sourceFiles || [], remarks: submit ? (f.remarks || '') : '', submit }
-        : { ...Object.fromEntries(['project', 'material', 'unit', 'contractor', 'work_item', 'period_from', 'period_to', 'issued', 'returned', 'balance_at_site', 'work_qty', 'work_unit', 'norm', 'wastage_pct', 'rate', 'notes'].map(k => [k, f[k]])), attachments: f.files, source_files: f.sourceFiles || [], remarks: submit ? (f.remarks || '') : '', submit };
+        : { estimate_id: f.estimate_id, ...Object.fromEntries(['project', 'material', 'unit', 'contractor', 'work_item', 'period_from', 'period_to', 'issued', 'returned', 'balance_at_site', 'work_qty', 'work_unit', 'norm', 'wastage_pct', 'rate', 'notes'].map(k => [k, f[k]])), attachments: f.files, source_files: f.sourceFiles || [], remarks: submit ? (f.remarks || '') : '', submit };
       f.saving = true; f.err = ''; render();
       try {
         const r = await api(f.id ? `/api/estimation/${f.type}/${f.id}/update` : `/api/estimation/${f.type}`, { method: 'POST', body: JSON.stringify(body) });

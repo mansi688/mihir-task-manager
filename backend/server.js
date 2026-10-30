@@ -2570,10 +2570,12 @@ app.post('/api/tasks/:id/deadline', auth(ALL_ROLES), async (req, res) => {
   const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
   if (task.status !== 'open') return res.status(400).json({ error: 'Only an open task\'s deadline can be changed.' });
-  const isCreator = task.created_by_username && task.created_by_username === req.user.username;
-  if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can change its deadline.' });
+  // Deadlines are not changed freely: the person on the task requests an extension and the creator reviews it
+  // (/api/tasks/:id/extension-request). Only Admin can change a deadline directly, with a reason.
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Deadlines change through an extension request — the person on the task asks, the task creator reviews it. Only Admin can change it directly.' });
   const deadline = str((req.body || {}).deadline).trim();
   if (!deadline) return res.status(400).json({ error: 'Pick the new deadline.' });
+  if (str((req.body || {}).reason).trim().length < 5) return res.status(400).json({ error: 'Write the reason for changing the deadline (at least 5 characters) — everyone on the task sees it.' });
   if (!parseDeadline(deadline)) return res.status(400).json({ error: 'Deadline is not a valid date.' });
   if (deadline === task.deadline) return res.json({ ok: true, unchanged: true });
   const reason = str((req.body || {}).reason).trim();
@@ -2590,13 +2592,90 @@ app.post('/api/tasks/:id/deadline', auth(ALL_ROLES), async (req, res) => {
   await taskEvent(req, task.id, 'DEADLINE_CHANGED', reason ? `Deadline changed — ${reason}` : 'Deadline changed', { old: task.deadline, new: deadline });
   res.json({ ok: true });
 });
+/* ---- Deadline extension requests ----
+   The person on a task asks for more time (new date + reason). The task's creator reviews it (Admin can too; on a
+   task someone created for themselves, Admin decides). Approve → that person's deadline moves (and the task deadline
+   too when they are the only one on it); reject → stays, with the reason. One open request per person per task. */
+async function extensionDeciders(task, requester) {
+  const admins = (await db.listUsers()).filter(u => u.role === 'admin').map(u => u.username);
+  return task.created_by_username && task.created_by_username !== requester ? [task.created_by_username] : admins;
+}
+const canDecideExtension = (user, task, r) => user.role === 'admin' || (task.created_by_username === user.username && r.username !== user.username);
+app.post('/api/tasks/:id/extension-request', auth(ALL_ROLES), async (req, res) => {
+  const task = await db.getTask(req.params.id);
+  if (!task) return res.status(404).json({ error: 'Task not found.' });
+  if (task.status !== 'open') return res.status(400).json({ error: 'Only an open task can be extended.' });
+  const mine = (await db.listAssignees(task.id)).find(a => a.username === req.user.username);
+  if (!mine) return res.status(403).json({ error: 'Only someone tagged on this task can ask for more time.' });
+  if (mine.decision === 'approve' && mine.completed_at) return res.status(400).json({ error: 'Your part is already completed.' });
+  const deadline = str((req.body || {}).deadline).trim();
+  const reason = str((req.body || {}).reason).trim().slice(0, 500);
+  if (!parseDeadline(deadline)) return res.status(400).json({ error: 'Pick the new date you need.' });
+  if (reason.length < 5) return res.status(400).json({ error: 'Write why you need more time (at least 5 characters).' });
+  const current = mine.individual_deadline || task.deadline || null;
+  if (current && parseDeadline(current) && parseDeadline(deadline) <= parseDeadline(current)) return res.status(400).json({ error: 'The new date must be later than your current deadline.' });
+  if ((await db.pool.query("SELECT 1 FROM deadline_requests WHERE task_id=$1 AND username=$2 AND status='pending'", [task.id, req.user.username])).rows.length) return res.status(400).json({ error: 'You already asked for more time on this task — wait for the decision.' });
+  const r = (await db.pool.query(`INSERT INTO deadline_requests(task_id, username, requested_by_name, current_deadline, requested_deadline, reason, created_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [task.id, req.user.username, req.user.name, current, deadline, reason, new Date().toISOString()])).rows[0];
+  for (const u of await extensionDeciders(task, req.user.username)) {
+    await db.createNotification({ username: u, type: 'extension_requested', task_id: task.id, ref_type: 'extension', ref_id: r.id,
+      message: `${req.user.name} asked for more time on "${task.title}": ${current ? `${current.replace('T', ' ')} → ` : ''}${deadline.replace('T', ' ')}. Reason: ${reason}` });
+  }
+  await taskEvent(req, task.id, 'EXTENSION_REQUESTED', `Asked for more time until ${deadline.replace('T', ' ')} — ${reason}`, { old: current, new: deadline });
+  res.json({ ok: true, id: r.id });
+});
+app.get('/api/extension-requests', auth(ALL_ROLES), async (req, res) => {
+  const admin = req.user.role === 'admin';
+  const r = await db.pool.query(`SELECT d.*, t.title AS task_title, t.project AS task_project, t.deadline AS task_deadline, t.created_by_username AS task_creator
+    FROM deadline_requests d JOIN tasks t ON t.id = d.task_id
+    WHERE (d.status = 'pending' AND t.status = 'open' AND ($1::boolean OR (t.created_by_username = $2 AND d.username <> $2)))
+       OR (d.username = $2 AND (d.status = 'pending' OR d.decided_at >= $3))
+    ORDER BY d.created_at DESC LIMIT 300`, [admin, req.user.username, new Date(Date.now() - 14 * 864e5).toISOString()]);
+  const toDecide = r.rows.filter(x => x.status === 'pending' && canDecideExtension(req.user, { created_by_username: x.task_creator }, x));
+  res.json({ toDecide, mine: r.rows.filter(x => x.username === req.user.username) });
+});
+app.post('/api/extension-requests/:id/decide', auth(ALL_ROLES), async (req, res) => {
+  const r = (await db.pool.query('SELECT * FROM deadline_requests WHERE id=$1', [Number(req.params.id) || 0])).rows[0];
+  if (!r) return res.status(404).json({ error: 'Request not found.' });
+  const task = await db.getTask(r.task_id);
+  if (!task) return res.status(404).json({ error: 'Task not found.' });
+  if (!canDecideExtension(req.user, task, r)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can decide on more time.' });
+  if (r.status !== 'pending') return res.status(409).json({ error: 'This request has already been decided.' });
+  const decision = str((req.body || {}).decision);
+  const note = str((req.body || {}).note).trim().slice(0, 500);
+  if (!['approve', 'reject'].includes(decision)) return res.status(400).json({ error: 'Approve or reject it.' });
+  if (decision === 'reject' && note.length < 5) return res.status(400).json({ error: 'Write why (at least 5 characters) — they will see it.' });
+  const newDeadline = decision === 'approve' ? (str((req.body || {}).deadline).trim() || r.requested_deadline) : null;
+  if (decision === 'approve' && !parseDeadline(newDeadline)) return res.status(400).json({ error: 'Not a valid date.' });
+  const t = new Date().toISOString();
+  const upd = await db.pool.query(`UPDATE deadline_requests SET status=$1, decided_by=$2, decided_by_name=$3, decided_at=$4, decision_note=$5, approved_deadline=$6 WHERE id=$7 AND status='pending'`,
+    [decision === 'approve' ? 'approved' : 'rejected', req.user.username, req.user.name, t, note || null, newDeadline, r.id]);
+  if (!upd.rowCount) return res.status(409).json({ error: 'This request has already been decided.' });
+  if (decision === 'approve') {
+    const assignees = await db.listAssignees(task.id);
+    if (assignees.length === 1 && assignees[0].username === r.username) await db.updateTaskDeadline(task.id, newDeadline);
+    await db.setIndividualDeadline(task.id, r.username, newDeadline);
+  } else db.bumpDataVersion();
+  await db.createNotification({ username: r.username, type: 'extension_decided', task_id: task.id, ref_type: 'extension', ref_id: r.id,
+    message: decision === 'approve' ? `✓ ${req.user.name} gave you more time on "${task.title}" — new deadline ${newDeadline.replace('T', ' ')}.${note ? ` ${note}` : ''}`
+      : `✗ ${req.user.name} did not extend "${task.title}" — the deadline stays ${(r.current_deadline || 'as it was').replace('T', ' ')}. Reason: ${note}` });
+  await taskEvent(req, task.id, decision === 'approve' ? 'EXTENSION_APPROVED' : 'EXTENSION_REJECTED',
+    decision === 'approve' ? `More time given to ${await displayName(r.username)} — until ${newDeadline.replace('T', ' ')}${note ? ` (${note})` : ''}` : `More time refused for ${await displayName(r.username)} — ${note}`,
+    decision === 'approve' ? { old: r.current_deadline, new: newDeadline } : {});
+  res.json({ ok: true, status: decision === 'approve' ? 'approved' : 'rejected', deadline: newDeadline });
+});
+app.post('/api/extension-requests/:id/cancel', auth(ALL_ROLES), async (req, res) => {
+  const r = (await db.pool.query("UPDATE deadline_requests SET status='cancelled', decided_at=$1 WHERE id=$2 AND username=$3 AND status='pending' RETURNING id", [new Date().toISOString(), Number(req.params.id) || 0, req.user.username])).rows[0];
+  if (!r) return res.status(404).json({ error: 'No open request to cancel.' });
+  db.bumpDataVersion();
+  res.json({ ok: true });
+});
 // Sets or clears one person's individual deadline on an existing task — creator/Admin only,
 // same authority level as adding people to a task in the first place.
 app.post('/api/tasks/:id/assignees/:username/deadline', auth(ALL_ROLES), async (req, res) => {
   const task = await db.getTask(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found.' });
-  const isCreator = task.created_by_username && task.created_by_username === req.user.username;
-  if (!(req.user.role === 'admin' || isCreator)) return res.status(403).json({ error: 'Only whoever created this task (or Admin) can set an individual deadline.' });
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Individual deadlines change through an extension request reviewed by the task creator — only Admin can change them directly.' });
   const assignees = await db.listAssignees(task.id);
   if (!assignees.some(a => a.username === req.params.username)) return res.status(404).json({ error: 'That person is not tagged on this task.' });
   const deadline = str((req.body || {}).deadline).trim();

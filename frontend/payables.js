@@ -28,7 +28,7 @@ function apDocTypeOptions(sel, skipBill) { return ((apData && apData.docTypes) |
 function apState() { if (!ui.ap) ui.ap = { tab: 'overdue', q: '', project: '', open: null, form: null, imp: null, act: null }; return ui.ap; }
 function apMe() { return (apData && apData.me) || { canAdd: !!apSummary.canAdd, canPay: !!apSummary.canPay }; }
 function accountsDeptBadge() { return apSummary.canPay ? (apSummary.overdue || 0) + compUrgent().length : (apSummary.questions || 0); }
-function compUrgent() { return ((compData && compData.items) || []).filter(i => i.days_left <= 2); }
+function compUrgent() { return ((compData && compData.items) || []).filter(i => !i.unset && i.days_left <= 2); }
 function apDueChip(b) {
   if (b.status === 'paid') return `<span class="bud-chip good">✓ Paid${b.paid_at ? ` ${apDay(b.paid_at)}` : ''}</span>`;
   const d = b.days_left;
@@ -254,6 +254,7 @@ function openBillFromDelivery(d) {
 // ---- Compliance due dates (TDS, GST, PT, PF …)
 function compState() { const s = apState(); if (!s.comp) s.comp = { form: null, date: null, done: null }; return s.comp; }
 function compChip(i) {
+  if (i.unset) return '<span class="bud-chip warn">📅 Date not set</span>';
   const d = i.days_left;
   if (d < 0) return `<span class="bud-chip bad">Overdue ${-d} day${d === -1 ? '' : 's'}</span>`;
   if (d === 0) return '<span class="bud-chip bad">Due today</span>';
@@ -276,7 +277,7 @@ function compHTML() {
     </div>
     ${f ? `<div class="comp-form">
       <div class="row"><div class="col"><label for="comp-name">What is due *</label><input id="comp-name" type="text" value="${apEsc(f.name || '')}" placeholder="e.g. GST deposit"></div>
-        <div class="col" style="max-width:170px;"><label for="comp-day">Due by (day of month) *</label><input id="comp-day" type="number" min="1" max="31" inputmode="numeric" value="${apEsc(f.due_day || '')}" placeholder="e.g. 20"></div></div>
+        <div class="col" style="max-width:170px;"><label for="comp-day">Due by (day of month)</label><input id="comp-day" type="number" min="1" max="31" inputmode="numeric" value="${apEsc(f.due_day || '')}" placeholder="e.g. 20 — or leave empty for now"></div></div>
       <label for="comp-notes">Notes</label><input id="comp-notes" type="text" value="${apEsc(f.notes || '')}" placeholder="e.g. or as per the due date on the bill">
       ${f.err ? `<div class="small" style="color:var(--danger);margin-top:6px;">${apEsc(f.err)}</div>` : ''}
       <div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-sm btn-primary" data-comp-act="save">${f.id ? 'Save' : 'Add'}</button><button class="btn btn-sm" data-comp-act="cancel">Cancel</button></div>
@@ -286,14 +287,15 @@ function compHTML() {
       const dateOpen = c.date && c.date.id === i.id, doneOpen = c.done && c.done.id === i.id;
       return `<div class="comp-item ${i.days_left < 0 || i.days_left === 0 ? 'late' : i.days_left <= 2 ? 'soon' : ''}">
         <div class="comp-main">
-          <div><b>${apEsc(i.name)}</b> <span class="small muted">· by the ${compOrd(i.due_day)} of every month</span></div>
-          <div class="small">${apEsc(i.period_label)}: due <b>${apDay(i.due)}</b>${i.override ? ' <span class="muted">(date set for this month)</span>' : ''} ${compChip(i)}</div>
+          <div><b>${apEsc(i.name)}</b> ${i.unset ? '' : `<span class="small muted">· by the ${compOrd(i.due_day)} of every month</span>`}</div>
+          <div class="small">${i.unset ? `${compChip(i)} <span class="muted">— set the day of the month with ✏️; reminders start after that.</span>` : `${apEsc(i.period_label)}: due <b>${apDay(i.due)}</b>${i.override ? ' <span class="muted">(date set for this month)</span>' : ''} ${compChip(i)}`}</div>
           ${i.notes ? `<div class="small muted">${apEsc(i.notes)}</div>` : ''}
           ${(i.files || []).length ? `<div class="dlv-files">${i.files.map(x => compFileChip(x, can)).join('')}</div>` : ''}
           ${last ? `<div class="small muted">Last done: ${apEsc(last.period_label)} — ${apEsc(last.done_by_name || last.done_by)}, ${apDay(last.done_at)}${last.note ? ` · ${apEsc(last.note)}` : ''}${can ? ` <button type="button" class="linklike" data-comp-undo="${i.id}:${last.period}">undo</button>` : ''}</div>
             ${(last.files || []).length ? `<div class="dlv-files">${last.files.map(x => compFileChip(x, false)).join('')}</div>` : ''}` : ''}
         </div>
-        ${can ? `<div class="comp-btns">
+        ${can && i.unset ? `<div class="comp-btns"><button class="btn btn-sm btn-primary" data-comp-edit="${i.id}">✏️ Set the date</button><button class="btn btn-sm" data-comp-del="${i.id}" title="Remove">✕</button></div>` : ''}
+        ${can && !i.unset ? `<div class="comp-btns">
           <button class="btn btn-sm btn-primary" data-comp-done="${i.id}">✓ Done for ${apEsc(i.period_label)}</button>
           <label class="btn btn-sm" title="Upload the bill / challan for ${apEsc(i.period_label)}">📎 Upload bill<input type="file" data-comp-upload="${i.id}:${i.period}" accept="image/*,application/pdf,.pdf,.xlsx,.xls,.doc,.docx" multiple hidden></label>
           <button class="btn btn-sm" data-comp-date="${i.id}">📅 Date this month</button>
@@ -318,7 +320,7 @@ function bindCompliance() {
   ['name', 'day', 'notes'].forEach(k => { const el = document.getElementById(`comp-${k}`); if (el && c.form) el.oninput = () => { c.form[k === 'day' ? 'due_day' : k] = el.value; }; });
   on('[data-comp-act="save"]', async b => {
     const f = c.form; b.disabled = true;
-    try { await api(f.id ? `/api/compliance/${f.id}/update` : '/api/compliance', { method: 'POST', body: JSON.stringify({ name: f.name, due_day: Number(f.due_day), notes: f.notes }) }); c.form = null; setBanner('Compliance date saved.', 'ok'); await compReload(); }
+    try { await api(f.id ? `/api/compliance/${f.id}/update` : '/api/compliance', { method: 'POST', body: JSON.stringify({ name: f.name, due_day: f.due_day === '' || f.due_day == null ? null : Number(f.due_day), notes: f.notes }) }); c.form = null; setBanner('Compliance date saved.', 'ok'); await compReload(); }
     catch (e) { f.err = e.message; render(); }
   });
   on('[data-comp-del]', b => { const i = item(b.dataset.compDel); if (i && confirm(`Remove "${i.name}" from compliance dates? Its reminders stop.`)) post(b, `/api/compliance/${i.id}/delete`, {}, 'Removed.'); });

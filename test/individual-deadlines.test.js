@@ -61,7 +61,7 @@ test('per-individual task deadlines drive personal reminders independently of th
 
     const outsiderToken = await createMember(baseUrl, adminToken, 'outsider', 'Outsider');
     const blocked = await api(baseUrl, `/api/tasks/${id}/assignees/bob/deadline`, { method: 'POST', token: outsiderToken, body: { deadline: futureDate(2) } });
-    assert.equal(blocked.status, 403, 'only the creator or Admin can set an individual deadline');
+    assert.equal(blocked.status, 403, 'only Admin can set an individual deadline directly');
 
     const invalidTarget = await api(baseUrl, `/api/tasks/${id}/assignees/nobody/deadline`, { method: 'POST', token: adminToken, body: { deadline: futureDate(2) } });
     assert.equal(invalidTarget.status, 404, 'setting a deadline for someone not tagged on the task must fail');

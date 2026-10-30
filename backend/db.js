@@ -492,6 +492,12 @@ async function init() {
     kind TEXT NOT NULL DEFAULT 'attachment', name TEXT NOT NULL, data TEXT NOT NULL,
     taken_at TEXT, uploaded_by TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_delivery_files_delivery ON delivery_files(delivery_id)');
+  // ---- Deadline extension requests: the person on a task asks for more time; the creator (or Admin) decides ----
+  await run(`CREATE TABLE IF NOT EXISTS deadline_requests(
+    id SERIAL PRIMARY KEY, task_id TEXT NOT NULL, username TEXT NOT NULL, requested_by_name TEXT, current_deadline TEXT,
+    requested_deadline TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+    decided_by TEXT, decided_by_name TEXT, decided_at TEXT, decision_note TEXT, approved_deadline TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_deadline_requests ON deadline_requests(task_id, status)');
   // ---- Compliance due dates (TDS, GST, PT, PF …): a day of every month; Accounts + Admin are reminded ----
   await run(`CREATE TABLE IF NOT EXISTS compliance_items(
     id SERIAL PRIMARY KEY, name TEXT NOT NULL, due_day INTEGER NOT NULL, notes TEXT, active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -505,10 +511,16 @@ async function init() {
     id SERIAL PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES compliance_items(id) ON DELETE CASCADE, period TEXT NOT NULL,
     name TEXT NOT NULL, data TEXT NOT NULL, uploaded_by TEXT, uploaded_by_name TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_compliance_files ON compliance_files(item_id, period)');
+  await run('ALTER TABLE compliance_items ALTER COLUMN due_day DROP NOT NULL'); // a date can be filled in later
   if (!Number(((await pool.query('SELECT COUNT(*) AS n FROM compliance_items')).rows[0] || {}).n)) {
     const seed = [['TDS deposit', 7, null], ['GST deposit', 20, null], ['Sales invoices', 5, null],
       ['Electricity bill', 10, 'Or as per the due date on the bill — set it for the month.'], ['PT (Professional Tax)', 15, null], ['PF (Provident Fund)', 15, null]];
     for (const [name, day, notes] of seed) await pool.query('INSERT INTO compliance_items(name, due_day, notes, created_by, created_at) VALUES($1,$2,$3,$4,$5)', [name, day, notes, 'system', new Date().toISOString()]);
+  }
+  // Accounts compliance items added later — dates to be filled in.
+  for (const name of ['Suspense clearance', 'Debit balance clearance', 'GST reconciliation', 'Vendor ageing reports']) {
+    if (!(await pool.query('SELECT 1 FROM compliance_items WHERE LOWER(name)=LOWER($1)', [name])).rows.length)
+      await pool.query('INSERT INTO compliance_items(name, due_day, notes, created_by, created_at) VALUES($1,NULL,$2,$3,$4)', [name, 'Date to be set by Accounts / Admin.', 'system', new Date().toISOString()]);
   }
   // ---- Accounts payable: vendor bills sent by Purchase, credit period, payment by Accounts ----
   await run(`CREATE TABLE IF NOT EXISTS ap_bills(
@@ -557,6 +569,22 @@ async function init() {
     uploaded_by TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_est_files_parent ON est_files(parent_type, parent_id)');
   await ensureColumn('est_files', 'kind', "TEXT NOT NULL DEFAULT 'attachment'"); // 'source' = the HighRise / estimation document
+  // Estimate (work package): HighRise + Excel → approved by the project heads → JMR open → final JMR → reconciliation → completed.
+  await run(`CREATE TABLE IF NOT EXISTS est_estimates(
+    id SERIAL PRIMARY KEY, ref TEXT UNIQUE NOT NULL, project TEXT NOT NULL, title TEXT NOT NULL, contractor TEXT, description TEXT,
+    status TEXT NOT NULL DEFAULT 'draft', stage TEXT, round INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT NOT NULL, created_by_name TEXT, created_at TEXT NOT NULL, updated_at TEXT, submitted_at TEXT,
+    approved_at TEXT, decided_by TEXT, decided_by_name TEXT, decided_at TEXT, decision_note TEXT, jmr_closed_at TEXT, completed_at TEXT)`);
+  // One row per approver decision per round (a resubmission starts a new round).
+  await run(`CREATE TABLE IF NOT EXISTS est_approvals(
+    id SERIAL PRIMARY KEY, parent_type TEXT NOT NULL, parent_id INTEGER NOT NULL, round INTEGER NOT NULL DEFAULT 1,
+    username TEXT NOT NULL, name TEXT, decision TEXT NOT NULL, note TEXT, on_behalf INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_est_approvals ON est_approvals(parent_type, parent_id, round)');
+  await ensureColumn('est_jmr', 'estimate_id', 'INTEGER');
+  await ensureColumn('est_jmr', 'is_final', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumn('est_jmr', 'round', 'INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn('est_recon', 'estimate_id', 'INTEGER');
+  await ensureColumn('est_recon', 'round', 'INTEGER NOT NULL DEFAULT 1');
   await run('ALTER TABLE delivery_files ALTER COLUMN delivery_id DROP NOT NULL'); // bills of payments not tied to a delivery
   await ensureColumn('delivery_files', 'doc_type', 'TEXT');
   await ensureColumn('delivery_files', 'note', 'TEXT');

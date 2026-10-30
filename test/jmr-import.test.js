@@ -64,9 +64,12 @@ test('JMR import API: preview for the Estimation team only; imported JMRs save a
   assert.equal(p.status, 200, JSON.stringify(p.data)); assert.equal(p.data.jmrs.length, 2);
   const bad = await api(baseUrl, '/api/estimation/jmr/import/preview', { method: 'POST', token: est, body: { fileData: 'data:text/csv;base64,' + Buffer.from('x\n').toString('base64'), fileName: 'x.csv' } });
   assert.equal(bad.status, 400);
-  // create the drafts the way the screen does
+  // an approved estimate (Mihir Projects → Admin approves), then create the drafts the way the screen does
+  const e = await api(baseUrl, '/api/estimation/estimate', { method: 'POST', token: est, body: { project: 'Mihir Projects', title: 'Import package', highrise_files: [{ name: 'h.xlsx', data: fileData }], excel_files: [{ name: 'e.xlsx', data: fileData }], submit: true } });
+  assert.equal(e.status, 200, JSON.stringify(e.data));
+  assert.equal((await api(baseUrl, `/api/estimation/estimate/${e.data.id}/decide`, { method: 'POST', token: admin, body: { decision: 'approve' } })).data.status, 'approved');
   for (const j of p.data.jmrs) {
-    const r = await api(baseUrl, '/api/estimation/jmr', { method: 'POST', token: est, body: { ...j, project: 'Mihir Amara', attachments: [{ name: 't.xlsx', data: fileData }] } });
+    const r = await api(baseUrl, '/api/estimation/jmr', { method: 'POST', token: est, body: { ...j, estimate_id: e.data.id, attachments: [{ name: 't.xlsx', data: fileData }] } });
     assert.equal(r.status, 200, JSON.stringify(r.data)); assert.equal(r.data.total_qty, j.total);
   }
   const list = (await api(baseUrl, '/api/estimation', { token: est })).data.jmr;

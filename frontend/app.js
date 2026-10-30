@@ -48,6 +48,7 @@ let reportsTaskList = []; // admin-only
 let currentTaskReport = null;
 let myNotifications = [];
 let closureData = { toDecide: [], mine: [], keptOpen: [] };
+let extReqData = { toDecide: [], mine: [] }; // deadline extension requests (GET /api/extension-requests)
 // The firm's projects — every new task picks one (also checked on the server).
 const PROJECT_OPTIONS = ['Mihir Amara', 'Nyati Equinox', 'Sierra (Tathawade)', 'Mihir Projects'];
 // Project heads — added automatically to "Keep informed" on every new task of their project (server does it too).
@@ -114,7 +115,7 @@ if (token) {
   if (safeStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; if (typeof estData !== 'undefined') { estData = null; estSummary = { canView: false }; } if (typeof apData !== 'undefined') { apData = null; apSummary = { canView: false }; } if (typeof compData !== 'undefined') compData = null; menuLoaded = {};
+  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; extReqData = { toDecide: [], mine: [] }; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; if (typeof estData !== 'undefined') { estData = null; estSummary = { canView: false }; } if (typeof apData !== 'undefined') { apData = null; apSummary = { canView: false }; } if (typeof compData !== 'undefined') compData = null; menuLoaded = {};
   ui = defaultUiState(); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
   announcements = []; canPostAnnouncements = false; chat.rooms = []; chat.messages = {}; chat.hasOlder = {}; chat.lastVersion = null;
 }
@@ -772,14 +773,14 @@ const NOTIF_TYPE_CAT = {
   task_reminder: 'reminder', task_reminder_recurring: 'reminder', task_reminder_3day: 'reminder', deadline_window: 'reminder', deadline_soon: 'reminder', deadline_due_today: 'reminder', follow_up: 'reminder',
   deadline_passed: 'warning', task_overdue_days: 'warning', task_warning: 'warning', task_warning_urgent: 'warning', task_warning_creator: 'warning', task_flagged: 'flagged', admin_late_flag: 'flagged', weekly_warning_digest: 'warning',
   task_assigned: 'task', task_reply: 'task', task_closed: 'task', task_reopened: 'task', task_deleted: 'task', task_rejected: 'task', individual_deadline_set: 'task', level_changed: 'task', mentioned_in_comment: 'task', followup_tagged: 'task', meeting_summary: 'task',
-  task_submitted: 'approval', approval_requested: 'approval', approval_rejected: 'approval', approval_approved: 'approval', closure_requested: 'approval', closure_approved: 'approval', closure_declined: 'approval', est_submitted: 'approval', est_decided: 'approval', est_remark: 'approval', ap_bill_added: 'approval', ap_reminder: 'reminder', ap_update: 'approval', ap_reply: 'approval', ap_followup: 'approval', compliance_due: 'reminder', compliance_done: 'approval',
+  task_submitted: 'approval', approval_requested: 'approval', approval_rejected: 'approval', approval_approved: 'approval', closure_requested: 'approval', extension_requested: 'approval', extension_decided: 'approval', closure_approved: 'approval', closure_declined: 'approval', est_submitted: 'approval', est_decided: 'approval', est_remark: 'approval', est_jmr_open: 'approval', est_recon_due: 'approval', est_completed: 'approval', ap_bill_added: 'approval', ap_reminder: 'reminder', ap_update: 'approval', ap_reply: 'approval', ap_followup: 'approval', compliance_due: 'reminder', compliance_done: 'approval',
   chat_mention: 'message', announcement: 'message',
   location: 'location', location_alert: 'location', site_visit: 'location', place_linked: 'location',
   delivery_scheduled: 'delivery', delivery_update: 'delivery', delivery_delivered: 'delivery', delivery_unloaded: 'delivery', delivery_reminder: 'delivery', delivery_followup: 'delivery', delivery_document: 'delivery', delivery_payment: 'delivery', budget_verify: 'delivery', budget_allotted: 'delivery', budget_verified: 'delivery', budget_topup: 'delivery',
 };
 const notifCat = n => NOTIF_TYPE_CAT[n.type] || 'other';
-const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin', delivery_scheduled: 'truck', delivery_update: 'truck', delivery_delivered: 'truck', delivery_unloaded: 'checkCircle', delivery_reminder: 'clock', delivery_followup: 'truck', delivery_document: 'clipboard', delivery_payment: 'clipboard', budget_verify: 'wallet', budget_allotted: 'wallet', budget_verified: 'wallet', budget_topup: 'wallet', est_submitted: 'clipboard', est_decided: 'checkCircle', est_remark: 'chat', ap_bill_added: 'wallet', ap_reminder: 'clock', ap_update: 'wallet', ap_reply: 'chat', ap_followup: 'wallet', compliance_due: 'clock', compliance_done: 'checkCircle' };
-const NOTIF_TYPE_LABEL = { task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked', delivery_scheduled: 'Delivery coming', delivery_update: 'Delivery update', delivery_delivered: 'Delivered at site', delivery_unloaded: 'Unloaded at site', delivery_reminder: 'Delivery reminder', delivery_followup: 'Delivery follow-up', delivery_document: 'Delivery document', delivery_payment: 'Delivery payment', budget_verify: 'Payment to verify', budget_allotted: 'Money allotted', budget_verified: 'Payment checked', budget_topup: 'Top-up requested', est_submitted: 'Estimation to approve', est_decided: 'Estimation decision', est_remark: 'Estimation remark', ap_bill_added: 'New vendor bill', ap_reminder: 'Payment due', ap_update: 'Bill update from Accounts', ap_reply: 'Reply from Purchase', ap_followup: 'Payment follow-up', compliance_due: 'Compliance due date', compliance_done: 'Compliance done' };
+const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', extension_requested: 'clock', extension_decided: 'clock', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin', delivery_scheduled: 'truck', delivery_update: 'truck', delivery_delivered: 'truck', delivery_unloaded: 'checkCircle', delivery_reminder: 'clock', delivery_followup: 'truck', delivery_document: 'clipboard', delivery_payment: 'clipboard', budget_verify: 'wallet', budget_allotted: 'wallet', budget_verified: 'wallet', budget_topup: 'wallet', est_submitted: 'clipboard', est_decided: 'checkCircle', est_remark: 'chat', est_jmr_open: 'checkCircle', est_recon_due: 'clipboard', est_completed: 'checkCircle', ap_bill_added: 'wallet', ap_reminder: 'clock', ap_update: 'wallet', ap_reply: 'chat', ap_followup: 'wallet', compliance_due: 'clock', compliance_done: 'checkCircle' };
+const NOTIF_TYPE_LABEL = { task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', extension_requested: 'More time requested', extension_decided: 'Deadline extension decision', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked', delivery_scheduled: 'Delivery coming', delivery_update: 'Delivery update', delivery_delivered: 'Delivered at site', delivery_unloaded: 'Unloaded at site', delivery_reminder: 'Delivery reminder', delivery_followup: 'Delivery follow-up', delivery_document: 'Delivery document', delivery_payment: 'Delivery payment', budget_verify: 'Payment to verify', budget_allotted: 'Money allotted', budget_verified: 'Payment checked', budget_topup: 'Top-up requested', est_submitted: 'Estimation to approve', est_decided: 'Estimation decision', est_remark: 'Estimation remark', est_jmr_open: 'Estimate approved — JMR open', est_recon_due: 'Reconciliation report due', est_completed: 'Estimate completed', ap_bill_added: 'New vendor bill', ap_reminder: 'Payment due', ap_update: 'Bill update from Accounts', ap_reply: 'Reply from Purchase', ap_followup: 'Payment follow-up', compliance_due: 'Compliance due date', compliance_done: 'Compliance done' };
 // Where tapping a notification takes you.
 function notifTarget(n) {
   if (/^closure_/.test(n.type)) return 'data-notif-goto-tab="closure"';
@@ -853,6 +854,7 @@ function notifStillNeedsMe(n) {
   const info = n.task_id ? notifTaskInfo[n.task_id] : null;
   if (n.type === 'task_submitted') return !!(info && info.status === 'open' && (info.toApprove || []).length);
   if (n.type === 'closure_requested') return !!(info && info.status === 'open' && info.closureId);
+  if (n.type === 'extension_requested') return (extReqData.toDecide || []).some(r => String(r.id) === String(n.ref_id));
   if (n.type === 'approval_requested' && n.ref_type === 'approval' && n.ref_id) { const r = (notifRefs.approval || {})[n.ref_id]; return !!(r && r.status === 'pending' && !r.mine); }
   return false;
 }
@@ -982,6 +984,11 @@ function notifActionsHTML(n) {
         ${act && act.kind === 'aprreject' && act.key === n.ref_id ? form('Why is it rejected? (at least 5 characters)', 'Reject', true) : ''}</div>`);
     } else if (r && r.mine) rows.push(`<div class="na-done">${r.mine === 'approved' ? '✓ You approved this' : '✗ You rejected this'}</div>`);
   }
+  if (n.type === 'extension_requested' && n.ref_id) {
+    const r = (extReqData.toDecide || []).find(x => String(x.id) === String(n.ref_id));
+    if (r) rows.push(`<div class="na-row na-ext">${extRequestBoxHTML(r)}</div>`);
+    else rows.push('<div class="na-done">✓ This request for more time has already been answered.</div>');
+  }
   if (n.ref_type === 'payment' && n.ref_id && typeof budgetData !== 'undefined' && budgetData.canVerify) {
     const r = (notifRefs.payment || {})[n.ref_id];
     if (r && (r.status === 'pending') && r.paidBy !== session.username) {
@@ -1076,8 +1083,18 @@ function bindNotifExtras() {
 function renderNotificationsView() {
   if (ui.notifFilter === 'reads' && (session.role === 'admin' || session.role === 'director')) return notifReadsViewHTML();
   const all = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  // A task with a part or a closure waiting for your decision always shows under Approvals — even when the
+  // only notification about it is another kind (e.g. "You are flagged"): its newest notification stands in.
+  const apprExtra = new Set();
+  { const covered = new Set(all.filter(n => n.task_id && notifCat(n) === 'approval' && notifStillNeedsMe(n)).map(n => n.task_id)); const seenTask = new Set();
+    for (const n of all) { // newest first
+      if (!n.task_id || covered.has(n.task_id) || seenTask.has(n.task_id)) continue;
+      const info = notifTaskInfo[n.task_id];
+      if (info && info.status === 'open' && ((info.toApprove || []).length || info.closureId)) { apprExtra.add(n.id); seenTask.add(n.task_id); }
+    } }
+  const inCat = (n, key) => notifCat(n) === key || (key === 'approval' && apprExtra.has(n.id));
   // New = not yet seen, plus approvals still waiting for your decision (even if opened before) — they stay until decided.
-  const unread = all.filter(n => !n.read || notifStillNeedsMe(n));
+  const unread = all.filter(n => !n.read || notifStillNeedsMe(n) || apprExtra.has(n.id));
   // Seen tab: most recently seen first, so whatever you just ticked is always at the top.
   const seenAt = n => new Date(n.read_at || n.created_at);
   const seenList = all.filter(n => n.read).sort((a, b) => seenAt(b) - seenAt(a));
@@ -1086,13 +1103,13 @@ function renderNotificationsView() {
   // Status: New (not yet seen) or Seen. A notification marked seen leaves New and shows only under Seen.
   const filter = ui.notifFilter === 'seen' ? 'seen' : 'unread';
   const byStatus = filter === 'seen' ? seenList : unread;
-  const countIn = (list, key) => key === 'all' ? list.length : list.filter(n => notifCat(n) === key).length;
+  const countIn = (list, key) => key === 'all' ? list.length : list.filter(n => inCat(n, key)).length;
   // Show a category tab when it has anything; Reminders and Warnings are always there.
-  const cats = NOTIF_CATS.filter(c => ['all', 'reminder', 'warning', 'flagged'].includes(c.key) || all.some(n => notifCat(n) === c.key));
+  const cats = NOTIF_CATS.filter(c => ['all', 'reminder', 'warning', 'flagged'].includes(c.key) || all.some(n => inCat(n, c.key)));
   const isReader = session.role === 'admin' || session.role === 'director';
   const cat = cats.some(c => c.key === ui.notifCat) ? ui.notifCat : 'all';
   const catInfo = NOTIF_CATS.find(c => c.key === cat);
-  const list = cat === 'all' ? byStatus : byStatus.filter(n => notifCat(n) === cat);
+  const list = cat === 'all' ? byStatus : byStatus.filter(n => inCat(n, cat));
   const groups = [];
   const dayOf = n => filter === 'seen' ? istDayKey(n.read_at || n.created_at) : istDayKey(n.created_at);
   for (const n of list) { const k = dayOf(n); const g = groups[groups.length - 1]; if (g && g.key === k) g.items.push(n); else groups.push({ key: k, items: [n] }); }
@@ -1992,7 +2009,8 @@ function dataRequests() {
     notif: '/api/notifications', myApprovalRequests: '/api/approvals/mine', announcementsResp: '/api/announcements',
     features: '/api/features', suggestions: '/api/suggestions',
     deliveriesResp: '/api/deliveries', budgetResp: '/api/budget', estSummaryResp: '/api/estimation/summary', apSummaryResp: '/api/payables/summary',
-    closureData: `/api/closure-requests${session.role === 'admin' && ui.closureScope === 'all' ? '?scope=all' : ''}`,
+    closureData: `/api/closure-requests${session.role === 'admin' && ui.closureScope !== 'mine' ? '?scope=all' : ''}`,
+    extReq: '/api/extension-requests',
   };
   if (isAdmin) { core.allTasks = '/api/tasks'; core.allApprovalRequests = '/api/approvals'; }
   const extras = {
@@ -2037,6 +2055,7 @@ function applyData(key, v) {
       break;
     case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; setTimeout(updateTabTitle, 0); notifTaskInfo = v.tasks || {}; notifRefs = v.refs || { approval: {}, payment: {} }; if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items); break;
     case 'closureData': closureData = v || { toDecide: [], mine: [], keptOpen: [] }; break;
+    case 'extReq': extReqData = v && Array.isArray(v.toDecide) ? v : { toDecide: [], mine: [] }; break;
     case 'apSummaryResp': if (typeof apSummary !== 'undefined') apSummary = v || { canView: false }; menuLoaded.accountsdept = true; break;
     case 'complianceResp': if (typeof compData !== 'undefined') compData = v && Array.isArray(v.items) ? v : compData; break;
     case 'payablesResp': if (typeof apData !== 'undefined') apData = v && Array.isArray(v.bills) ? v : apData; break;
@@ -2289,9 +2308,9 @@ const HISTORY_ACTION_LABEL = {
   SUBMITTED: 'Submitted', APPROVED: 'Approved', REJECTED: 'Rejected', COMPLETED: 'Completed', REOPENED: 'Reopened', CANCELLED: 'Cancelled',
   DEADLINE_CHANGED: 'Deadline changed', INDIVIDUAL_DEADLINE_CHANGED: 'Personal deadline', FOLLOW_UP: 'Kept informed', FOLLOW_UP_SENT: 'Follow-up sent', DRAWING_REQUESTED: 'Drawing requested',
   CHECKLIST_ITEM_ADDED: 'Checklist item added', CHECKLIST_ITEM_TOGGLED: 'Checklist ticked', CHECKLIST_ITEM_REMOVED: 'Checklist item removed',
-  SUBTASK_CREATED: 'Subtask', CLOSURE_REQUESTED: 'Closure requested', CLOSURE_DECLINED: 'Closure declined', CLOSURE_WITHDRAWN: 'Closure withdrawn', ARCHIVED: 'Archived', DELETED: 'Deleted', NOTIFICATION_SENT: 'Notification',
+  SUBTASK_CREATED: 'Subtask', EXTENSION_REQUESTED: 'More time requested', EXTENSION_APPROVED: 'More time given', EXTENSION_REJECTED: 'More time refused', CLOSURE_REQUESTED: 'Closure requested', CLOSURE_DECLINED: 'Closure declined', CLOSURE_WITHDRAWN: 'Closure withdrawn', ARCHIVED: 'Archived', DELETED: 'Deleted', NOTIFICATION_SENT: 'Notification',
 };
-const HISTORY_ACTION_TONE = { APPROVED: 'good', COMPLETED: 'good', REJECTED: 'bad', CANCELLED: 'bad', DELETED: 'bad', DEADLINE_CHANGED: 'warn', INDIVIDUAL_DEADLINE_CHANGED: 'warn', REOPENED: 'warn', FOLLOW_UP_SENT: 'warn', CLOSURE_REQUESTED: 'warn', CLOSURE_DECLINED: 'bad' };
+const HISTORY_ACTION_TONE = { APPROVED: 'good', COMPLETED: 'good', REJECTED: 'bad', CANCELLED: 'bad', DELETED: 'bad', DEADLINE_CHANGED: 'warn', INDIVIDUAL_DEADLINE_CHANGED: 'warn', REOPENED: 'warn', FOLLOW_UP_SENT: 'warn', CLOSURE_REQUESTED: 'warn', CLOSURE_DECLINED: 'bad', EXTENSION_REQUESTED: 'warn', EXTENSION_APPROVED: 'good', EXTENSION_REJECTED: 'bad' };
 const HISTORY_SOURCE_LABEL = { web: 'Web', import: 'Import', whatsapp: 'WhatsApp', email: 'Email', voice: 'Voice', meeting: 'Meeting', api: 'API', ai: 'AI' };
 const histLabel = t => HISTORY_ACTION_LABEL[t] || String(t).replace(/_/g, ' ').toLowerCase().replace(/^\w/, c => c.toUpperCase());
 function histDateParts(iso) {
@@ -2439,6 +2458,59 @@ function renderTaskActivityFeed(t) {
   if (t.status === 'cancelled' && t.cancelled_at) rows.push({ at: t.cancelled_at, who: t.cancelled_by || 'System', action: 'Cancelled', tone: 'bad', detail: t.cancel_reason ? esc(t.cancel_reason) : 'Task cancelled' });
   rows.sort((a, b) => new Date(a.at) - new Date(b.at));
   return `<div style="margin-top:8px;">${historyTableHTML(rows)}</div>`;
+}
+// ---- Deadline extension requests (shared by the task card, the Approvals page and notifications)
+function extRequestBoxHTML(r, opts = {}) {
+  const st = (ui.extDecide || {})[r.id] || {};
+  const reqDate = String(r.requested_deadline || '');
+  return `<div class="ext-box" data-ext-box="${r.id}">
+    ${opts.withTask ? `<div class="appr-task"><b>${esc(r.task_title || '')}</b> <span class="mono small muted">${esc(r.task_id)}</span>${r.task_project ? ` <span class="small muted">📁 ${esc(r.task_project)}</span>` : ''}</div>` : ''}
+    <div><b>${esc(r.requested_by_name || personName(r.username))}</b> asks for more time: <span class="muted">${r.current_deadline ? esc(fmtDate(r.current_deadline)) : 'no deadline'}</span> → <b>${esc(fmtDate(reqDate))}</b> <span class="small muted">· ${waitingSince(r.created_at)}</span></div>
+    <div class="doc-note" style="margin:6px 0;">${esc(r.reason)}</div>
+    <div class="ext-actions">
+      <label class="small">Give until <input type="date" id="ext-date-${r.id}" value="${esc((st.date || reqDate).slice(0, 10))}"></label>
+      <input type="text" id="ext-note-${r.id}" value="${esc(st.note || '')}" placeholder="Note (required to reject)">
+      <button type="button" class="btn btn-sm btn-primary" data-ext-decide="${r.id}" data-decision="approve">✓ Give more time</button>
+      <button type="button" class="btn btn-sm btn-danger" data-ext-decide="${r.id}" data-decision="reject">✗ Reject</button>
+      ${opts.withTask ? `<button type="button" class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button>` : ''}
+    </div>
+  </div>`;
+}
+function bindExtensionControls() {
+  document.querySelectorAll('[id^="ext-date-"],[id^="ext-note-"]').forEach(el => el.oninput = el.onchange = () => {
+    const id = el.id.replace(/^ext-(date|note)-/, ''); ui.extDecide = ui.extDecide || {}; ui.extDecide[id] = { ...(ui.extDecide[id] || {}), [el.id.startsWith('ext-date-') ? 'date' : 'note']: el.value };
+  });
+  document.querySelectorAll('[data-ext-decide]').forEach(b => b.onclick = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const id = b.dataset.extDecide, decision = b.dataset.decision;
+    const r = (extReqData.toDecide || []).find(x => String(x.id) === String(id));
+    const st = (ui.extDecide || {})[id] || {};
+    const date = st.date || (r ? String(r.requested_deadline).slice(0, 10) : '');
+    const keepTime = r && String(r.requested_deadline).includes('T') && date === String(r.requested_deadline).slice(0, 10) ? r.requested_deadline : date;
+    if (decision === 'reject' && String(st.note || '').trim().length < 5) { setBanner('Write why you are not giving more time (at least 5 characters).'); render(); return; }
+    if (b.disabled) return; b.disabled = true;
+    try {
+      await api(`/api/extension-requests/${id}/decide`, { method: 'POST', body: JSON.stringify({ decision, deadline: keepTime, note: String(st.note || '').trim() }) });
+      setBanner(decision === 'approve' ? 'More time given — they have been told the new deadline.' : 'Request rejected — they have been told why.', 'ok');
+      await refreshData();
+    } catch (err) { b.disabled = false; setBanner(err.message); render(); }
+  });
+  document.querySelectorAll('[data-ext-cancel]').forEach(b => b.onclick = async (e) => {
+    e.preventDefault(); if (b.disabled) return; b.disabled = true;
+    try { await api(`/api/extension-requests/${b.dataset.extCancel}/cancel`, { method: 'POST' }); setBanner('Request withdrawn.', 'ok'); await refreshData(); } catch (err) { b.disabled = false; setBanner(err.message); render(); }
+  });
+  document.querySelectorAll('[data-act="toggle-ext-form"]').forEach(b => b.onclick = (e) => { e.preventDefault(); ui.extFormTaskId = ui.extFormTaskId === b.dataset.taskId ? null : b.dataset.taskId; render(); });
+  document.querySelectorAll('[data-act="send-ext-request"]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.taskId;
+    const date = (document.getElementById(`ext-req-date-${id}`) || {}).value || '', time = (document.getElementById(`ext-req-time-${id}`) || {}).value || '';
+    const reason = ((document.getElementById(`ext-req-reason-${id}`) || {}).value || '').trim();
+    if (!date) { setBanner('Pick the new date you need.'); render(); return; }
+    if (reason.length < 5) { setBanner('Write why you need more time (at least 5 characters).'); render(); return; }
+    if (b.disabled) return; b.disabled = true;
+    try { await api(`/api/tasks/${encodeURIComponent(id)}/extension-request`, { method: 'POST', body: JSON.stringify({ deadline: time ? `${date}T${time}` : date, reason }) });
+      ui.extFormTaskId = null; setBanner('Request sent — the task creator will review it.', 'ok'); await refreshData(); }
+    catch (err) { b.disabled = false; setBanner(err.message); render(); }
+  });
 }
 function renderTaskItem(t) {
   const assignees = t.assignees || [];
@@ -2595,13 +2667,32 @@ function renderTaskItem(t) {
     </summary>
     <div class="task-row-body">
     ${t.description ? `<div class="doc-note">${esc(t.description)}</div>` : ''}
-    <div class="muted small" style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${taskSourceBadge(t)}<span>${fmtTime(t.created_at)}${t.deadline ? ` · Due ${fmtDate(t.deadline)}${overdue ? ' <span class="badge flag">OVERDUE</span>' : ''}` : ''}</span>${canApproveHere && ui.deadlineEditTaskId !== t.id ? `<button class="link-btn" data-act="toggle-deadline-edit" data-task-id="${t.id}" title="Change this task's deadline — everyone on it is told">${icon('pencil', 12)} Change deadline</button>` : ''}</div>
-    ${canApproveHere && ui.deadlineEditTaskId === t.id ? `
+    <div class="muted small" style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${taskSourceBadge(t)}<span>${fmtTime(t.created_at)}${t.deadline ? ` · Due ${fmtDate(t.deadline)}${overdue ? ' <span class="badge flag">OVERDUE</span>' : ''}` : ''}</span>${session.role === 'admin' && ui.deadlineEditTaskId !== t.id ? `<button class="link-btn" data-act="toggle-deadline-edit" data-task-id="${t.id}" title="Change this task's deadline — everyone on it is told">${icon('pencil', 12)} Change deadline</button>` : ''}</div>
+    ${(() => {
+      if (t.status !== 'open') return '';
+      const myReq = (extReqData.mine || []).find(r => r.task_id === t.id && r.status === 'pending');
+      const toMe = (extReqData.toDecide || []).filter(r => r.task_id === t.id);
+      const lastMine = !myReq && (extReqData.mine || []).find(r => r.task_id === t.id && r.status !== 'pending' && r.status !== 'cancelled');
+      let out = toMe.map(r => extRequestBoxHTML(r)).join('');
+      if (myReq) out += `<div class="ext-mine">⏳ You asked for more time — until <b>${esc(fmtDate(myReq.requested_deadline))}</b>. Waiting for the task creator. <a href="#" data-ext-cancel="${myReq.id}">Withdraw</a></div>`;
+      else if (myRow && !iAmDone && myRow.is_released) {
+        if (lastMine) out += `<div class="ext-mine small">${lastMine.status === 'approved' ? `✓ More time given until <b>${esc(fmtDate(lastMine.approved_deadline))}</b> by ${esc(lastMine.decided_by_name || '')}` : `✗ More time refused by ${esc(lastMine.decided_by_name || '')}: “${esc(lastMine.decision_note || '')}”`}</div>`;
+        out += ui.extFormTaskId === t.id ? `<div class="deadline-edit"><div class="row" style="align-items:flex-end;">
+            <div class="col"><label>New date you need *</label><input type="date" id="ext-req-date-${t.id}"></div>
+            <div class="col"><label>Time (optional)</label><input type="time" id="ext-req-time-${t.id}"></div>
+            <div class="col" style="flex:2;"><label>Why do you need more time? *</label><input type="text" id="ext-req-reason-${t.id}" placeholder="e.g. Vendor delivery delayed to Monday"></div></div>
+            <div style="margin-top:6px;"><button class="btn btn-primary btn-sm" data-act="send-ext-request" data-task-id="${t.id}">Send request</button> <button class="btn btn-sm" data-act="toggle-ext-form" data-task-id="${t.id}">Cancel</button>
+            <span class="small muted">The task creator reviews it — your deadline changes only if they agree.</span></div></div>`
+          : `<div style="margin-top:6px;"><button class="link-btn" data-act="toggle-ext-form" data-task-id="${t.id}">⏳ Request more time</button></div>`;
+      }
+      return out;
+    })()}
+    ${session.role === 'admin' && ui.deadlineEditTaskId === t.id ? `
     <div class="deadline-edit">
       <div class="row" style="align-items:flex-end;">
         <div class="col"><label>New deadline</label><input type="date" id="deadline-edit-date-${t.id}" value="${esc((t.deadline || '').slice(0, 10))}"></div>
         <div class="col"><label>Time (optional)</label><input type="time" id="deadline-edit-time-${t.id}" value="${esc(t.deadline && t.deadline.includes('T') ? t.deadline.slice(11, 16) : '')}"></div>
-        <div class="col" style="flex:2;"><label>Reason (optional — shown to everyone on the task)</label><input type="text" id="deadline-edit-reason-${t.id}" placeholder="e.g. Slab cycle moved by 10 days"></div>
+        <div class="col" style="flex:2;"><label>Reason * (shown to everyone on the task)</label><input type="text" id="deadline-edit-reason-${t.id}" placeholder="e.g. Slab cycle moved by 10 days"></div>
       </div>
       <div style="margin-top:6px;">
         <button class="btn btn-primary btn-sm" data-act="save-deadline-edit" data-task-id="${t.id}">Save deadline</button>
@@ -2709,7 +2800,7 @@ function renderTaskItem(t) {
         <button class="btn btn-sm" data-act="cancel-delete-task">Cancel</button>
       ` : `<button class="btn btn-sm btn-danger" style="margin-top:8px;margin-left:6px;" data-act="toggle-delete-task" data-task-id="${t.id}" title="Permanently removes the task — not a status change">Delete Task</button>`}
       ${doneCount < assignees.length ? `<span class="small muted" style="margin-left:8px;">Waiting on ${assignees.filter(a => !isApproved(a)).map(a => esc(a.username)).join(', ')}</span>` : ''}
-      <div style="margin-top:8px;">
+      <div style="margin-top:8px;${session.role === 'admin' ? '' : 'display:none;'}">
         <a href="#" class="small" data-act="toggle-individual-deadlines" data-task-id="${t.id}">${ui.individualDeadlineFormTaskId === t.id ? 'Hide' : 'Set'} individual deadlines per person</a>
       </div>
       ${ui.individualDeadlineFormTaskId === t.id ? `
@@ -3800,7 +3891,8 @@ function taskApprovalWork(scopeAll) {
 }
 function approvalsNeedingMeCount() {
   const w = taskApprovalWork(false);
-  return w.toApprove.length + w.toRelease.length + (myApprovalRequests || []).filter(docNeedsMe).length;
+  return w.toApprove.length + w.toRelease.length + (myApprovalRequests || []).filter(docNeedsMe).length
+    + (closureData.toDecide || []).length + (extReqData.toDecide || []).length;
 }
 function waitingSince(iso) {
   const h = (Date.now() - new Date(iso).getTime()) / 3600000;
@@ -3813,7 +3905,7 @@ function approvalTaskHead(t) {
     <div class="small muted">${priorityBadgeHTML(t)} ${t.project ? `📁 ${esc(t.project)} · ` : ''}${t.deadline ? `Due ${esc(fmtDate(t.deadline))}` : ''}${t.created_by_username !== session.username ? ` · created by ${esc(t.created_by || personName(t.created_by_username))}` : ''}</div></div>`;
 }
 function renderApprovalsView() {
-  const scopeAll = session.role === 'admin' && ui.taskApprovalScope === 'all';
+  const scopeAll = session.role === 'admin' && ui.taskApprovalScope !== 'mine';
   const w = taskApprovalWork(scopeAll);
   const docsWaiting = (myApprovalRequests || []).filter(docNeedsMe).length;
   const sum = (n, label, cls) => `<div class="appr-sum ${n ? cls : ''}"><b>${n}</b><span>${label}</span></div>`;
@@ -3830,10 +3922,21 @@ function renderApprovalsView() {
       ${sum(w.toApprove.length, 'task parts to approve', 'hot')}
       ${sum(w.toRelease.length, 'levels ready to release', 'hot')}
       ${sum(docsWaiting, 'documents need you', 'hot')}
+      ${sum((closureData.toDecide || []).length, 'closure requests', 'hot')}
+      ${sum((extReqData.toDecide || []).length, 'asking for more time', 'hot')}
       ${sum(w.mineWaiting.length, 'of your parts waiting', '')}
     </div>
   </div>
 
+  ${(closureData.toDecide || []).length ? `<div class="card" id="appr-closure">
+    <div class="card-title">🔒 Closure requests waiting for your decision <span class="badge flag" style="margin-left:6px;">${closureData.toDecide.length}</span></div>
+    ${closureData.toDecide.map(r => closureDecideItemHTML(r)).join('')}
+  </div>` : ''}
+  ${(extReqData.toDecide || []).length ? `<div class="card" id="appr-extension">
+    <div class="card-title">⏳ Asking for more time <span class="badge flag" style="margin-left:6px;">${extReqData.toDecide.length}</span></div>
+    <div class="small muted" style="margin:-4px 0 8px;">The person's deadline moves only when you give more time. You can give a different date than asked.</div>
+    ${extReqData.toDecide.map(r => `<div class="appr-item">${extRequestBoxHTML(r, { withTask: true })}</div>`).join('')}
+  </div>` : ''}
   <div class="card" id="appr-tasks">
     <div class="card-title">Task work waiting for your approval ${w.toApprove.length ? `<span class="badge flag" style="margin-left:6px;">${w.toApprove.length}</span>` : ''}</div>
     ${w.toApprove.length === 0 ? `<div class="empty">Nothing to approve right now. When someone submits their part on a task ${scopeAll ? '' : 'you created '}it appears here.</div>` : w.toApprove.map(({ t, a }) => `
@@ -3979,11 +4082,32 @@ function bindClosureForms() {
     catch (e) { b.disabled = false; setBanner(e.message); render(); }
   });
 }
+function closureHeadHTML(r) {
+  return `<div class="appr-task"><b>${esc(r.task_title)}</b> <span class="mono small muted">${esc(r.task_id)}</span>
+    <div class="small muted">${r.task_project ? `📁 ${esc(r.task_project)} · ` : ''}${r.task_deadline ? `Due ${esc(fmtDate(r.task_deadline))} · ` : ''}created by ${esc(r.task_creator_name || personName(r.task_creator))}</div></div>`;
+}
+function closureDecideItemHTML(r) {
+  const head = closureHeadHTML;
+  return `
+      <div class="appr-item">
+        ${head(r)}
+        <div class="appr-who"><b>${esc(personName(r.requested_by))}</b> <span class="muted small">asked ${fmtTime(r.created_at)} (${waitingSince(r.created_at)})</span></div>
+        <div class="doc-note" style="margin:6px 0;">${esc(r.reason)}</div>
+        <div class="row" style="align-items:flex-end;gap:8px;">
+          <div class="col"><input type="text" id="closure-note-${r.id}" placeholder="Note (required to keep it open, optional to close)"></div>
+          <div class="col" style="flex:0;white-space:nowrap;display:flex;gap:6px;">
+            <button class="btn btn-sm btn-primary" data-closure-approve="${r.id}">✓ Close task</button>
+            <button class="btn btn-sm btn-danger" data-closure-decline="${r.id}">Keep open</button>
+            <button class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button>
+          </div>
+        </div>
+      </div>`;
+}
 function renderClosureView() {
   const toDecide = closureData.toDecide || [];
   const mine = closureData.mine || [];
   const keptOpen = closureData.keptOpen || [];
-  const scopeAll = session.role === 'admin' && ui.closureScope === 'all';
+  const scopeAll = session.role === 'admin' && ui.closureScope !== 'mine';
   // open tasks I'm tagged on (not my own) with no pending request — for the "ask to close" picker
   const askable = (myTasks || []).filter(t => t.status === 'open' && t.created_by_username !== session.username && (t.assignees || []).some(a => a.username === session.username) && !myPendingClosure(t.id))
     .sort((a, b) => String(a.title).localeCompare(String(b.title)));
@@ -4000,20 +4124,7 @@ function renderClosureView() {
 
   <div class="card" id="closure-decide">
     <div class="card-title">Requests waiting for your decision ${toDecide.length ? `<span class="badge flag" style="margin-left:6px;">${toDecide.length}</span>` : ''}</div>
-    ${toDecide.length === 0 ? `<div class="empty">No closure requests waiting. When someone asks to close a task ${scopeAll ? '' : 'you created '}it appears here.</div>` : toDecide.map(r => `
-      <div class="appr-item">
-        ${head(r)}
-        <div class="appr-who"><b>${esc(personName(r.requested_by))}</b> <span class="muted small">asked ${fmtTime(r.created_at)} (${waitingSince(r.created_at)})</span></div>
-        <div class="doc-note" style="margin:6px 0;">${esc(r.reason)}</div>
-        <div class="row" style="align-items:flex-end;gap:8px;">
-          <div class="col"><input type="text" id="closure-note-${r.id}" placeholder="Note (required to keep it open, optional to close)"></div>
-          <div class="col" style="flex:0;white-space:nowrap;display:flex;gap:6px;">
-            <button class="btn btn-sm btn-primary" data-closure-approve="${r.id}">✓ Close task</button>
-            <button class="btn btn-sm btn-danger" data-closure-decline="${r.id}">Keep open</button>
-            <button class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button>
-          </div>
-        </div>
-      </div>`).join('')}
+    ${toDecide.length === 0 ? `<div class="empty">No closure requests waiting. When someone asks to close a task ${scopeAll ? '' : 'you created '}it appears here.</div>` : toDecide.map(r => closureDecideItemHTML(r)).join('')}
   </div>
 
   <div class="card" id="closure-kept">
@@ -6524,7 +6635,8 @@ function renderInner() {
     </div>`);
   bindGlobal();
   if (ui.adminTab === 'tasks' || ui.adminTab === 'alltasks' || ui.adminTab === 'calendar' || ui.adminTab === 'mydashboard' || showingToday) { bindMyTasks(); bindFollowupForm(); bindSubtaskForm(); bindAddAssigneeForm(); }
-  if (ui.adminTab === 'approvals') { bindApprovalForm(); bindApprovalsSection(); bindApprovalsView(); bindMyTasks(); }
+  if (ui.adminTab === 'approvals') { bindApprovalForm(); bindApprovalsSection(); bindApprovalsView(); bindMyTasks(); bindClosureView(); }
+  bindExtensionControls();
   if (ui.adminTab === 'notifications') bindNotificationsView();
   if (ui.adminTab === 'closure') bindClosureView();
   if (ui.adminTab === 'deliveries' && typeof bindDeliveriesView === 'function') bindDeliveriesView();
@@ -6740,6 +6852,7 @@ function bindMyTasks() {
     const time = document.getElementById(`deadline-edit-time-${id}`).value;
     const reason = document.getElementById(`deadline-edit-reason-${id}`).value.trim();
     if (!date) { setBanner('Pick the new deadline date.'); render(); return; }
+    if (reason.length < 5) { setBanner('Write the reason for changing the deadline (at least 5 characters).'); render(); return; }
     try {
       const r = await api(`/api/tasks/${id}/deadline`, { method: 'POST', body: JSON.stringify({ deadline: time ? `${date}T${time}` : date, reason }) });
       ui.deadlineEditTaskId = null;

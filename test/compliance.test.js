@@ -18,9 +18,16 @@ test('Compliance due dates: seeded list, access, reminders 10 and 2 days before 
   assert.equal(r.status, 200);
   const by = Object.fromEntries(r.data.items.map(i => [i.name, i]));
   assert.deepEqual(Object.fromEntries(Object.entries(by).map(([k, v]) => [k, v.due_day])),
-    { 'TDS deposit': 7, 'GST deposit': 20, 'Sales invoices': 5, 'Electricity bill': 10, 'PT (Professional Tax)': 15, 'PF (Provident Fund)': 15 });
+    { 'TDS deposit': 7, 'GST deposit': 20, 'Sales invoices': 5, 'Electricity bill': 10, 'PT (Professional Tax)': 15, 'PF (Provident Fund)': 15,
+      'Suspense clearance': null, 'Debit balance clearance': null, 'GST reconciliation': null, 'Vendor ageing reports': null });
+  // the four added later wait for Accounts to set their day: no due date, listed last, no reminders, cannot be marked done
+  const unset = r.data.items.filter(i => i.due_day == null);
+  assert.equal(unset.length, 4);
+  assert.ok(unset.every(i => i.unset && i.due == null && i.days_left == null));
+  assert.equal((await P(acc, `/api/compliance/${unset[0].id}/done`, {})).status, 400);
+  assert.deepEqual(r.data.items.slice(-4).map(i => i.name).sort(), unset.map(i => i.name).sort());
   assert.deepEqual(r.data.remindBefore, [10, 2]);
-  assert.ok(r.data.items.every(i => i.days_left >= 0), 'nothing is overdue on the day it is set up');
+  assert.ok(r.data.items.filter(i => i.due_day != null).every(i => i.days_left >= 0), 'nothing is overdue on the day it is set up');
   // access: Accounts + Admin only
   assert.equal((await G(pur, '/api/compliance')).status, 403);
   assert.equal((await G(sales, '/api/compliance')).status, 403);
@@ -37,8 +44,8 @@ test('Compliance due dates: seeded list, access, reminders 10 and 2 days before 
 
   // make the next month the live one for every item (whatever today's date is), then simulate days in it
   const realMonth = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 7);
-  for (const i of (await G(acc, '/api/compliance')).data.items) if (i.period === realMonth) assert.equal((await P(acc, `/api/compliance/${i.id}/done`, { period: i.period })).status, 200);
-  const items = (await G(acc, '/api/compliance')).data.items;
+  for (const i of (await G(acc, '/api/compliance')).data.items) if (i.period === realMonth && i.due_day != null) assert.equal((await P(acc, `/api/compliance/${i.id}/done`, { period: i.period })).status, 200);
+  const items = (await G(acc, '/api/compliance')).data.items.filter(i => i.due_day != null);
   const M = items.find(i => i.name === 'GST deposit').period;
   assert.ok(items.every(i => i.period === M));
   const at = (day) => `${M}-${day}T09:05:00+05:30`;
@@ -47,6 +54,7 @@ test('Compliance due dates: seeded list, access, reminders 10 and 2 days before 
   // 10th: GST (20th) → 10 days left
   await P(admin, '/api/tasks/send-reminders-now', { at: at('10') });
   let n = await nots(acc);
+  assert.ok(!n.some(x => /Suspense clearance|GST reconciliation|Vendor ageing|Debit balance/.test(x.message)), 'no reminders for items without a date');
   assert.ok(n.some(x => /GST deposit .* 10 days left/.test(x.message)), JSON.stringify(n.map(x => x.message)));
   assert.ok((await nots(admin)).some(x => /GST deposit/.test(x.message)), 'Admin is reminded too');
   assert.equal((await nots(pur)).length, 0, 'Purchase is not');

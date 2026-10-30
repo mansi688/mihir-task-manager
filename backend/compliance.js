@@ -42,6 +42,8 @@ function mountCompliance(app, deps) {
   function dueFor(item, period, per) { const o = per && per.due_override; return o || `${period}-${pad(Math.min(item.due_day, lastDay(period)))}`; }
   function current(item, periods, today) {
     const P = today.slice(0, 7);
+    // No day of the month yet (to be filled in by Accounts / Admin): nothing is due and nothing is reminded.
+    if (item.due_day == null) return { period: P, due: null, days_left: null, override: false, unset: true };
     const get = (p) => periods.find(x => x.period === p) || null;
     const since = String(item.created_at || '').slice(0, 10);
     const prev = shiftMonth(P, -1);
@@ -67,17 +69,18 @@ function mountCompliance(app, deps) {
       const c = current(i, mine, today);
       return { ...i, ...c, period_label: fmtMonth(c.period), files: filesOf(i.id, c.period),
         history: mine.filter(p => p.done_at).slice(0, 6).map(p => ({ period: p.period, period_label: fmtMonth(p.period), done_at: p.done_at, done_by: p.done_by, done_by_name: p.done_by_name, note: p.note, files: filesOf(i.id, p.period) })) };
-    }).sort((a, b) => a.days_left - b.days_left || a.name.localeCompare(b.name));
+    }).sort((a, b) => (a.unset ? 1 : 0) - (b.unset ? 1 : 0) || (a.days_left || 0) - (b.days_left || 0) || a.name.localeCompare(b.name));
   }
   const notify = async (users, except, type, message, itemId) => {
     for (const u of new Set(users)) if (u && u !== except) await db.createNotification({ username: u, type, message, task_id: null, ref_type: 'compliance', ref_id: itemId });
   };
   function readItem(b) {
     const name = str((b || {}).name).trim().slice(0, 120);
-    const due_day = Number((b || {}).due_day);
+    const raw = (b || {}).due_day;
+    const due_day = raw === '' || raw == null ? null : Number(raw);
     const notes = str((b || {}).notes).trim().slice(0, 500) || null;
     if (!name) return { error: 'Write what is due (e.g. GST deposit).' };
-    if (!Number.isInteger(due_day) || due_day < 1 || due_day > 31) return { error: 'Due day must be a day of the month (1 to 31).' };
+    if (due_day != null && (!Number.isInteger(due_day) || due_day < 1 || due_day > 31)) return { error: 'Due day must be a day of the month (1 to 31) — or leave it empty to set it later.' };
     return { f: { name, due_day, notes } };
   }
   async function saveFiles(item, period, body, m) {
@@ -98,7 +101,7 @@ function mountCompliance(app, deps) {
     const m = await guard(req, res); if (!m) return;
     const r = readItem(req.body); if (r.error) return res.status(400).json({ error: r.error });
     const x = await one('INSERT INTO compliance_items(name, due_day, notes, created_by, created_at) VALUES($1,$2,$3,$4,$5) RETURNING id', [r.f.name, r.f.due_day, r.f.notes, m.username, now()]);
-    await auditFromReq(req, 'compliance_added', `Added compliance date: ${r.f.name}, by the ${r.f.due_day} of every month.`);
+    await auditFromReq(req, 'compliance_added', `Added compliance date: ${r.f.name}${r.f.due_day ? `, by the ${r.f.due_day} of every month` : ' (date to be set)'}.`);
     res.json({ ok: true, id: x.id });
   });
   app.post('/api/compliance/:id/update', auth(ALL_ROLES), async (req, res) => {
@@ -132,6 +135,7 @@ function mountCompliance(app, deps) {
   app.post('/api/compliance/:id/done', auth(ALL_ROLES), async (req, res) => {
     const m = await guard(req, res); if (!m) return;
     const x = await getItem(req.params.id, res); if (!x) return;
+    if (x.due_day == null) return res.status(400).json({ error: 'Set the day of the month for this item first (✏️).' });
     const period = validPeriod((req.body || {}).period); if (!period) return res.status(400).json({ error: 'Pick the month.' });
     const note = str((req.body || {}).note).trim().slice(0, 500) || null;
     const up = await saveFiles(x, period, req.body, m); if (up.error) return res.status(400).json({ error: up.error });
@@ -187,6 +191,7 @@ function mountCompliance(app, deps) {
     let sent = 0;
     for (const it of items) {
       const c = current(it, per.filter(p => p.item_id === it.id), today);
+      if (c.unset) continue;
       const d = c.days_left;
       const what = `${it.name} for ${fmtMonth(c.period)}`;
       let message = null;
