@@ -702,6 +702,8 @@ module.exports = {
   async setDeliveryAccess(username, allowed) { await run('UPDATE users SET manage_deliveries=? WHERE username=?', [allowed ? 1 : 0, username]); },
   async requireGuideAgain(username) { await run('UPDATE users SET needs_guide=1, guide_done_at=NULL WHERE username=?', [username]); },
   async getUserFresh(username) { return get('SELECT * FROM users WHERE username=?', [username]); },
+  // Login: the username exactly as typed, else ignoring capitals (phones capitalise the first letter).
+  async getUserForLogin(username) { return (await get('SELECT * FROM users WHERE username=?', [username])) || get('SELECT * FROM users WHERE lower(username)=lower(?) ORDER BY username LIMIT 1', [username]); },
   async listUsers() {
     if (userListCache && Date.now() - userListCache.at < USER_CACHE_TTL_MS) return userListCache.rows.map(r => ({ ...r }));
     const version = usersVersion;
@@ -896,7 +898,7 @@ module.exports = {
     await run('UPDATE users SET password_hash=?, must_change_password=0, token_version=COALESCE(token_version,0)+1 WHERE username=?', [hash, username]);
   },
   async forcePasswordReset(username, hash) {
-    await run('UPDATE users SET password_hash=?, must_change_password=1, token_version=COALESCE(token_version,0)+1 WHERE username=?', [hash, username]);
+    await run('UPDATE users SET password_hash=?, must_change_password=1, token_version=COALESCE(token_version,0)+1, failed_login_count=0, locked_until=NULL WHERE username=?', [hash, username]);
   },
   async renameUsername(oldUsername, newUsername) {
     return runInTransaction(async (tx) => {

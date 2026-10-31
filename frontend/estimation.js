@@ -160,23 +160,54 @@ function estFilter(list, fields) {
   return list.filter(x => (!s.project || x.project === s.project) && (!s.status || x.status === s.status)
     && (!q || fields.map(f => x[f]).filter(Boolean).join(' ').toLowerCase().includes(q)));
 }
+// One attached document as a full-width tile: name, who attached it and when; tap to open.
+function estDocTileHTML(f, ic) {
+  const when = f.created_at ? new Date(f.created_at).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' }) : '';
+  return `<button type="button" class="est-doc" data-est-file="${f.id}"><span class="est-doc-ic">${ic}</span><span class="est-doc-text"><span class="est-doc-name">${estEsc(f.name)}</span>
+    <span class="est-doc-meta">${estEsc([f.uploaded_by ? (typeof personName === 'function' ? personName(f.uploaded_by) : f.uploaded_by) : '', when].filter(Boolean).join(' · '))}</span></span><span class="est-doc-open">Open ›</span></button>`;
+}
+// The estimate's documents step by step, one under another: Estimate → each JMR → Reconciliation. Only this
+// estimate's own documents; the next step appears once the one before it is done.
+function estDocTrailHTML(e, js, rs) {
+  const m = estMe();
+  const step = (state, n, title, sub, body, action) => `<div class="est-trail-step ${state}"><div class="est-trail-dot">${state === 'done' ? '✓' : n}</div>
+    <div class="est-trail-body"><div class="est-trail-head"><span><b>${title}</b>${sub ? ` <span class="small muted">${sub}</span>` : ''}</span>${action || ''}</div>${body || ''}</div></div>`;
+  const out = [];
+  let n = 1;
+  out.push(step(e.status === 'approved' ? 'done' : 'now', n++, `Estimate ${estEsc(e.ref)}`, `${estChip(e.status)}`, estFilesHTML(e, 'estimate')));
+  if (e.status !== 'approved') out.push(step('todo', n++, 'JMR', 'after the estimate is approved by the project heads', ''));
+  else {
+    const jsSorted = js.slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    for (const j of jsSorted) out.push(step(j.status === 'approved' ? 'done' : 'now', n++, `${j.is_final ? 'Final JMR' : 'JMR'} ${estEsc(j.ref)}`,
+      `${j.ra_bill_no ? `RA ${estEsc(j.ra_bill_no)} · ` : ''}${estNum(j.total_qty)} ${estEsc(j.unit || '')} ${estChip(j.status)}`, estFilesHTML(j, 'jmr'), `<button type="button" class="btn btn-sm" data-est-goto="jmr:${j.id}">Open JMR ›</button>`));
+    if (e.stage === 'jmr' && !js.some(j => j.is_final && j.status !== 'returned')) out.push(step('todo', n++, js.length ? 'Next JMR' : 'JMR', 'record the measurements; tick “Final JMR” on the last one', '', m.canEdit ? `<button class="btn btn-sm btn-primary" data-est-new-jmr-for="${e.id}">+ New JMR</button>` : ''));
+    if (['reconciliation', 'completed'].includes(e.stage)) {
+      for (const r of rs) out.push(step(r.status === 'approved' ? 'done' : 'now', n++, `Reconciliation ${estEsc(r.ref)}`, `${estEsc(r.material || '')} · ${r.calc && r.calc.excess > 0 ? `Excess ${estNum(r.calc.excess)} ${estEsc(r.unit)}` : 'Within allowance'} ${estChip(r.status)}`,
+        estFilesHTML(r, 'recon'), `<button type="button" class="btn btn-sm" data-est-goto="recon:${r.id}">Open ›</button>`));
+      if (!rs.length) out.push(step('now', n++, 'Reconciliation report', 'due — the final JMR is approved', '', m.canEdit ? `<button class="btn btn-sm btn-primary" data-est-new-recon-for="${e.id}">+ Reconciliation</button>` : ''));
+      else if (m.canEdit && e.stage === 'reconciliation') out.push(step('todo', n++, 'Another reconciliation', '(e.g. another material)', '', `<button class="btn btn-sm" data-est-new-recon-for="${e.id}">+ Reconciliation</button>`));
+    } else out.push(step('todo', n++, 'Reconciliation', 'after the final JMR is approved', ''));
+    if (e.stage === 'completed') out.push(step('done', n++, 'Completed', '', ''));
+  }
+  return `<div class="dlv-section" style="margin-top:12px;">Documents — step by step</div><div class="est-trail">${out.join('')}</div>`;
+}
 function estFilesHTML(x, type) {
   const m = estMe();
-  const chip = (f, ic) => `<button type="button" class="dlv-file" data-est-file="${f.id}">${ic} ${estEsc(f.name)}</button>`;
+  const chip = (f, ic) => estDocTileHTML(f, ic);
   const canAdd = m.canEdit && ['draft', 'returned'].includes(x.status);
   const add = (kind, label, accept) => canAdd ? `<label class="btn btn-sm">+ ${label}<input type="file" data-est-addfile="${type}:${x.id}:${kind}" ${accept ? `accept="${accept}"` : ''} multiple hidden></label>` : '';
   const other = (x.files || []).filter(f => !['highrise', 'excel', 'source'].includes(f.kind));
   let head = '';
   if (type === 'estimate') {
     const hr = (x.files || []).filter(f => f.kind === 'highrise'), xl = (x.files || []).filter(f => f.kind === 'excel');
-    head = `<div class="est-src ${hr.length ? '' : 'missing'}"><b>🏗 HighRise document *</b> ${hr.length ? hr.map(f => chip(f, '🏗')).join(' ') : '<span class="dlv-nobill">not attached — required</span>'} ${add('highrise', hr.length ? 'Add revised' : 'Attach')}</div>
-      <div class="est-src ${xl.length ? '' : 'missing'}" style="margin-top:6px;"><b>📊 Estimate Excel *</b> ${xl.length ? xl.map(f => chip(f, '📊')).join(' ') : '<span class="dlv-nobill">not attached — required</span>'} ${add('excel', xl.length ? 'Add revised' : 'Attach', '.xlsx,.xls,.xlsm,.csv')}</div>`;
+    head = `<div class="est-src ${hr.length ? '' : 'missing'}"><div class="est-src-head"><b>🏗 HighRise document *</b>${add('highrise', hr.length ? 'Add revised' : 'Attach')}</div>${hr.length ? hr.map(f => chip(f, '🏗')).join('') : '<span class="dlv-nobill">not attached — required</span>'}</div>
+      <div class="est-src ${xl.length ? '' : 'missing'}"><div class="est-src-head"><b>📊 Estimate Excel *</b>${add('excel', xl.length ? 'Add revised' : 'Attach', '.xlsx,.xls,.xlsm,.csv')}</div>${xl.length ? xl.map(f => chip(f, '📊')).join('') : '<span class="dlv-nobill">not attached — required</span>'}</div>`;
   } else {
     const src = (x.files || []).filter(f => f.kind === 'source');
-    if (src.length) head = `<div class="est-src"><b>📊 Supporting sheet:</b> ${src.map(f => chip(f, '📊')).join(' ')}</div>`;
+    if (src.length) head = `<div class="est-src"><div class="est-src-head"><b>📊 Supporting sheet</b></div>${src.map(f => chip(f, '📊')).join('')}</div>`;
   }
-  return `${head}<div class="dlv-files" style="margin-top:8px;">${other.map(f => chip(f, '📎')).join('')}
-    ${m.canEdit || estCanApprove(x.project) ? `<label class="btn btn-sm">+ Add file${x.status === 'approved' ? ' (e.g. signed copy)' : ''}<input type="file" data-est-addfile="${type}:${x.id}" accept="image/*,application/pdf,.pdf,.xlsx,.xls,.doc,.docx" multiple hidden></label>` : ''}</div>`;
+  const canOther = m.canEdit || estCanApprove(x.project);
+  return `${head}${other.length || canOther ? `<div class="est-src est-src-other"><div class="est-src-head"><b>📎 Other files</b>${canOther ? `<label class="btn btn-sm">+ Add file${x.status === 'approved' ? ' (e.g. signed copy)' : ''}<input type="file" data-est-addfile="${type}:${x.id}" accept="image/*,application/pdf,.pdf,.xlsx,.xls,.doc,.docx" multiple hidden></label>` : ''}</div>${other.length ? other.map(f => chip(f, '📎')).join('') : '<span class="small muted">None</span>'}</div>` : ''}`;
 }
 // Who has approved in this round; who is still to approve.
 function estApprovalHTML(x) {
@@ -245,11 +276,7 @@ function estEstimateDetailHTML(e) {
     <div class="dlv-grid" style="margin-top:8px;">${[['Project', e.project], ['Contractor', e.contractor], ['Approvers', estHeadNames(e.project)], ['Written by', `${e.created_by_name || e.created_by} · ${estDate(e.created_at)}`],
       ['Approved', e.approved_at ? estDate(e.approved_at) : ''], ['JMR approved', e.jmrCount ? `${e.jmrApproved} of ${e.jmrCount}${e.jmrQty ? ` · ${estNum(e.jmrQty)} total` : ''}` : '']].filter(r => r[1]).map(r => `<div class="dlv-kv"><span>${r[0]}</span><b>${estEsc(r[1])}</b></div>`).join('')}</div>
     ${e.description ? `<div class="doc-note" style="margin-top:8px;">${estEsc(e.description)}</div>` : ''}
-    ${estFilesHTML(e, 'estimate')}
-    ${e.status === 'approved' ? `<div class="dlv-section" style="margin-top:12px;">JMRs ${e.stage === 'jmr' && m.canEdit ? `<button class="btn btn-sm btn-primary" data-est-new-jmr-for="${e.id}">+ New JMR for ${estEsc(e.ref)}</button>` : ''}</div>
-      ${js.length ? `<div class="est-mini">${js.map(j => `<button type="button" class="est-mini-row" data-est-goto="jmr:${j.id}"><span>${estEsc(j.ref)}${j.ra_bill_no ? ` · RA ${estEsc(j.ra_bill_no)}` : ''}${j.is_final ? ' · <b>FINAL</b>' : ''}</span><span>${estNum(j.total_qty)} ${estEsc(j.unit)}</span>${estChip(j.status)}</button>`).join('')}</div>` : `<div class="small muted">No JMR yet.${e.stage === 'jmr' ? ' Record the measurements; tick “Final JMR” on the last one.' : ''}</div>`}
-      ${['reconciliation', 'completed'].includes(e.stage) ? `<div class="dlv-section" style="margin-top:12px;">Reconciliation report ${m.canEdit ? `<button class="btn btn-sm btn-primary" data-est-new-recon-for="${e.id}">+ Reconciliation for ${estEsc(e.ref)}</button>` : ''}</div>
-        ${rs.length ? `<div class="est-mini">${rs.map(r => `<button type="button" class="est-mini-row" data-est-goto="recon:${r.id}"><span>${estEsc(r.ref)} · ${estEsc(r.material)}</span><span>${r.calc.excess > 0 ? `Excess ${estNum(r.calc.excess)} ${estEsc(r.unit)}` : 'Within allowance'}</span>${estChip(r.status)}</button>`).join('')}</div>` : '<div class="notice dlv-warn">📋 Final JMR approved — the reconciliation report is due.</div>'}` : ''}` : ''}
+    ${estDocTrailHTML(e, js, rs)}
     ${estRemarksHTML(e, 'estimate')}
     ${estActionsHTML(e, 'estimate')}
   </div>`;

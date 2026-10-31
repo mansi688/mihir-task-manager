@@ -882,7 +882,7 @@ const cacheMiddleware = cacheResponse();
 app.post('/api/auth/login', loginRateLimiter, async (req, res) => {
   const username = str((req.body || {}).username).trim();
   const password = str((req.body || {}).password);
-  const user = await db.getUserFresh(username);
+  const user = await db.getUserForLogin(username);
   if (user && user.locked_until && new Date(user.locked_until) > new Date()) {
     const minutesLeft = Math.ceil((new Date(user.locked_until) - new Date()) / 60000);
     return res.status(423).json({ error: `Too many failed attempts — this account is locked for about ${minutesLeft} more minute${minutesLeft === 1 ? '' : 's'}.` });
@@ -893,7 +893,9 @@ app.post('/api/auth/login', loginRateLimiter, async (req, res) => {
   // blocking Node's single JS thread until the previous one finishes. Measured directly: this
   // took login from p50=4.4s / p99=8.8s under 100 concurrent requests down to real parallel
   // throughput (see LOAD_TEST_RESULTS.md for the re-measured numbers).
-  const passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false;
+  // A space copied along with a temporary password (WhatsApp, notes) must not lock the person out.
+  let passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false;
+  if (user && !passwordMatches && password.trim() !== password && password.trim()) passwordMatches = await bcrypt.compare(password.trim(), user.password_hash);
   if (!user || !passwordMatches) {
     if (user) {
       await db.recordFailedLogin(user.username);
@@ -984,7 +986,7 @@ app.post('/api/auth/logout-everywhere', auth(ALL_ROLES), async (req, res) => {
   res.json({ ok: true, token });
 });
 app.post('/api/auth/change-password', auth(ALL_ROLES), async (req, res) => {
-  const newPassword = str((req.body || {}).newPassword);
+  const newPassword = str((req.body || {}).newPassword).trim();
   const pwErr1 = validatePasswordStrength(newPassword); if (pwErr1) return res.status(400).json({ error: pwErr1 });
   await db.setPassword(req.user.username, bcrypt.hashSync(newPassword, 10));
   await auditFromReq(req, 'password_changed', `Changed their own password.`);
@@ -1070,8 +1072,8 @@ app.post('/api/users/:username/guide-again', auth(['admin']), async (req, res) =
 app.get('/api/users', auth(['admin']), async (req, res) => res.json(await db.listUsers()));
 app.get('/api/users/directory', auth(ALL_ROLES), async (req, res) => res.json(await db.listUsers()));
 app.post('/api/users', auth(['admin']), async (req, res) => {
-  const username = str((req.body || {}).username).trim();
-  const password = str((req.body || {}).password);
+  const username = str((req.body || {}).username).trim().toLowerCase();
+  const password = str((req.body || {}).password).trim();
   const name = str((req.body || {}).name).trim();
   const role = ALL_ROLES.includes(str((req.body || {}).role)) ? str((req.body || {}).role) : 'member';
   const team = str((req.body || {}).team).trim();
@@ -1139,7 +1141,7 @@ app.post('/api/users/:username/rename', auth(['admin']), async (req, res) => {
 app.post('/api/users/:username/reset-password', auth(['admin']), async (req, res) => {
   const user = await db.getUser(req.params.username);
   if (!user) return res.status(404).json({ error: 'User not found.' });
-  const newPassword = str((req.body || {}).newPassword);
+  const newPassword = str((req.body || {}).newPassword).trim();
   const pwErr1 = validatePasswordStrength(newPassword); if (pwErr1) return res.status(400).json({ error: pwErr1 });
   await db.forcePasswordReset(user.username, bcrypt.hashSync(newPassword, 10));
   await auditFromReq(req, 'password_reset', `Reset password for "${user.username}"`);
@@ -1877,8 +1879,8 @@ app.post('/api/team/members', auth(ALL_ROLES), async (req, res) => {
   const actingUser = await db.getUser(req.user.username);
   const isLeadOrAdmin = actingUser && (actingUser.role === 'admin' || actingUser.is_team_lead);
   if (!isLeadOrAdmin) return res.status(403).json({ error: 'Only Admin or a team lead can add team members.' });
-  const username = str((req.body || {}).username).trim();
-  const password = str((req.body || {}).password);
+  const username = str((req.body || {}).username).trim().toLowerCase();
+  const password = str((req.body || {}).password).trim();
   const name = str((req.body || {}).name).trim();
   const isAdmin = actingUser.role === 'admin';
   const team = isAdmin ? (str((req.body || {}).team).trim() || null) : actingUser.team;

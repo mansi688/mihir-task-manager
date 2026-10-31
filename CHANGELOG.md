@@ -4,6 +4,25 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — New-account login fix, one approval count everywhere, estimation documents step by step
+### Fixed
+- **New accounts / reset passwords could not log in.** The temporary-password box was a hidden password field the
+  browser filled with Admin's own saved password, so the account got a password nobody knew. It is now a plain
+  visible box the browser never fills, with 🎲 Generate (easy to read out, e.g. `Brick@4821`). After creating an
+  account or resetting a password, the exact login details are shown with 📋 Copy and Send on WhatsApp.
+  Login also accepts the username in any capitals (phones capitalise the first letter) and ignores a space copied
+  around the password; new usernames are saved in lower case. Resetting a password also unlocks a locked account.
+- **Approval counts disagreed between screens.** One list of everything waiting for your decision (task parts,
+  levels to release, documents, closure requests, more-time requests, estimates) now drives the Approvals menu
+  badge, the Approvals page, the Notifications Approvals and All tabs, the Notifications badge and the browser tab
+  title. Notifications → Approvals shows a "Waiting for your decision" list with the buttons on each item; a request
+  that has already been answered moves to Seen by itself. Admin's Approvals / Task Closure pages default to "Tasks I
+  created" again (All tasks is still in the menu), so the page matches the badge.
+### Changed
+- **Estimation**: an estimate's documents are shown step by step, one under another — Estimate (HighRise, Excel,
+  other files) → each JMR → Final JMR → Reconciliation — as full-width document tiles (name, who attached it, date).
+  The next step appears when the one before it is done.
+
 ## [Unreleased] — Deadline extensions by request, approvals visibility, new Accounts compliance items
 ### Changed
 - **Deadlines can no longer be changed freely.** "Change deadline" and "Set individual deadlines" on a task are now

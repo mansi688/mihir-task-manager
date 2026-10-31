@@ -1568,7 +1568,7 @@ select.field-err,input.field-err{border-color:var(--danger);box-shadow:0 0 0 2px
 .est-edit td input[type="checkbox"]{width:auto;min-width:0;margin:0 4px 0 0;}
 .est-edit td:nth-child(2) input{min-width:160px;}
 .est-form .row{margin-top:2px;}
-.est-src{margin-top:10px;padding:8px 10px;border-radius:10px;border:1px solid color-mix(in srgb,var(--c-teal) 40%,transparent);background:color-mix(in srgb,var(--c-teal) 6%,var(--panel));font-size:13px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.est-src{margin-top:8px;padding:8px 10px;border-radius:10px;border:1px solid color-mix(in srgb,var(--c-teal) 40%,transparent);background:color-mix(in srgb,var(--c-teal) 6%,var(--panel));font-size:13px;display:flex;flex-direction:column;gap:6px;align-items:stretch;}
 .est-src.missing{border-color:color-mix(in srgb,var(--c-amber) 55%,transparent);background:color-mix(in srgb,var(--c-amber) 7%,var(--panel));}
 @media (max-width:640px){.est-row{flex-wrap:wrap;} .est-row-num{align-items:flex-start;}}
 
@@ -1696,3 +1696,41 @@ select.field-err,input.field-err{border-color:var(--danger);box-shadow:0 0 0 2px
 .task-row-title{user-select:text;-webkit-user-select:text;cursor:text;}
 .task-copy{border:0;background:transparent;cursor:pointer;font-size:13px;padding:0 4px;margin-left:4px;opacity:.55;vertical-align:baseline;line-height:1;}
 .task-copy:hover,.task-copy.copied{opacity:1;}
+
+/* Temporary password for someone else + the login details card */
+.temp-pw{display:flex;gap:6px;align-items:center;}
+.temp-pw input{flex:1;min-width:0;letter-spacing:.5px;}
+.temp-pw .btn{white-space:nowrap;}
+.login-details{border-left:4px solid var(--ok,#2e8b57);}
+.login-details-grid{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:8px 0;align-items:center;}
+.login-details-grid b{font-size:16px;user-select:all;-webkit-user-select:all;}
+
+/* Waiting for your decision — one list used on Notifications and Approvals */
+.pd-panel{border:1px solid rgba(217,142,4,.35);background:rgba(217,142,4,.05);border-radius:10px;padding:10px 12px;margin-bottom:12px;}
+.pd-title{font-weight:700;margin-bottom:6px;display:flex;align-items:center;gap:8px;}
+.pd-row{padding:8px 0;border-top:1px solid var(--line,#e6e6e6);}
+.pd-row:first-of-type{border-top:0;}
+.pd-row .na-btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;}
+.pd-row .ext-box{margin-top:0;}
+.pd-sub{font-weight:600;margin:4px 0 6px;font-size:13px;color:var(--muted,#666);text-transform:uppercase;letter-spacing:.4px;}
+
+/* Estimation documents: full-width tiles, one under another; the estimate's steps as a vertical trail */
+.est-src-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;}
+.est-src-other{border-color:var(--line);background:var(--panel);}
+.est-doc{display:flex;align-items:center;gap:10px;width:100%;text-align:left;font:inherit;padding:10px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card,#fff);color:var(--ink);cursor:pointer;min-height:48px;}
+.est-doc:hover{border-color:var(--c-blue,#2D5FA8);background:color-mix(in srgb,var(--c-blue,#2D5FA8) 5%,var(--card,#fff));}
+.est-doc-ic{font-size:20px;flex:0 0 auto;}
+.est-doc-text{display:flex;flex-direction:column;min-width:0;flex:1;}
+.est-doc-name{font-weight:600;overflow-wrap:anywhere;}
+.est-doc-meta{font-size:12px;color:var(--muted);}
+.est-doc-open{font-size:12.5px;font-weight:600;color:var(--c-blue,#2D5FA8);white-space:nowrap;}
+.est-trail{position:relative;margin-top:6px;}
+.est-trail-step{position:relative;display:flex;gap:12px;padding-bottom:14px;}
+.est-trail-step:not(:last-child)::before{content:'';position:absolute;left:14px;top:30px;bottom:0;width:2px;background:var(--line);}
+.est-trail-step.done:not(:last-child)::before{background:color-mix(in srgb,var(--ok,#2e8b57) 55%,transparent);}
+.est-trail-dot{flex:0 0 30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;border:2px solid var(--line);background:var(--panel);color:var(--muted);}
+.est-trail-step.done .est-trail-dot{border-color:var(--ok,#2e8b57);background:var(--ok,#2e8b57);color:#fff;}
+.est-trail-step.now .est-trail-dot{border-color:var(--c-amber,#d98e04);color:var(--c-amber,#d98e04);}
+.est-trail-body{flex:1;min-width:0;}
+.est-trail-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;min-height:30px;}
+.est-trail-step.todo .est-trail-head{color:var(--muted);}

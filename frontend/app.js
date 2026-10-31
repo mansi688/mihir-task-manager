@@ -115,7 +115,7 @@ if (token) {
   if (safeStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; extReqData = { toDecide: [], mine: [] }; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; if (typeof estData !== 'undefined') { estData = null; estSummary = { canView: false }; } if (typeof apData !== 'undefined') { apData = null; apSummary = { canView: false }; } if (typeof compData !== 'undefined') compData = null; menuLoaded = {};
+  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; extReqData = { toDecide: [], mine: [] }; extReqLoaded = false; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; if (typeof estData !== 'undefined') { estData = null; estSummary = { canView: false }; } if (typeof apData !== 'undefined') { apData = null; apSummary = { canView: false }; } if (typeof compData !== 'undefined') compData = null; menuLoaded = {};
   ui = defaultUiState(); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
   announcements = []; canPostAnnouncements = false; chat.rooms = []; chat.messages = {}; chat.hasOlder = {}; chat.lastVersion = null;
 }
@@ -246,6 +246,39 @@ function passwordFieldHTML(id, placeholder, extraAttrs) {
     <input type="password" id="${id}" placeholder="${esc(placeholder || '')}" style="padding-right:38px;" ${extraAttrs || ''}>
     <button type="button" data-pw-toggle="${id}" tabindex="-1" style="position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;padding:6px;color:var(--muted);display:flex;" title="Show password">${icon('eye', 16)}</button>
   </div>`;
+}
+// A temporary password that Admin / a team lead sets for someone else: shown in plain text (so it is read and
+// told correctly), never filled in by the browser's saved password (that used to put Admin's own password
+// here), and a 🎲 button makes one that is easy to read out (no 0/O or 1/l).
+function tempPasswordFieldHTML(id, placeholder) {
+  return `<div class="temp-pw"><input type="text" id="${id}" class="mono" placeholder="${esc(placeholder || 'Temporary password')}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-no-spell>
+    <button type="button" class="btn btn-sm" data-gen-pw="${id}" title="Make a password that is easy to read out">🎲 Generate</button></div>`;
+}
+function genTempPassword() {
+  const words = ['Site', 'Slab', 'Tower', 'Brick', 'Steel', 'Cement', 'Plan', 'Level', 'Beam', 'Floor'];
+  const r = (n) => { try { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0] % n; } catch (e) { return Math.floor(Math.random() * n); } };
+  return `${words[r(words.length)]}@${2000 + r(8000)}`;
+}
+function bindTempPasswordFields() {
+  document.querySelectorAll('[data-gen-pw]').forEach(b => b.onclick = () => { const el = document.getElementById(b.dataset.genPw); if (el) { el.value = genTempPassword(); el.focus(); el.select(); } });
+}
+// After creating an account or resetting a password: the exact login details, to copy or send on WhatsApp.
+function loginDetailsCardHTML() {
+  const c = ui.lastLoginDetails; if (!c) return '';
+  const text = `Login details for the MIHIR Task Manager\nWebsite: ${location.origin}\nUsername: ${c.username}\nTemporary password: ${c.password}\nYou will be asked to set your own password after logging in.`;
+  return `<div class="card login-details">
+    <div class="flex-between" style="gap:8px;"><div class="card-title" style="margin:0;">✅ ${c.reset ? 'Password reset' : 'Account created'} — ${esc(c.name || c.username)}</div><button class="btn btn-sm" data-act="dismiss-login-details">✕</button></div>
+    <div class="login-details-grid"><span>Username</span><b class="mono">${esc(c.username)}</b><span>Temporary password</span><b class="mono">${esc(c.password)}</b></div>
+    <div class="small muted">Send exactly this — capitals and symbols matter. They set their own password after the first login.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
+      <button class="btn btn-sm btn-primary" data-copy-login-details="${esc(text)}">📋 Copy login details</button>
+      <a class="btn btn-sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(text.replace(/\\n/g, '\n'))}">Send on WhatsApp</a>
+    </div></div>`;
+}
+function bindLoginDetailsCard() {
+  const d = document.querySelector('[data-act="dismiss-login-details"]'); if (d) d.onclick = () => { ui.lastLoginDetails = null; render(); };
+  document.querySelectorAll('[data-copy-login-details]').forEach(b => b.onclick = async () => { const ok = await copyText(b.dataset.copyLoginDetails.replace(/\\n/g, '\n')); b.textContent = ok ? '✓ Copied' : 'Copy failed'; setTimeout(() => { b.textContent = '📋 Copy login details'; }, 1500); });
+  bindTempPasswordFields();
 }
 function bindPasswordToggles() {
   document.querySelectorAll('[data-pw-toggle]').forEach(btn => btn.onclick = (e) => {
@@ -703,11 +736,11 @@ function renderSidebar() {
   if (session.role === 'admin') { const g = groups.find(x => x.group === 'Admin'); if (g && !g.items.some(i => i.key === 'system')) g.items = g.items.concat({ key: 'system', label: 'System Health', icon: 'clipboard' }); }
   // Notifications and Approvals are their own pages for every role.
   groups.forEach((g, gi) => {
-    if (g.group === 'Overview' && !g.items.some(i => i.key === 'notifications')) groups[gi] = { ...g, items: g.items.concat({ key: 'notifications', label: 'Notifications', icon: 'bell', badge: () => unreadNotifCount }) };
+    if (g.group === 'Overview' && !g.items.some(i => i.key === 'notifications')) groups[gi] = { ...g, items: g.items.concat({ key: 'notifications', label: 'Notifications', icon: 'bell', badge: () => notifNewCount() }) };
     if (g.group === 'Tasks' && !g.items.some(i => i.key === 'approvals')) {
       const items = g.items.slice(); const at = items.findIndex(i => i.key === 'tasks');
       items.splice(at >= 0 ? at + 1 : items.length, 0, { key: 'approvals', label: 'Approvals', icon: 'clipboard', badge: () => approvalsNeedingMeCount() },
-        { key: 'closure', label: 'Task Closure', icon: 'checkCircle', badge: () => (closureData.toDecide || []).length },
+        { key: 'closure', label: 'Task Closure', icon: 'checkCircle', badge: () => myPendingDecisions().filter(x => x.kind === 'closure').length },
         { key: 'deliveries', label: 'Deliveries', icon: 'truck', badge: () => (typeof deliveriesNeedingMeCount === 'function' ? deliveriesNeedingMeCount() : 0) });
       if (typeof budgetTabVisible === 'function' && menuShows('budget', budgetTabVisible)) {
         const di = items.findIndex(i => i.key === 'deliveries');
@@ -1044,10 +1077,15 @@ function bindNotifExtras() {
   const on = (sel, fn) => document.querySelectorAll(sel).forEach(b => b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(b); });
   on('[data-notif-person]', b => { ui.notifPerson = ui.notifPerson === b.dataset.notifPerson ? null : b.dataset.notifPerson; ui.notifPersonOpen = null; render(); });
   on('[data-na-open-task]', b => openTaskOnMyTasks(b.dataset.naOpenTask));
+  on('[data-tab-go]', b => { collapseTaskCards(); ui.adminTab = b.dataset.tabGo; safeStorage.setItem('ls_last_tab', ui.adminTab); window.scrollTo(0, 0); render(); });
   const seen = nid => { const id = Number(nid); if (id) { const n = myNotifications.find(x => x.id === id); if (n && !n.read) markNotifSeen(id, true); } };
   const run = async (b, fn, ok) => {
     if (b.disabled) return; b.disabled = true;
-    try { await fn(); setBanner(ok, 'ok'); ui.notifAct = null; seen(b.dataset.nid); await refreshData(); }
+    try {
+      await fn(); setBanner(ok, 'ok'); ui.notifAct = null; seen(b.dataset.nid);
+      if (b.dataset.seenTask) (myNotifications || []).filter(n => n.task_id === b.dataset.seenTask && !n.read && notifCat(n) !== 'task').forEach(n => markNotifSeen(n.id, false));
+      await refreshData();
+    }
     catch (err) { b.disabled = false; setBanner(err.message); render(); }
   };
   on('[data-na-approve]', b => { const [t, u] = b.dataset.naApprove.split('|'); run(b, () => api(`/api/tasks/${encodeURIComponent(t)}/approve/${encodeURIComponent(u)}`, { method: 'POST' }), `${personName(u)}'s part approved.`); });
@@ -1083,29 +1121,30 @@ function bindNotifExtras() {
 function renderNotificationsView() {
   if (ui.notifFilter === 'reads' && (session.role === 'admin' || session.role === 'director')) return notifReadsViewHTML();
   const all = [...myNotifications].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  // A task with a part or a closure waiting for your decision always shows under Approvals — even when the
-  // only notification about it is another kind (e.g. "You are flagged"): its newest notification stands in.
-  const apprExtra = new Set();
-  { const covered = new Set(all.filter(n => n.task_id && notifCat(n) === 'approval' && notifStillNeedsMe(n)).map(n => n.task_id)); const seenTask = new Set();
-    for (const n of all) { // newest first
-      if (!n.task_id || covered.has(n.task_id) || seenTask.has(n.task_id)) continue;
-      const info = notifTaskInfo[n.task_id];
-      if (info && info.status === 'open' && ((info.toApprove || []).length || info.closureId)) { apprExtra.add(n.id); seenTask.add(n.task_id); }
-    } }
-  const inCat = (n, key) => notifCat(n) === key || (key === 'approval' && apprExtra.has(n.id));
+  // Everything waiting for your decision is shown once, in the "Waiting for your decision" list at the top of
+  // New → All / Approvals; notifications about those items are folded into it (not listed twice, not counted twice).
+  const pend = myPendingDecisions();
+  const pendN = pendingDecisionsCount(pend);
+  const covered = n => notifCoveredBy(n, pend);
+  const inCat = (n, key) => notifCat(n) === key;
   // New = not yet seen, plus approvals still waiting for your decision (even if opened before) — they stay until decided.
-  const unread = all.filter(n => !n.read || notifStillNeedsMe(n) || apprExtra.has(n.id));
+  const unread = all.filter(n => (!n.read || notifStillNeedsMe(n)) && !covered(n));
+  const coveredUnread = all.filter(n => !n.read && covered(n)).length;
   // Seen tab: most recently seen first, so whatever you just ticked is always at the top.
   const seenAt = n => new Date(n.read_at || n.created_at);
   const seenList = all.filter(n => n.read).sort((a, b) => seenAt(b) - seenAt(a));
   // The server holds every unseen notification; the page loads up to 500 of them.
-  const totalNew = Math.max(unreadNotifCount || 0, unread.length);
+  const totalNew = Math.max((unreadNotifCount || 0) - coveredUnread, unread.length) + pendN;
   // Status: New (not yet seen) or Seen. A notification marked seen leaves New and shows only under Seen.
   const filter = ui.notifFilter === 'seen' ? 'seen' : 'unread';
   const byStatus = filter === 'seen' ? seenList : unread;
-  const countIn = (list, key) => key === 'all' ? list.length : list.filter(n => inCat(n, key)).length;
+  const countIn = (list, key) => {
+    const isNew = list === unread;
+    if (key === 'all') return isNew ? totalNew : list.length;
+    return list.filter(n => inCat(n, key)).length + (isNew && key === 'approval' ? pendN : 0);
+  };
   // Show a category tab when it has anything; Reminders and Warnings are always there.
-  const cats = NOTIF_CATS.filter(c => ['all', 'reminder', 'warning', 'flagged'].includes(c.key) || all.some(n => inCat(n, c.key)));
+  const cats = NOTIF_CATS.filter(c => ['all', 'reminder', 'warning', 'flagged'].includes(c.key) || all.some(n => inCat(n, c.key)) || (c.key === 'approval' && pendN));
   const isReader = session.role === 'admin' || session.role === 'director';
   const cat = cats.some(c => c.key === ui.notifCat) ? ui.notifCat : 'all';
   const catInfo = NOTIF_CATS.find(c => c.key === cat);
@@ -1151,7 +1190,9 @@ function renderNotificationsView() {
       <div class="notif-behind-list">${behind.map(p => `<button type="button" class="notif-person ${p.flagged ? 'flagged' : ''} ${ui.notifPerson === p.username ? 'active' : ''}" data-notif-person="${esc(p.username)}"><b>${esc(p.name)}</b> · ${p.count} task${p.count > 1 ? 's' : ''}${p.flagged ? ' · flagged' : ''} ›</button>`).join('')}</div>
       ${personSnap ? notifPersonTasksHTML(personSnap) : ''}
     </div>` : ''}
-    ${personSnap ? '' : list.length === 0 ? `<div class="notif-empty">${icon(catInfo.icon, 28)}<div>${filter === 'unread' ? (cat === 'all' ? 'Nothing new — you have seen everything.' : `No new ${catInfo.label.toLowerCase()}.`) : (cat === 'all' ? 'Nothing seen yet.' : `No seen ${catInfo.label.toLowerCase()} yet.`)}</div></div>` : groups.map(g => `
+    ${!personSnap && filter === 'unread' && (cat === 'all' || cat === 'approval') ? pendingDecisionsPanelHTML(pend) : ''}
+    ${!personSnap && filter === 'unread' && cat === 'approval' && pendN && list.length ? `<div class="pd-sub">Updates — nothing to decide <span class="muted">(${list.length})</span></div>` : ''}
+    ${personSnap ? '' : list.length === 0 && filter === 'unread' && (cat === 'all' || cat === 'approval') && pendN ? '' : list.length === 0 ? `<div class="notif-empty">${icon(catInfo.icon, 28)}<div>${filter === 'unread' ? (cat === 'all' ? 'Nothing new — you have seen everything.' : `No new ${catInfo.label.toLowerCase()}.`) : (cat === 'all' ? 'Nothing seen yet.' : `No seen ${catInfo.label.toLowerCase()} yet.`)}</div></div>` : groups.map(g => `
       <div class="notif-day">${filter === 'seen' ? 'Seen ' : ''}${esc(notifDayLabel(g.key))}</div>
       ${g.items.map(n => {
         const target = notifTarget(n);
@@ -1196,6 +1237,32 @@ function markNotifSeen(id, animated) {
   api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids: [id] }) })
     .then(r => { if (r && typeof r.unread === 'number') { unreadNotifCount = r.unread; render(); } })
     .catch(() => { n.read = 0; n.read_at = null; unreadNotifCount += 1; ui.notifUndo = null; setBanner('Could not mark it as seen — check your connection and try again.'); render(); });
+}
+// A request whose decision has already been made (by you or anyone else) needs nothing more: it moves to Seen
+// by itself, so New → Approvals only ever counts what is still waiting.
+let extReqLoaded = false, autoSeenTimer = null;
+function notifRequestAnswered(n) {
+  const info = n.task_id ? notifTaskInfo[n.task_id] : null;
+  if (n.type === 'task_submitted') return !!(info && (info.status !== 'open' || (info.canDecide && !(info.toApprove || []).length)));
+  if (n.type === 'closure_requested') return !!(info && (info.status !== 'open' || (info.canDecide && !info.closureId)));
+  if (n.type === 'extension_requested') return extReqLoaded && !(extReqData.toDecide || []).some(r => String(r.id) === String(n.ref_id));
+  if (n.type === 'approval_requested' && n.ref_type === 'approval' && n.ref_id) { const r = (notifRefs.approval || {})[n.ref_id]; return !!(r && (r.status !== 'pending' || r.mine)); }
+  if (n.type === 'est_submitted') return typeof estSummary !== 'undefined' && estSummary && estSummary.canView && 'toApprove' in estSummary && !Number(estSummary.toApprove);
+  return false;
+}
+function autoSeeAnsweredRequests() {
+  clearTimeout(autoSeenTimer);
+  autoSeenTimer = setTimeout(() => {
+    if (!session) return;
+    const ids = (myNotifications || []).filter(n => !n.read && notifRequestAnswered(n)).map(n => n.id);
+    if (!ids.length) return;
+    const now = new Date().toISOString();
+    myNotifications.forEach(n => { if (ids.includes(n.id)) { n.read = 1; n.read_at = now; } });
+    unreadNotifCount = Math.max(0, (unreadNotifCount || 0) - ids.length);
+    pendCache = null; render();
+    api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids }) })
+      .then(r => { if (r && typeof r.unread === 'number') { unreadNotifCount = r.unread; render(); } }).catch(() => {});
+  }, 400);
 }
 // Mark every unread notification about one task as seen at once (used after Follow up).
 function notifClearForTask(taskId) {
@@ -1296,7 +1363,7 @@ function renderTopbarSlim() {
   return `
   <header class="topbar-slim">
     <div style="display:flex;align-items:center;gap:12px;">
-      <button class="icon-btn menu-toggle" data-act="toggle-sidebar" title="Show / hide menu" aria-label="Show or hide the menu">${icon('grid')}${unreadNotifCount && ui.adminTab !== 'notifications' ? `<span class="dot">${unreadNotifCount > 99 ? '99+' : unreadNotifCount}</span>` : ''}</button>
+      <button class="icon-btn menu-toggle" data-act="toggle-sidebar" title="Show / hide menu" aria-label="Show or hide the menu">${icon('grid')}${(() => { const c = notifNewCount(); return c && ui.adminTab !== 'notifications' ? `<span class="dot">${c > 99 ? '99+' : c}</span>` : ''; })()}</button>
       <div><div class="page-eyebrow">${eyebrow}</div><h1 class="page-title">${esc(title)}</h1></div>
     </div>
     <div></div>
@@ -1330,7 +1397,7 @@ function renderLoginPage() {
       </div>
       <div class="login-modal-body">
         <label>Username</label>
-        <input type="text" id="lg-user" placeholder="e.g. admin">
+        <input type="text" id="lg-user" placeholder="e.g. admin" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">
         <label>Password</label>
         ${passwordFieldHTML('lg-pass', '••••••••')}
         <button class="btn btn-primary btn-block" style="margin-top:18px;" data-act="login">Log in</button>
@@ -2009,7 +2076,7 @@ function dataRequests() {
     notif: '/api/notifications', myApprovalRequests: '/api/approvals/mine', announcementsResp: '/api/announcements',
     features: '/api/features', suggestions: '/api/suggestions',
     deliveriesResp: '/api/deliveries', budgetResp: '/api/budget', estSummaryResp: '/api/estimation/summary', apSummaryResp: '/api/payables/summary',
-    closureData: `/api/closure-requests${session.role === 'admin' && ui.closureScope !== 'mine' ? '?scope=all' : ''}`,
+    closureData: `/api/closure-requests${session.role === 'admin' && ui.closureScope === 'all' ? '?scope=all' : ''}`,
     extReq: '/api/extension-requests',
   };
   if (isAdmin) { core.allTasks = '/api/tasks'; core.allApprovalRequests = '/api/approvals'; }
@@ -2037,6 +2104,7 @@ function dataRequests() {
   return { core, extras };
 }
 function applyData(key, v) {
+  pendCache = null;
   switch (key) {
     case 'myTasks': myTasks = v; break;
     case 'watchTasks': watchTasks = Array.isArray(v) ? v : []; break;
@@ -2053,9 +2121,9 @@ function applyData(key, v) {
         needsGuide: typeof v.needsGuide === 'boolean' ? (v.needsGuide && Date.now() - (typeof guideCompletedAt === 'number' ? guideCompletedAt : 0) > 120000) : !!session.needsGuide };
       safeStorage.setItem('ls_session', JSON.stringify(session));
       break;
-    case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; setTimeout(updateTabTitle, 0); notifTaskInfo = v.tasks || {}; notifRefs = v.refs || { approval: {}, payment: {} }; if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items); break;
+    case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; setTimeout(updateTabTitle, 0); autoSeeAnsweredRequests(); notifTaskInfo = v.tasks || {}; notifRefs = v.refs || { approval: {}, payment: {} }; if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items); break;
     case 'closureData': closureData = v || { toDecide: [], mine: [], keptOpen: [] }; break;
-    case 'extReq': extReqData = v && Array.isArray(v.toDecide) ? v : { toDecide: [], mine: [] }; break;
+    case 'extReq': extReqData = v && Array.isArray(v.toDecide) ? v : { toDecide: [], mine: [] }; extReqLoaded = !!(v && Array.isArray(v.toDecide)); autoSeeAnsweredRequests(); break;
     case 'apSummaryResp': if (typeof apSummary !== 'undefined') apSummary = v || { canView: false }; menuLoaded.accountsdept = true; break;
     case 'complianceResp': if (typeof compData !== 'undefined') compData = v && Array.isArray(v.items) ? v : compData; break;
     case 'payablesResp': if (typeof apData !== 'undefined') apData = v && Array.isArray(v.bills) ? v : apData; break;
@@ -2249,7 +2317,7 @@ async function backgroundNotifCheck() {
   syncBusy = false;
 }
 const BASE_TITLE = document.title;
-function updateTabTitle() { try { document.title = unreadNotifCount ? `(${unreadNotifCount > 99 ? '99+' : unreadNotifCount}) ${BASE_TITLE}` : BASE_TITLE; } catch (e) {} }
+function updateTabTitle() { try { const c = notifNewCount(); document.title = c ? `(${c > 99 ? '99+' : c}) ${BASE_TITLE}` : BASE_TITLE; } catch (e) {} }
 async function syncTick(force) {
   // (Accounts still on a temporary password sync too — they use the app normally until they change it.)
   if (!session || !token || syncBusy) return;
@@ -3913,11 +3981,111 @@ function taskApprovalWork(scopeAll) {
   toApprove.sort(bySubmitted); mineWaiting.sort(bySubmitted);
   return { toApprove, toRelease, mineWaiting };
 }
-function approvalsNeedingMeCount() {
-  const w = taskApprovalWork(false);
-  return w.toApprove.length + w.toRelease.length + (myApprovalRequests || []).filter(docNeedsMe).length
-    + (closureData.toDecide || []).length + (extReqData.toDecide || []).length;
+/* ==================== WAITING FOR YOUR DECISION (one list → every count) ====================
+   Everything that needs a yes / no from you, from every source, without duplicates. The Approvals menu badge,
+   the Approvals page, the Notifications Approvals / All tabs and the notification badge are all counted from it,
+   so the numbers always agree. */
+// Computed once per change of data (it is read by several badges on every render).
+let pendCache = null;
+function myPendingDecisions() {
+  if (!session || !session.username) return [];
+  const sig = `${session.username}|${(myNotifications || []).length}|${(myNotifications || []).filter(n => n.read).length}|${myTasks && myTasks.length}`;
+  if (pendCache && pendCache.sig === sig && Date.now() - pendCache.at < 1500) return pendCache.list;
+  const list = computePendingDecisions();
+  pendCache = { sig, at: Date.now(), list };
+  return list;
 }
+function computePendingDecisions() {
+  const me = session && session.username, admin = session && session.role === 'admin';
+  const out = [], keys = new Set();
+  const add = (key, item) => { if (!keys.has(key)) { keys.add(key); out.push({ key, count: 1, ...item }); } };
+  const w = taskApprovalWork(false);
+  for (const { t, a } of w.toApprove) add(`part|${t.id}|${a.username}`, { kind: 'part', taskId: t.id, title: t.title, user: a.username, at: a.submitted_at });
+  for (const [tid, info] of Object.entries(notifTaskInfo || {})) {
+    if (!info || info.status !== 'open') continue;
+    for (const u of info.toApprove || []) add(`part|${tid}|${u}`, { kind: 'part', taskId: tid, title: info.title, user: u });
+  }
+  for (const { t, stage, people } of w.toRelease) add(`rel|${t.id}|${stage}`, { kind: 'release', taskId: t.id, title: t.title, stage, people });
+  for (const r of myApprovalRequests || []) if (docNeedsMe(r)) add(`doc|${r.id}`, { kind: r.status === 'needs_revision' ? 'docrev' : 'doc', id: r.id, title: r.title, at: r.created_at });
+  const notifRefIds = (type) => new Set((myNotifications || []).filter(n => n.type === type && n.ref_id != null).map(n => String(n.ref_id)));
+  for (const r of closureData.toDecide || []) {
+    const info = notifTaskInfo[r.task_id];
+    if (!admin || r.task_creator === me || (info && String(info.closureId) === String(r.id))) add(`close|${r.id}`, { kind: 'closure', id: r.id, taskId: r.task_id, title: r.task_title, user: r.requested_by, reason: r.reason, at: r.created_at });
+  }
+  for (const [tid, info] of Object.entries(notifTaskInfo || {})) if (info && info.status === 'open' && info.closureId) add(`close|${info.closureId}`, { kind: 'closure', id: info.closureId, taskId: tid, title: info.title });
+  const extNotif = notifRefIds('extension_requested');
+  for (const r of extReqData.toDecide || []) if (!admin || r.task_creator === me || r.task_creator === r.username || extNotif.has(String(r.id))) add(`ext|${r.id}`, { kind: 'ext', id: r.id, taskId: r.task_id, title: r.task_title, req: r, at: r.created_at });
+  if (typeof estSummary !== 'undefined' && estSummary && estSummary.canView) {
+    if (estSummary.toApprove) add('est|approve', { kind: 'est', count: Number(estSummary.toApprove) || 0, title: 'Estimation' });
+    if (estSummary.returned) add('est|returned', { kind: 'estret', count: Number(estSummary.returned) || 0, title: 'Estimation' });
+  }
+  return out.filter(x => x.count > 0);
+}
+function pendingDecisionsCount(list) { return (list || myPendingDecisions()).reduce((s, x) => s + x.count, 0); }
+// Is this notification about something in the waiting list? (Then the waiting list shows it instead.)
+function notifCoveredBy(n, list) {
+  const keys = list.__keys || (list.__keys = new Set(list.map(x => x.key)));
+  const tasks = list.__tasks || (list.__tasks = new Set(list.filter(x => x.taskId && ['part', 'release', 'closure'].includes(x.kind)).map(x => x.taskId)));
+  if (n.type === 'extension_requested') return keys.has(`ext|${n.ref_id}`);
+  if (n.ref_type === 'approval' && n.ref_id != null && notifCat(n) === 'approval') return keys.has(`doc|${n.ref_id}`);
+  if (/^est_/.test(n.type)) return n.type === 'est_submitted' && keys.has('est|approve');
+  return !!(n.task_id && tasks.has(n.task_id) && (notifCat(n) === 'approval' || ['task_flagged', 'admin_late_flag', 'task_warning_creator'].includes(n.type) || /submitted|closure/.test(n.type)));
+}
+// New notifications as counted everywhere (menu, header, tab title): unseen ones, with everything about a
+// waiting decision counted once per decision.
+function notifNewCount() {
+  const list = myPendingDecisions();
+  const coveredUnread = (myNotifications || []).filter(n => !n.read && notifCoveredBy(n, list)).length;
+  return Math.max(0, (unreadNotifCount || 0) - coveredUnread) + pendingDecisionsCount(list);
+}
+function pendingDecisionRowHTML(x) {
+  const act = ui.notifAct && ui.notifAct.nid === 0 ? ui.notifAct : null;
+  const form = (placeholder, sendLabel) => `<div class="na-form"><input type="text" id="na-note" value="${esc(act.note || '')}" placeholder="${esc(placeholder)}">
+    <button type="button" class="btn btn-sm btn-danger" data-na-send="0">${sendLabel}</button><button type="button" class="btn btn-sm" data-na-cancel="1">Cancel</button></div>`;
+  const open = x.taskId ? `<button type="button" class="btn btn-sm" data-na-open-task="${esc(x.taskId)}">Open ›</button>` : '';
+  const head = (what) => `<div class="pd-what">${what}${x.taskId ? ` <span class="mono small muted">${esc(x.taskId)}</span>` : ''}${x.at ? ` <span class="small muted">· ${waitingSince(x.at)}</span>` : ''}</div>`;
+  if (x.kind === 'part') {
+    const key = `${x.taskId}|${x.user}`;
+    return `<div class="pd-row">${head(`<b>${esc(personName(x.user))}</b>'s part on <b>${esc(x.title || x.taskId)}</b> is waiting for your approval`)}
+      <div class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-na-approve="${esc(key)}" data-nid="0" data-seen-task="${esc(x.taskId)}">✓ Approve</button>
+      <button type="button" class="btn btn-sm" data-na-open="sendback" data-key="${esc(key)}" data-nid="0">↩ Send back</button>${open}</div>
+      ${act && act.kind === 'sendback' && act.key === key ? form('What should they fix? (at least 5 characters)', 'Send back') : ''}</div>`;
+  }
+  if (x.kind === 'closure') {
+    const key = `${x.id}|${x.taskId}`;
+    return `<div class="pd-row">${head(`${x.user ? `<b>${esc(personName(x.user))}</b> asked` : 'Asked'} to close <b>${esc(x.title || x.taskId)}</b>`)}
+      ${x.reason ? `<div class="small muted">“${esc(x.reason)}”</div>` : ''}
+      <div class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-na-close="${esc(key)}" data-nid="0" data-seen-task="${esc(x.taskId)}">✓ Close task</button>
+      <button type="button" class="btn btn-sm" data-na-open="keepopen" data-key="${esc(key)}" data-nid="0">Keep open</button>${open}</div>
+      ${act && act.kind === 'keepopen' && act.key === key ? form('Why does it stay open? (at least 5 characters)', 'Keep open') : ''}</div>`;
+  }
+  if (x.kind === 'ext') return `<div class="pd-row">${extRequestBoxHTML(x.req, { withTask: true })}</div>`;
+  if (x.kind === 'release') return `<div class="pd-row">${head(`Level ${x.stage} of <b>${esc(x.title)}</b> is ready to release (${(x.people || []).map(p => esc(personName(p.username))).join(', ')})`)}
+    <div class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-tab-go="approvals">Open Approvals ›</button>${open}</div></div>`;
+  if (x.kind === 'doc') {
+    const key = String(x.id);
+    return `<div class="pd-row">${head(`Document <b>“${esc(x.title)}”</b> is waiting for your decision`)}
+      <div class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-na-apr="${esc(key)}" data-nid="0">✓ Approve</button>
+      <button type="button" class="btn btn-sm" data-na-open="aprreject" data-key="${esc(key)}" data-nid="0">✗ Reject</button>
+      <button type="button" class="btn btn-sm" data-tab-go="approvals">Open ›</button></div>
+      ${act && act.kind === 'aprreject' && act.key === key ? form('Why is it rejected? (at least 5 characters)', 'Reject') : ''}</div>`;
+  }
+  if (x.kind === 'docrev') return `<div class="pd-row">${head(`Your document <b>“${esc(x.title)}”</b> was sent back — revise it and send it again`)}
+    <div class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-tab-go="approvals">Open Approvals ›</button></div></div>`;
+  if (x.kind === 'est' || x.kind === 'estret') return `<div class="pd-row">${head(x.kind === 'est' ? `<b>${x.count}</b> estimate${x.count > 1 ? 's' : ''} / JMR / reconciliation waiting for your approval` : `<b>${x.count}</b> of your estimation entries were rejected — correct and send again`)}
+    <div class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-tab-go="estimation">Open Estimation ›</button></div></div>`;
+  return '';
+}
+function pendingDecisionsPanelHTML(list, opts = {}) {
+  const items = opts.filter ? list.filter(opts.filter) : list;
+  if (!items.length) return opts.emptyHTML || '';
+  const n = pendingDecisionsCount(items);
+  return `<div class="pd-panel">
+    <div class="pd-title">⏳ ${esc(opts.title || 'Waiting for your decision')} <span class="badge flag">${n}</span></div>
+    ${items.map(pendingDecisionRowHTML).join('')}
+  </div>`;
+}
+function approvalsNeedingMeCount() { return pendingDecisionsCount(); }
 function waitingSince(iso) {
   const h = (Date.now() - new Date(iso).getTime()) / 3600000;
   if (h < 1) return 'just now';
@@ -3929,8 +4097,11 @@ function approvalTaskHead(t) {
     <div class="small muted">${priorityBadgeHTML(t)} ${t.project ? `📁 ${esc(t.project)} · ` : ''}${t.deadline ? `Due ${esc(fmtDate(t.deadline))}` : ''}${t.created_by_username !== session.username ? ` · created by ${esc(t.created_by || personName(t.created_by_username))}` : ''}</div></div>`;
 }
 function renderApprovalsView() {
-  const scopeAll = session.role === 'admin' && ui.taskApprovalScope !== 'mine';
+  const scopeAll = session.role === 'admin' && ui.taskApprovalScope === 'all';
   const w = taskApprovalWork(scopeAll);
+  const pend = myPendingDecisions();
+  const shownBelow = new Set([...w.toApprove.map(({ t, a }) => `part|${t.id}|${a.username}`), ...w.toRelease.map(({ t, stage }) => `rel|${t.id}|${stage}`)]);
+  const pendHere = pend.filter(x => !shownBelow.has(x.key) && x.kind !== 'doc' && x.kind !== 'docrev');
   const docsWaiting = (myApprovalRequests || []).filter(docNeedsMe).length;
   const sum = (n, label, cls) => `<div class="appr-sum ${n ? cls : ''}"><b>${n}</b><span>${label}</span></div>`;
   return `
@@ -3943,24 +4114,17 @@ function renderApprovalsView() {
         <option value="all" ${scopeAll ? 'selected' : ''}>All tasks (Admin)</option></select>` : ''}
     </div>
     <div class="appr-sums">
-      ${sum(w.toApprove.length, 'task parts to approve', 'hot')}
-      ${sum(w.toRelease.length, 'levels ready to release', 'hot')}
+      ${sum(pendingDecisionsCount(pend), 'waiting for your decision', 'hot')}
+      ${sum(pend.filter(x => x.kind === 'part').length, 'task parts to approve', 'hot')}
+      ${sum(pend.filter(x => x.kind === 'release').length, 'levels ready to release', 'hot')}
       ${sum(docsWaiting, 'documents need you', 'hot')}
-      ${sum((closureData.toDecide || []).length, 'closure requests', 'hot')}
-      ${sum((extReqData.toDecide || []).length, 'asking for more time', 'hot')}
+      ${sum(pend.filter(x => x.kind === 'closure').length, 'closure requests', 'hot')}
+      ${sum(pend.filter(x => x.kind === 'ext').length, 'asking for more time', 'hot')}
       ${sum(w.mineWaiting.length, 'of your parts waiting', '')}
     </div>
   </div>
 
-  ${(closureData.toDecide || []).length ? `<div class="card" id="appr-closure">
-    <div class="card-title">🔒 Closure requests waiting for your decision <span class="badge flag" style="margin-left:6px;">${closureData.toDecide.length}</span></div>
-    ${closureData.toDecide.map(r => closureDecideItemHTML(r)).join('')}
-  </div>` : ''}
-  ${(extReqData.toDecide || []).length ? `<div class="card" id="appr-extension">
-    <div class="card-title">⏳ Asking for more time <span class="badge flag" style="margin-left:6px;">${extReqData.toDecide.length}</span></div>
-    <div class="small muted" style="margin:-4px 0 8px;">The person's deadline moves only when you give more time. You can give a different date than asked.</div>
-    ${extReqData.toDecide.map(r => `<div class="appr-item">${extRequestBoxHTML(r, { withTask: true })}</div>`).join('')}
-  </div>` : ''}
+  ${pendHere.length ? `<div class="card" id="appr-pending">${pendingDecisionsPanelHTML(pendHere, { title: scopeAll ? 'Also waiting for your decision' : 'Waiting for your decision' })}</div>` : ''}
   <div class="card" id="appr-tasks">
     <div class="card-title">Task work waiting for your approval ${w.toApprove.length ? `<span class="badge flag" style="margin-left:6px;">${w.toApprove.length}</span>` : ''}</div>
     ${w.toApprove.length === 0 ? `<div class="empty">Nothing to approve right now. When someone submits their part on a task ${scopeAll ? '' : 'you created '}it appears here.</div>` : w.toApprove.map(({ t, a }) => `
@@ -4131,7 +4295,7 @@ function renderClosureView() {
   const toDecide = closureData.toDecide || [];
   const mine = closureData.mine || [];
   const keptOpen = closureData.keptOpen || [];
-  const scopeAll = session.role === 'admin' && ui.closureScope !== 'mine';
+  const scopeAll = session.role === 'admin' && ui.closureScope === 'all';
   // open tasks I'm tagged on (not my own) with no pending request — for the "ask to close" picker
   const askable = (myTasks || []).filter(t => t.status === 'open' && t.created_by_username !== session.username && (t.assignees || []).some(a => a.username === session.username) && !myPendingClosure(t.id))
     .sort((a, b) => String(a.title).localeCompare(String(b.title)));
@@ -5346,15 +5510,15 @@ function bindProfile() {
 /* ==================== MY TEAM (team leads only, delegated member management) ==================== */
 function renderMyTeamView() {
   const myTeammates = userDirectory.filter(u => u.team === session.team && u.username !== session.username);
-  return `
+  return `${loginDetailsCardHTML()}
   <div class="notice">You can add new members to your own team (<b>${esc(session.team || '—')}</b>) without needing Admin. New accounts are created as Team Member and are asked to set their own password on first login.</div>
   <div class="card">
     <div class="card-title">Add Team Member</div>
     <div class="row">
-      <div class="col"><label>Username</label><input type="text" id="new-team-username"></div>
+      <div class="col"><label>Username</label><input type="text" id="new-team-username" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. rahul.p"></div>
       <div class="col"><label>Name</label><input type="text" id="new-team-name"></div>
     </div>
-    <label>Password (min 6 chars)</label>${passwordFieldHTML('new-team-password', 'Temporary password')}
+    <label>Temporary password (8+ characters, letters and numbers)</label>${tempPasswordFieldHTML('new-team-password')}
     <button class="btn btn-primary btn-sm" style="margin-top:8px;" data-act="submit-new-team-member">Add to ${esc(session.team || 'My Team')}</button>
   </div>
   <div class="card">
@@ -5366,15 +5530,16 @@ function renderMyTeamView() {
   </div>`;
 }
 function bindMyTeam() {
-  bindPasswordToggles();
+  bindPasswordToggles(); bindLoginDetailsCard();
   const submit = document.querySelector('[data-act="submit-new-team-member"]');
   if (submit) submit.onclick = async () => {
     const username = document.getElementById('new-team-username').value.trim();
     const name = document.getElementById('new-team-name').value.trim();
-    const password = document.getElementById('new-team-password').value;
+    const password = document.getElementById('new-team-password').value.trim();
     try {
-      await api('/api/team/members', { method: 'POST', body: JSON.stringify({ username, name, password }) });
-      setBanner('Team member added.', 'ok'); await refreshData();
+      const r = await api('/api/team/members', { method: 'POST', body: JSON.stringify({ username, name, password }) });
+      ui.lastLoginDetails = { username: (r && r.username) || username.toLowerCase(), name, password };
+      setBanner('Team member added — send them the login details shown at the top.', 'ok'); await refreshData(); window.scrollTo(0, 0);
     } catch (e) { setBanner(e.message); render(); }
   };
 }
@@ -6348,7 +6513,7 @@ function bindPerformanceView() {
 
 /* ==================== ACCOUNTS (Admin) ==================== */
 function renderAccountsView() {
-  return `
+  return `${loginDetailsCardHTML()}
   <div class="card">
     <div class="card-title">Departments</div>
     <p class="small muted">The list everyone picks a department from when adding or editing an account. Typing a brand-new department name into any Team field also adds it here automatically.</p>
@@ -6366,11 +6531,11 @@ function renderAccountsView() {
   <div class="card">
     <div class="card-title">Add Account</div>
     <div class="row">
-      <div class="col"><label>Username</label><input type="text" id="new-acc-username"></div>
+      <div class="col"><label>Username</label><input type="text" id="new-acc-username" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. rahul.p"></div>
       <div class="col"><label>Name</label><input type="text" id="new-acc-name"></div>
     </div>
     <div class="row">
-      <div class="col"><label>Password (min 6 chars)</label>${passwordFieldHTML('new-acc-password', 'Temporary password')}</div>
+      <div class="col"><label>Temporary password (8+ characters, letters and numbers)</label>${tempPasswordFieldHTML('new-acc-password')}</div>
       <div class="col"><label>Role</label><select id="new-acc-role"><option value="member">Team Member</option><option value="director">Director</option><option value="admin">Admin</option></select></div>
     </div>
     <div class="row">
@@ -6422,7 +6587,7 @@ function renderAccountsView() {
       </td></tr>` : ''}
       ${ui.resetPwFor === u.username ? `<tr id="reset-pw-row-${esc(u.username)}" class="reset-pw-row"><td colspan="7">
         <div class="row" style="align-items:flex-end;">
-          <div class="col"><label>New password for ${esc(u.name)}</label>${passwordFieldHTML(`reset-pw-input-${u.username}`, 'their new password')}</div>
+          <div class="col"><label>New temporary password for ${esc(u.name)}</label>${tempPasswordFieldHTML(`reset-pw-input-${u.username}`, 'their new password')}</div>
           <div class="col" style="flex:0;white-space:nowrap;display:flex;gap:6px;"><button class="btn btn-primary btn-sm" data-do-reset-password="${esc(u.username)}">Set</button><button class="btn btn-sm" data-reset-password-for="${esc(u.username)}">Cancel</button></div>
         </div>
         ${ui.resetPwErr ? `<div class="err">${esc(ui.resetPwErr)}</div>` : ''}
@@ -6659,7 +6824,7 @@ function renderInner() {
     </div>`);
   bindGlobal();
   if (ui.adminTab === 'tasks' || ui.adminTab === 'alltasks' || ui.adminTab === 'calendar' || ui.adminTab === 'mydashboard' || showingToday) { bindMyTasks(); bindFollowupForm(); bindSubtaskForm(); bindAddAssigneeForm(); }
-  if (ui.adminTab === 'approvals') { bindApprovalForm(); bindApprovalsSection(); bindApprovalsView(); bindMyTasks(); bindClosureView(); }
+  if (ui.adminTab === 'approvals') { bindApprovalForm(); bindApprovalsSection(); bindApprovalsView(); bindMyTasks(); bindClosureView(); bindNotifExtras(); }
   bindExtensionControls();
   if (ui.adminTab === 'notifications') bindNotificationsView();
   if (ui.adminTab === 'closure') bindClosureView();
@@ -7133,7 +7298,7 @@ function bindMyTasks() {
   });
 }
 function bindAccounts() {
-  bindPasswordToggles();
+  bindPasswordToggles(); bindLoginDetailsCard();
   const submitDept = document.querySelector('[data-act="submit-new-department"]');
   if (submitDept) submitDept.onclick = async () => {
     const inp = document.getElementById('new-dept-name');
@@ -7159,13 +7324,14 @@ function bindAccounts() {
   if (submitAcc) submitAcc.onclick = async () => {
     const username = document.getElementById('new-acc-username').value.trim();
     const name = document.getElementById('new-acc-name').value.trim();
-    const password = document.getElementById('new-acc-password').value;
+    const password = document.getElementById('new-acc-password').value.trim();
     const role = document.getElementById('new-acc-role').value;
     const team = document.getElementById('new-acc-team').value.trim();
     const designation = document.getElementById('new-acc-designation').value.trim();
     try {
-      await api('/api/users', { method: 'POST', body: JSON.stringify({ username, name, password, role, team, designation }) });
-      setBanner('Account created.', 'ok'); await refreshData();
+      const r = await api('/api/users', { method: 'POST', body: JSON.stringify({ username, name, password, role, team, designation }) });
+      ui.lastLoginDetails = { username: r.username || username.toLowerCase(), name, password };
+      setBanner('Account created — send them the login details shown at the top.', 'ok'); await refreshData(); window.scrollTo(0, 0);
     } catch (e) { setBanner(e.message); await refreshData(); }
   };
   document.querySelectorAll('[data-name-for]').forEach(inp => inp.onblur = async () => {
@@ -7257,13 +7423,14 @@ function bindAccounts() {
   document.querySelectorAll('[data-do-reset-password]').forEach(btn => btn.onclick = async () => {
     const username = btn.dataset.doResetPassword;
     const input = document.getElementById(`reset-pw-input-${username}`);
-    const newPassword = input ? input.value : '';
-    if (newPassword.length < 6) { ui.resetPwErr = 'The new password must be at least 6 characters.'; render(); return; }
+    const newPassword = input ? input.value.trim() : '';
+    if (newPassword.length < 8) { ui.resetPwErr = 'The new password must be at least 8 characters, with letters and numbers.'; render(); return; }
     if (btn.disabled) return; btn.disabled = true; btn.textContent = 'Setting…';
     try {
       await api(`/api/users/${username}/reset-password`, { method: 'POST', body: JSON.stringify({ newPassword }) });
       clearResetInput(username); ui.resetPwFor = null; ui.resetPwErr = '';
-      setBanner(`Password reset for ${personName(username)}. Tell them the new password in person — they will set their own when they log in.`, 'ok');
+      ui.lastLoginDetails = { username, name: personName(username), password: newPassword, reset: true };
+      setBanner(`Password reset for ${personName(username)} — send them the login details shown at the top.`, 'ok'); window.scrollTo(0, 0);
       await refreshData();
     } catch (e) { ui.resetPwErr = e.message; btn.disabled = false; btn.textContent = 'Set'; render(); }
   });
