@@ -498,6 +498,16 @@ async function init() {
     requested_deadline TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
     decided_by TEXT, decided_by_name TEXT, decided_at TEXT, decision_note TEXT, approved_deadline TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_deadline_requests ON deadline_requests(task_id, status)');
+  // ---- Daily progress report (DPR): one report per project per day; entries = work done / material in / out ----
+  await run(`CREATE TABLE IF NOT EXISTS dpr_reports(
+    id SERIAL PRIMARY KEY, project TEXT NOT NULL, report_date TEXT NOT NULL, manpower TEXT, weather TEXT, notes TEXT,
+    source_file TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT NOT NULL, updated_at TEXT, UNIQUE(project, report_date))`);
+  await run(`CREATE TABLE IF NOT EXISTS dpr_entries(
+    id SERIAL PRIMARY KEY, report_id INTEGER NOT NULL, kind TEXT NOT NULL, at_time TEXT, item TEXT NOT NULL, description TEXT,
+    qty NUMERIC, unit TEXT, location TEXT, party TEXT, ref TEXT, remarks TEXT, source TEXT,
+    created_by TEXT, created_by_name TEXT, created_at TEXT NOT NULL, updated_at TEXT)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_dpr_entries_report ON dpr_entries(report_id)');
+  await run('CREATE INDEX IF NOT EXISTS idx_dpr_reports_date ON dpr_reports(report_date)');
   // ---- Compliance due dates (TDS, GST, PT, PF …): a day of every month; Accounts + Admin are reminded ----
   await run(`CREATE TABLE IF NOT EXISTS compliance_items(
     id SERIAL PRIMARY KEY, name TEXT NOT NULL, due_day INTEGER NOT NULL, notes TEXT, active BOOLEAN NOT NULL DEFAULT TRUE,

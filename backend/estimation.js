@@ -21,7 +21,7 @@
      saving               = theoretical − actual (if less)
 
    Who: the Estimation & Billing Department (and Admin) create and edit. Approve: the project's heads and Admin.
-   View: Estimation & Billing, Purchase, the project heads and Admin. Remarks any time; files: HighRise downloadable,
+   View: Estimation & Billing, Purchase, the site team (Execution), Pooja Raut (EST_VIEW_USERS), the project heads and Admin. Remarks any time; files: HighRise downloadable,
    the rest view-only. */
 const STATUS = ['draft', 'submitted', 'approved', 'returned'];
 
@@ -63,6 +63,7 @@ function mountEstimation(app, deps) {
 
   // ---- who may do what
   const HEADS = PROJECT_HEADS || {};
+  const EST_VIEW_USERS = String(process.env.EST_VIEW_USERS || 'pooja.r').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
   async function me(user) {
     const u = await db.getUserFresh(user.username);
     const team = String((u && u.team) || '');
@@ -74,7 +75,8 @@ function mountEstimation(app, deps) {
       canEdit: admin || isEst,
       approveAll: admin, headOf,
       isAccounts: /account/i.test(team),
-      canView: admin || isEst || headOf.length > 0 || /purchase/i.test(team),
+      // View also for the site team (Execution) and named people (EST_VIEW_USERS, default Pooja Raut).
+      canView: admin || isEst || headOf.length > 0 || /purchase|execution|site/i.test(team) || EST_VIEW_USERS.includes(String(user.username).toLowerCase()),
     };
   }
   // The heads who must approve for a project (existing accounts); a project without heads is approved by Admin.
@@ -218,7 +220,7 @@ function mountEstimation(app, deps) {
   });
   app.get('/api/estimation', auth(ALL_ROLES), async (req, res) => {
     const m = await me(req.user);
-    if (!m.canView) return res.status(403).json({ error: 'The Estimation page is for the Estimation & Billing and Purchase departments, the approvers and Admin.' });
+    if (!m.canView) return res.status(403).json({ error: 'The Estimation page is for Estimation & Billing, Purchase, the site team, the approvers and Admin.' });
     const data = await loadAll();
     const users = await db.listUsers();
     const heads = Object.fromEntries(PROJECT_OPTIONS.map(p => [p, (HEADS[p] || []).filter(h => users.some(u => u.username === h)).map(h => ({ username: h, name: (users.find(u => u.username === h) || {}).name || h }))]));

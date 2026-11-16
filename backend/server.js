@@ -523,19 +523,31 @@ function sign(payload, expiresIn) { return jwt.sign(payload, JWT_SECRET, { expir
 const ALL_ROLES = ['admin', 'member', 'director'];
 // The firm's projects — a new task must pick one.
 const PROJECT_OPTIONS = ['Mihir Amara', 'Nyati Equinox', 'Sierra (Tathawade)', 'Mihir Projects'];
-// Project heads are always kept informed on every new task of their project (added automatically).
+// Project heads: they approve estimates for their project. On a new task the creator chooses, per task,
+// whether to keep them informed (no longer added automatically).
 const PROJECT_HEADS = {
   'Mihir Amara': ['suraj.k', 'rahul.p'],
   'Nyati Equinox': ['anil.w', 'siddheshwar.p'],
   'Sierra (Tathawade)': ['dnyaneshwar.k'],
 };
-// Heads to add for a task: not the creator, not someone already doing the task or already kept informed,
-// and only accounts that exist.
-async function projectHeadsToAdd(project, creator, alreadyOn) {
-  const want = (PROJECT_HEADS[project] || []).filter(u => u !== creator && !alreadyOn.has(u));
+// Heads to add for a task: only the ones the creator ticked, that really head this project, not the creator,
+// not someone already doing the task or already kept informed, and only accounts that exist.
+async function projectHeadsToAdd(project, creator, alreadyOn, chosen) {
+  const picked = new Set((Array.isArray(chosen) ? chosen : []).map(u => String(u || '').trim()));
+  const want = (PROJECT_HEADS[project] || []).filter(u => picked.has(u) && u !== creator && !alreadyOn.has(u));
   const out = [];
   for (const u of want) if (await db.getUser(u)) out.push(u);
   return out;
+}
+// Tag a department → its head(s) (the department's team leads) are tagged on the task.
+async function departmentHeads(departments) {
+  const users = await db.listUsers();
+  const out = [], missing = [];
+  for (const d of departments) {
+    const heads = users.filter(u => String(u.team || '') === d && Number(u.is_team_lead) === 1).map(u => u.username);
+    if (heads.length) out.push(...heads); else missing.push(d);
+  }
+  return { heads: [...new Set(out)], missing };
 }
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
 // Directors see their own department's Performance/Peak-Hours reporting by default — nothing
@@ -1943,11 +1955,15 @@ async function insertTaskRecords(tx, actor, spec, { notify = true } = {}) {
       await db.createNotification({ username: uname, type: 'followup_tagged', message: `${actor.name} asked you to follow up on "${title}".`, task_id: id }, tx);
     }
   }
-  // Project heads — always kept informed on their project's tasks.
-  const heads = await projectHeadsToAdd(spec.project, actor.username, new Set([...tagged.map(t => t.username), ...(spec.followups || [])]));
+  // Project heads — kept informed only when the creator ticked them for this task.
+  const heads = await projectHeadsToAdd(spec.project, actor.username, new Set([...tagged.map(t => t.username), ...(spec.followups || [])]), spec.projectHeads);
   for (const uname of heads) {
     await db.addFollowup(id, uname, actor.username, tx);
     if (notify) await db.createNotification({ username: uname, type: 'followup_tagged', message: `${actor.name} created "${title}" on ${spec.project} — you are kept informed as project head.`, task_id: id }, tx);
+  }
+  if ((spec.departments || []).length) {
+    const names = []; for (const u of spec.deptHeads || []) { const r = await db.getUser(u); names.push(r ? r.name : u); }
+    await ev('ASSIGNED', `Departments tagged: ${spec.departments.join(', ')} — head${names.length > 1 ? 's' : ''} tagged: ${names.join(', ')}`, { metadata: { departments: spec.departments, usernames: spec.deptHeads || [], via: 'department' } });
   }
   if (heads.length) {
     const names = []; for (const u of heads) { const r = await db.getUser(u); names.push(r ? r.name : u); }
@@ -2035,6 +2051,18 @@ async function createTaskRoute(req, res, clientRequestId) {
   const stageGroups = rawStages && rawStages.length > 0
     ? rawStages.map(s => Array.from(new Set((Array.isArray(s.usernames) ? s.usernames : []).map(u => str(u).trim()).filter(Boolean)))).filter(g => g.length > 0)
     : [Array.from(new Set(rawList.map(u => str(u).trim()).filter(Boolean)))];
+  // Departments tagged on the task: each department's head is tagged (in Level 1) automatically.
+  const departments = Array.from(new Set((Array.isArray((req.body || {}).departments) ? (req.body || {}).departments : []).map(d => str(d).trim()).filter(Boolean)));
+  let deptHeads = [];
+  if (departments.length) {
+    const { heads, missing } = await departmentHeads(departments);
+    if (missing.length) return res.status(400).json({ error: `${missing.join(', ')} ${missing.length > 1 ? 'have' : 'has'} no head set — Admin can mark the head under Accounts (Team lead), or tag a person instead.` });
+    deptHeads = heads;
+    const already = new Set(stageGroups.flat());
+    const add = heads.filter(u => !already.has(u));
+    if (add.length) { if (!stageGroups.length) stageGroups.push([]); stageGroups[0] = [...stageGroups[0], ...add]; }
+  }
+  const projectHeadsChosen = Array.isArray((req.body || {}).projectHeads) ? (req.body || {}).projectHeads.map(u => str(u).trim()).filter(Boolean) : [];
   const usernames = Array.from(new Set(stageGroups.flat()));
   // Optional per-person deadline, e.g. { "bob": "2026-09-01" } — falls back to the overall task
   // deadline for anyone not listed here. Used by deadline reminders and the Reports delay flag
@@ -2101,6 +2129,7 @@ async function createTaskRoute(req, res, clientRequestId) {
     await insertTaskRecords(tx, req.user, {
       id, title, description, priority, deadline, dependsOnTaskId, parentTaskId, project, phase,
       attachment, attachmentName, isDrawingRequest, autoReleaseStages, stageGroups, usersByUsername, individualDeadlines,
+      projectHeads: projectHeadsChosen, departments, deptHeads,
     });
     if (uploads.files.length) await db.addTaskFiles(id, null, uploads.files, req.user.username, tx);
     if (clientRequestId) await tx.run('UPDATE tasks SET client_request_id=? WHERE id=?', [clientRequestId, id]);
@@ -2239,8 +2268,6 @@ app.post('/api/tasks/import', auth(ALL_ROLES), async (req, res) => {
     }));
     p.checklist.forEach((text, i) => bulk.checklist.push({ task_id: id, text, sort_order: i }));
     p.followups.forEach(u => { bulk.followups.push({ task_id: id, username: u, tagged_by: req.user.username }); note(u, 'followup', p.title, id); });
-    const onTask = new Set([...p.stageGroups.flat(), ...p.followups]);
-    for (const u of await projectHeadsToAdd(p.project, req.user.username, onTask)) { bulk.followups.push({ task_id: id, username: u, tagged_by: req.user.username }); note(u, 'followup', p.title, id); }
     created.push({ rowNumber: p.rowNumber, id, title: p.title });
   }
   const toUpdate = plan.plans.filter(p => p.errors.length === 0 && p.action === 'update');
@@ -3933,6 +3960,8 @@ const { mountPayables } = require('./payables');
 const payables = mountPayables(app, { db, auth, ALL_ROLES, auditFromReq, collectUploads, MAX_FILE_CHARS, str, PROJECT_OPTIONS, localDateStr });
 /* backend/compliance.js — monthly compliance due dates (TDS, GST, PT, PF …): reminders 10 and 2 days before to Accounts + Admin. */
 const { mountCompliance } = require('./compliance');
+const { mountDpr } = require('./dpr');
+mountDpr(app, { db, auth, ALL_ROLES, auditFromReq, str, PROJECT_OPTIONS });
 const compliance = mountCompliance(app, { db, auth, ALL_ROLES, auditFromReq, str, localDateStr, collectUploads, MAX_FILE_CHARS });
 
 /* ============ EMPLOYEE LOCATION TRACKING ============

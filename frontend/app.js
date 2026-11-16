@@ -51,11 +51,37 @@ let closureData = { toDecide: [], mine: [], keptOpen: [] };
 let extReqData = { toDecide: [], mine: [] }; // deadline extension requests (GET /api/extension-requests)
 // The firm's projects — every new task picks one (also checked on the server).
 const PROJECT_OPTIONS = ['Mihir Amara', 'Nyati Equinox', 'Sierra (Tathawade)', 'Mihir Projects'];
-// Project heads — added automatically to "Keep informed" on every new task of their project (server does it too).
+// Project heads — on a new task the creator chooses, per project, whether to keep them informed (not automatic).
 const PROJECT_HEADS = { 'Mihir Amara': ['suraj.k', 'rahul.p'], 'Nyati Equinox': ['anil.w', 'siddheshwar.p'], 'Sierra (Tathawade)': ['dnyaneshwar.k'] };
 function projectHeadsNote(project) {
   const heads = (PROJECT_HEADS[project] || []).filter(u => u !== session.username);
-  return heads.length ? `👁 Kept informed automatically (project head${heads.length > 1 ? 's' : ''}): <b>${heads.map(u => esc(personName(u))).join(', ')}</b>` : '';
+  if (!heads.length) return '';
+  const picked = (ui.taskFormHeads || {})[project] || [];
+  return `<div class="ph-pick"><span>Keep the project head${heads.length > 1 ? 's' : ''} informed?</span>${heads.map(u => `<label class="ph-chip"><input type="checkbox" data-ph-pick="${esc(u)}" ${picked.includes(u) ? 'checked' : ''}> ${esc(personName(u))}</label>`).join('')}</div>`;
+}
+// Departments and their heads (team leads) — tag a department and its head is tagged on the task.
+function departmentHeadsMap() {
+  const map = {};
+  for (const u of userDirectory || []) if (u.team) { map[u.team] = map[u.team] || []; if (Number(u.is_team_lead) === 1) map[u.team].push(u.username); }
+  return map;
+}
+function deptTagHTML() {
+  const map = departmentHeadsMap();
+  const depts = Object.keys(map).sort((a, b) => a.localeCompare(b));
+  const picked = ui.taskFormDepts || [];
+  const heads = [...new Set(picked.flatMap(d => map[d] || []))];
+  return `<div class="dept-tag" id="dept-tag-box">
+    <label style="margin-top:4px;">Tag departments <span class="small muted">— optional; each department's head is tagged on the task (Level 1)</span></label>
+    <input type="search" id="dept-tag-q" class="dept-q" placeholder="🔍 Type a department or its head…" value="${esc(ui.taskFormDeptQ || '')}" autocomplete="off" data-no-spell>
+    <div class="dept-chips">${depts.map(d => {
+      const h = map[d] || [];
+      const hay = `${d} ${h.join(' ')} ${h.map(personName).join(' ')}`.toLowerCase();
+      const hide = ui.taskFormDeptQ && !String(ui.taskFormDeptQ).toLowerCase().split(/\s+/).filter(Boolean).every(w => hay.includes(w));
+      return `<button type="button" class="dept-chip ${picked.includes(d) ? 'on' : ''} ${h.length ? '' : 'nohead'}" data-dept-pick="${esc(d)}" ${hide && !picked.includes(d) ? 'style="display:none"' : ''} ${h.length ? '' : 'disabled title="No head set for this department — Admin can mark one under Accounts (Team lead)"'}>
+        ${picked.includes(d) ? '✓ ' : ''}${esc(d.replace(/ Department$/, ''))} <span class="small muted">${h.length ? esc(h.map(personName).join(', ')) : 'no head set'}</span></button>`;
+    }).join('')}</div>
+    ${heads.length ? `<div class="small" style="margin-top:4px;">➜ Will be tagged: <b>${heads.map(u => esc(personName(u))).join(', ')}</b></div>` : ''}
+  </div>`;
 }
 let notifRefs = { approval: {}, payment: {} }; // approval requests / payments that notifications point to
 let notifTaskInfo = {}; // taskId → { status, followedUpAt } for the Notifications page // closure requests (Task Closure page)
@@ -115,7 +141,7 @@ if (token) {
   if (safeStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; extReqData = { toDecide: [], mine: [] }; extReqLoaded = false; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; if (typeof estData !== 'undefined') { estData = null; estSummary = { canView: false }; } if (typeof apData !== 'undefined') { apData = null; apSummary = { canView: false }; } if (typeof compData !== 'undefined') compData = null; menuLoaded = {};
+  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; extReqData = { toDecide: [], mine: [] }; extReqLoaded = false; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; if (typeof estData !== 'undefined') { estData = null; estSummary = { canView: false }; } if (typeof apData !== 'undefined') { apData = null; apSummary = { canView: false }; } if (typeof compData !== 'undefined') compData = null; if (typeof dprData !== 'undefined') { dprData = null; ui.dpr = null; } menuLoaded = {};
   ui = defaultUiState(); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
   announcements = []; canPostAnnouncements = false; chat.rooms = []; chat.messages = {}; chat.hasOlder = {}; chat.lastVersion = null;
 }
@@ -614,7 +640,7 @@ let menuLoaded = {};
 function menuMemory() { try { return JSON.parse(safeStorage.getItem('ls_menu:' + session.username) || '{}') || {}; } catch (e) { return {}; } }
 function menuGuess(key) {
   const team = String(session.team || ''), admin = session.role === 'admin';
-  if (key === 'estimation') return admin || /estimat|billing|purchase/i.test(team) || session.username === 'dnyaneshwar.k';
+  if (key === 'estimation') return admin || /estimat|billing|purchase|execution|site/i.test(team) || ['dnyaneshwar.k', 'pooja.r'].includes(session.username);
   if (key === 'accountsdept') return admin || /account|purchase/i.test(team);
   if (key === 'budget') return admin || session.role === 'director' || /account|purchase/i.test(team);
   return false;
@@ -629,7 +655,7 @@ function menuShows(key, liveFn) {
   const mem = menuMemory();
   return key in mem ? !!mem[key] : menuGuess(key);
 }
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries', budget: 'Budget', estimation: 'Estimation & Billing', accountsdept: 'Accounts Department' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries', budget: 'Budget', estimation: 'Estimation & Billing', accountsdept: 'Accounts Department', dpr: 'Daily Progress Report' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -753,6 +779,7 @@ function renderSidebar() {
   const deptItems = [];
   if (typeof estimationTabVisible === 'function' && menuShows('estimation', estimationTabVisible)) deptItems.push({ key: 'estimation', label: 'Estimation', icon: 'clipboard', badge: () => estimationBadge() });
   if (typeof accountsDeptTabVisible === 'function' && menuShows('accountsdept', accountsDeptTabVisible)) deptItems.push({ key: 'accountsdept', label: 'Accounts Dept', icon: 'wallet', badge: () => (typeof accountsDeptBadge === 'function' ? accountsDeptBadge() : 0) });
+  if (typeof dprTabVisible === 'function' && dprTabVisible()) deptItems.push({ key: 'dpr', label: 'Daily Progress', icon: 'clipboard', badge: () => 0 });
   if (deptItems.length) { const ti = groups.findIndex(g => g.group === 'Tasks'); groups.splice(ti >= 0 ? ti + 1 : groups.length, 0, { group: 'Departments', items: deptItems }); }
   if (window.LocationUI) window.LocationUI.navGroups(groups); // frontend/location.js (only when switched on)
   const active = currentTabKey();
@@ -875,7 +902,7 @@ function notifBehindPeople(list) {
 // task comes back at the next reminder slot because it is still incomplete.
 function notifFollowUpHTML(n) {
   const info = n.task_id ? notifTaskInfo[n.task_id] : null;
-  if (!info || info.status !== 'open' || /^(closure|delivery)_/.test(n.type) || notifCat(n) === 'approval') return '';
+  if (!info || info.status !== 'open' || /^delivery_/.test(n.type)) return '';
   const at = info.followedUpAt;
   const when = at ? new Date(at).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit' }) : '';
   const day = at && istDayKey(at) !== istDayKey(new Date().toISOString()) ? ` ${new Date(at).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short' })}` : '';
@@ -2527,6 +2554,35 @@ function renderTaskActivityFeed(t) {
   rows.sort((a, b) => new Date(a.at) - new Date(b.at));
   return `<div style="margin-top:8px;">${historyTableHTML(rows)}</div>`;
 }
+// ---- 📣 Follow up: one button, the same everywhere an open task is shown ----
+function taskIsKnownClosed(id) {
+  const t = (myTasks || []).find(x => x.id === id) || (allTasks || []).find(x => x.id === id) || (watchTasks || []).find(x => x.id === id);
+  if (t) return t.status !== 'open';
+  const info = notifTaskInfo && notifTaskInfo[id];
+  return !!(info && info.status && info.status !== 'open');
+}
+function quickFollowUpBtnHTML(taskId, opts = {}) {
+  if (!taskId || taskIsKnownClosed(taskId)) return '';
+  const info = notifTaskInfo && notifTaskInfo[taskId];
+  const at = (info && info.followedUpAt) || (ui.followedUp || {})[taskId];
+  return `<button type="button" class="${opts.icon ? 'task-fu-icon' : 'btn btn-sm'} quick-fu ${at ? 'done' : ''}" data-quick-fu="${esc(taskId)}" title="${at ? 'You followed up already — tap to remind everyone on this task again' : 'Remind everyone on this task to look into it'}">📣${opts.icon ? '' : at ? ' Follow up again' : ' Follow up'}</button>`;
+}
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest && e.target.closest('[data-quick-fu]');
+  if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  if (b.disabled) return; b.disabled = true;
+  const id = b.dataset.quickFu, label = b.textContent; b.textContent = b.classList.contains('task-fu-icon') ? '…' : '📣 Sending…';
+  try {
+    const r = await api(`/api/tasks/${encodeURIComponent(id)}/nudge`, { method: 'POST' });
+    ui.followedUp = { ...(ui.followedUp || {}), [id]: new Date().toISOString() };
+    if (notifTaskInfo[id]) notifTaskInfo[id] = { ...notifTaskInfo[id], followedUpAt: ui.followedUp[id] };
+    if (typeof notifClearForTask === 'function') notifClearForTask(id);
+    setBanner(r.sent && r.sent.length ? `Follow-up sent to ${r.sent.map(u => personName(u)).join(', ')}.${r.skipped && r.skipped.length ? ` Not re-sent to ${r.skipped.map(x => personName(x.username)).join(', ')} (followed up recently).` : ''}`
+      : `Everyone on this task was followed up recently${r.skipped && r.skipped.length ? ` (${r.skipped.map(x => personName(x.username)).join(', ')})` : ''} — try again later.`, 'ok');
+    render();
+  } catch (err) { b.disabled = false; b.textContent = label; setBanner(err.message); render(); }
+}, true);
 // ---- Task title / ID: selectable text, plus a copy button ----
 function taskCopyBtnHTML(t) {
   return `<button type="button" class="task-copy" data-copy-task="${esc(t.id)}" data-copy-title="${esc(t.title)}" title="Copy task ID and title" aria-label="Copy task ID and title">📋</button>`;
@@ -2564,7 +2620,7 @@ function extRequestBoxHTML(r, opts = {}) {
       <input type="text" id="ext-note-${r.id}" value="${esc(st.note || '')}" placeholder="Note (required to reject)">
       <button type="button" class="btn btn-sm btn-primary" data-ext-decide="${r.id}" data-decision="approve">✓ Give more time</button>
       <button type="button" class="btn btn-sm btn-danger" data-ext-decide="${r.id}" data-decision="reject">✗ Reject</button>
-      ${opts.withTask ? `<button type="button" class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button>` : ''}
+      ${opts.withTask ? `<button type="button" class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button>${quickFollowUpBtnHTML(r.task_id)}` : ''}
     </div>
   </div>`;
 }
@@ -2693,7 +2749,7 @@ function renderTaskItem(t) {
       <summary class="task-row-summary">
         <span class="task-row-chevron" aria-hidden="true"></span>
         <span class="task-row-text">
-          <span class="task-row-title"><b>${esc(t.title)}</b> <span class="mono small muted">${esc(t.id)}</span>${taskCopyBtnHTML(t)}</span>
+          <span class="task-row-title"><b>${esc(t.title)}</b> <span class="mono small muted">${esc(t.id)}</span>${taskCopyBtnHTML(t)}${t.status === 'open' && canCommentHere ? quickFollowUpBtnHTML(t.id, { icon: true }) : ''}</span>
           <span class="task-row-meta">
             ${t.project ? `<span>📁 ${esc(t.project)}</span>` : ''}
             <span>${isCancelled ? `Cancelled by ${esc(t.cancelled_by || '—')} · ${fmtTime(t.cancelled_at)}` : `Closed by ${esc(t.closed_by || '—')} · ${fmtTime(t.closed_at)}`}</span>
@@ -2741,7 +2797,7 @@ function renderTaskItem(t) {
     <summary class="task-row-summary">
       <span class="task-row-chevron" aria-hidden="true"></span>
       <span class="task-row-text">
-        <span class="task-row-title"><b>${esc(t.title)}</b> <span class="mono small muted">${esc(t.id)}</span>${taskCopyBtnHTML(t)}</span>
+        <span class="task-row-title"><b>${esc(t.title)}</b> <span class="mono small muted">${esc(t.id)}</span>${taskCopyBtnHTML(t)}${t.status === 'open' && canCommentHere ? quickFollowUpBtnHTML(t.id, { icon: true }) : ''}</span>
         <span class="task-row-meta">
           ${priorityBadgeHTML(t)}
           ${t.project ? `<span>📁 ${esc(t.project)}</span>` : ''}${t.phase ? `<span>${esc(t.phase)}</span>` : ''}
@@ -2977,6 +3033,9 @@ function applyTaskSearch(tasks) {
       (t.description || '').toLowerCase().includes(q) ||
       (t.id || '').toLowerCase().includes(q) ||
       (t.assignees || []).some(a => (a.username || '').toLowerCase().includes(q) || personName(a.username).toLowerCase().includes(q))
+      || (t.created_by_username || '').toLowerCase().includes(q) || personName(t.created_by_username || '').toLowerCase().includes(q)
+      || (t.project || '').toLowerCase().includes(q)
+      || (t.followups || []).some(f => (f.username || '').toLowerCase().includes(q) || personName(f.username).toLowerCase().includes(q))
     );
   }
   if (ui.taskFilterProject) filtered = filtered.filter(t => t.project === ui.taskFilterProject);
@@ -3152,7 +3211,7 @@ function searchBoxHTML() {
   const usedProjects = Array.from(new Set(myTasks.concat(session.role === 'admin' ? allTasks : []).map(t => t.project).filter(Boolean))).sort();
   const usedPhases = Array.from(new Set(myTasks.concat(session.role === 'admin' ? allTasks : []).map(t => t.phase).filter(Boolean))).sort();
   return `
-    <input type="text" id="task-search-input" placeholder="Search by title, description, task ID, or tagged person..." value="${esc(ui.taskSearchQuery)}" style="margin-bottom:8px;">
+    <input type="text" id="task-search-input" placeholder="Search by title, task ID, project, or a person's name / username…" autocapitalize="off" value="${esc(ui.taskSearchQuery)}" style="margin-bottom:8px;">
     ${true ? `
     <div class="row task-filter-row" style="margin-bottom:12px;">
       ${usedProjects.length > 0 ? `
@@ -3460,7 +3519,8 @@ function taskFormHTML() {
             </div>
           </div>`).join('')}
       </div>
-      <button class="btn btn-sm" data-act="add-task-stage" style="margin-bottom:10px;">+ Add Level (hold people until the level before them is approved)</button>
+      ${deptTagHTML()}
+      <button class="btn btn-sm" data-act="add-task-stage" style="margin-bottom:10px;margin-top:8px;">+ Add Level (hold people until the level before them is approved)</button>
       ${stages.length > 1 ? `
       <label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-bottom:10px;">
         <input type="checkbox" id="task-form-auto-release" style="width:auto;" ${ui.taskFormAutoRelease ? 'checked' : ''}>
@@ -3519,9 +3579,23 @@ function bindTaskForm() {
   };
   const projSel = document.getElementById('new-task-project');
   if (projSel) {
-    const showHeads = () => { const el = document.getElementById('new-task-project-heads'); if (el) el.innerHTML = projectHeadsNote(projSel.value); projSel.classList.remove('field-err'); };
+    const showHeads = () => {
+      const el = document.getElementById('new-task-project-heads'); if (!el) return;
+      el.innerHTML = projectHeadsNote(projSel.value); projSel.classList.remove('field-err');
+      el.querySelectorAll('[data-ph-pick]').forEach(cb => cb.onchange = () => {
+        ui.taskFormHeads = ui.taskFormHeads || {};
+        ui.taskFormHeads[projSel.value] = [...el.querySelectorAll('[data-ph-pick]:checked')].map(x => x.dataset.phPick);
+      });
+    };
     projSel.onchange = showHeads; if (projSel.value) showHeads();
   }
+  const redrawDept = () => { const box = document.getElementById('dept-tag-box'); if (!box) return; const q = document.getElementById('dept-tag-q'); const had = q && document.activeElement === q; const pos = q ? q.selectionStart : 0;
+    box.outerHTML = deptTagHTML(); bindDeptTag(); if (had) { const n = document.getElementById('dept-tag-q'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) {} } } };
+  const bindDeptTag = () => {
+    document.querySelectorAll('[data-dept-pick]').forEach(b => b.onclick = () => { const d = b.dataset.deptPick; const cur = ui.taskFormDepts || []; ui.taskFormDepts = cur.includes(d) ? cur.filter(x => x !== d) : [...cur, d]; redrawDept(); });
+    const q = document.getElementById('dept-tag-q'); if (q) q.oninput = () => { ui.taskFormDeptQ = q.value; redrawDept(); };
+  };
+  bindDeptTag();
   const submitTaskBtn = document.querySelector('[data-act="submit-task"]');
   if (submitTaskBtn) submitTaskBtn.onclick = async () => {
     if (ui.taskCreating) return; // already sending — a second tap must not create a second task
@@ -3567,9 +3641,12 @@ function bindTaskForm() {
         stages: stagesPayload ? stagesPayload.map(usernames => ({ usernames })) : null,
         autoReleaseStages: !!ui.taskFormAutoRelease,
         dependsOnTaskId, attachments: pendingFiles['task-new'] || [], isDrawingRequest,
+        departments: isDrawingRequest ? [] : (ui.taskFormDepts || []),
+        projectHeads: ((ui.taskFormHeads || {})[project] || []).filter(u => (PROJECT_HEADS[project] || []).includes(u)),
       }) });
       takePendingFiles('task-new'); ui.taskFormOpen = false; ui.taskFormTags = [];
       ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; ui.taskFormKey = null;
+      ui.taskFormDepts = []; ui.taskFormDeptQ = ''; ui.taskFormHeads = {};
       ui.taskCreating = false;
       celebrate(isDrawingRequest ? 'Drawing request sent! 📐' : undefined, RAISE_MESSAGES);
       setBanner(isDrawingRequest ? 'Drawing request sent.' : 'Task created.', 'ok');
@@ -3579,6 +3656,7 @@ function bindTaskForm() {
   const cancelTaskFormBtn = document.querySelector('[data-act="cancel-task-form"]');
   if (cancelTaskFormBtn) cancelTaskFormBtn.onclick = () => {
     ui.taskFormOpen = false; ui.taskFormTags = []; ui.taskFormStages = [{ usernames: [] }]; ui.taskFormAutoRelease = false; ui.taskFormKey = null;
+    ui.taskFormDepts = []; ui.taskFormDeptQ = ''; ui.taskFormHeads = {};
     takePendingFiles('task-new'); render();
   };
   bindFilePicker(document.getElementById('new-task-file'), 'task-new');
@@ -4042,7 +4120,7 @@ function pendingDecisionRowHTML(x) {
   const act = ui.notifAct && ui.notifAct.nid === 0 ? ui.notifAct : null;
   const form = (placeholder, sendLabel) => `<div class="na-form"><input type="text" id="na-note" value="${esc(act.note || '')}" placeholder="${esc(placeholder)}">
     <button type="button" class="btn btn-sm btn-danger" data-na-send="0">${sendLabel}</button><button type="button" class="btn btn-sm" data-na-cancel="1">Cancel</button></div>`;
-  const open = x.taskId ? `<button type="button" class="btn btn-sm" data-na-open-task="${esc(x.taskId)}">Open ›</button>` : '';
+  const open = x.taskId ? `${quickFollowUpBtnHTML(x.taskId)}<button type="button" class="btn btn-sm" data-na-open-task="${esc(x.taskId)}">Open ›</button>` : '';
   const head = (what) => `<div class="pd-what">${what}${x.taskId ? ` <span class="mono small muted">${esc(x.taskId)}</span>` : ''}${x.at ? ` <span class="small muted">· ${waitingSince(x.at)}</span>` : ''}</div>`;
   if (x.kind === 'part') {
     const key = `${x.taskId}|${x.user}`;
@@ -4137,7 +4215,7 @@ function renderApprovalsView() {
           <div class="col" style="flex:0;white-space:nowrap;display:flex;gap:6px;">
             <button class="btn btn-sm btn-primary" data-approve-assignee="${t.id}" data-username="${esc(a.username)}">✓ Approve</button>
             <button class="btn btn-sm btn-danger" data-reject-assignee="${t.id}" data-username="${esc(a.username)}">Reject</button>
-            <button class="btn btn-sm" data-goto-task="${t.id}">Open task ›</button>
+            <button class="btn btn-sm" data-goto-task="${t.id}">Open task ›</button>${quickFollowUpBtnHTML(t.id)}
           </div>
         </div>
       </div>`).join('')}
@@ -4152,7 +4230,7 @@ function renderApprovalsView() {
         ${approvalTaskHead(t)}
         <div class="small" style="margin:6px 0;">Level ${stage}: ${people.map(p => esc(personName(p.username))).join(', ')} — on hold</div>
         <button class="btn btn-sm btn-teal" data-release-stage="${t.id}" data-stage="${stage}">Release Level ${stage}</button>
-        <button class="btn btn-sm" data-goto-task="${t.id}">Open task ›</button>
+        <button class="btn btn-sm" data-goto-task="${t.id}">Open task ›</button>${quickFollowUpBtnHTML(t.id)}
       </div>`).join('')}
   </div>` : ''}
 
@@ -4163,7 +4241,7 @@ function renderApprovalsView() {
         ${approvalTaskHead(t)}
         <div class="small" style="margin-top:4px;">Submitted ${fmtTime(a.submitted_at)} (${waitingSince(a.submitted_at)}) — waiting on <b>${esc(t.created_by || personName(t.created_by_username))}</b></div>
         <div class="doc-note" style="margin:6px 0;">${esc(a.submission_note || '')}</div>
-        <button class="btn btn-sm" data-goto-task="${t.id}">Open task ›</button>
+        <button class="btn btn-sm" data-goto-task="${t.id}">Open task ›</button>${quickFollowUpBtnHTML(t.id)}
       </div>`).join('')}
   </div>
 
@@ -4286,7 +4364,7 @@ function closureDecideItemHTML(r) {
           <div class="col" style="flex:0;white-space:nowrap;display:flex;gap:6px;">
             <button class="btn btn-sm btn-primary" data-closure-approve="${r.id}">✓ Close task</button>
             <button class="btn btn-sm btn-danger" data-closure-decline="${r.id}">Keep open</button>
-            <button class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button>
+            <button class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button>${quickFollowUpBtnHTML(esc(r.task_id))}
           </div>
         </div>
       </div>`;
@@ -4324,7 +4402,7 @@ function renderClosureView() {
         <div class="appr-who"><b>${esc(personName(r.requested_by))}</b> <span class="muted small">asked ${fmtTime(r.created_at)}</span></div>
         <div class="doc-note" style="margin:6px 0;">${esc(r.reason)}</div>
         <div class="small"><b>Kept open</b> ${fmtTime(r.decided_at)}${r.decided_by ? ` by ${esc(personName(r.decided_by))}` : ''}${r.decision_note ? ` — "${esc(r.decision_note)}"` : ''}</div>
-        <div style="margin-top:8px;"><button class="btn btn-sm btn-primary" data-goto-task="${esc(r.task_id)}">Open task ›</button></div>
+        <div style="margin-top:8px;"><button class="btn btn-sm btn-primary" data-goto-task="${esc(r.task_id)}">Open task ›</button>${quickFollowUpBtnHTML(esc(r.task_id))}</div>
       </div>`).join('')}
   </div>
 
@@ -4348,7 +4426,7 @@ function renderClosureView() {
         <div class="small muted">Asked ${fmtTime(r.created_at)} · creator ${esc(r.task_creator_name || personName(r.task_creator))}${r.decided_at && r.status !== 'pending' ? ` · answered ${fmtTime(r.decided_at)}${r.decided_by ? ` by ${esc(personName(r.decided_by))}` : ''}` : ''}</div>
         <div class="doc-note" style="margin:6px 0;">${esc(r.reason)}</div>
         ${r.decision_note ? `<div class="small"><b>Answer:</b> ${esc(r.decision_note)}</div>` : ''}
-        <div style="margin-top:6px;display:flex;gap:6px;">${r.status === 'pending' ? `<button class="btn btn-sm" data-closure-cancel="${r.id}">Withdraw</button>` : ''}<button class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button></div>
+        <div style="margin-top:6px;display:flex;gap:6px;">${r.status === 'pending' ? `<button class="btn btn-sm" data-closure-cancel="${r.id}">Withdraw</button>` : ''}<button class="btn btn-sm" data-goto-task="${esc(r.task_id)}">Open task ›</button>${quickFollowUpBtnHTML(esc(r.task_id))}</div>
       </div>`;
     }).join('')}
   </div>`;
@@ -6741,7 +6819,63 @@ function morphHTML(container, html) {
   morphChildren(container, temp);
 }
 
+// ---- Quick search in every long dropdown ----
+// Any list with many choices (people, projects, places, departments…) gets a small search box above it: type
+// part of a name, username, department or any word in the option and the list keeps only what matches; when one
+// choice is left it is picked. Added after each render and taken off before the next one, so the page's own
+// markup (and its morphing) never sees it.
+const QS_MIN_OPTIONS = 8;
+const qsState = {}; // select id → typed text
+function qsOptionText(o) { return `${o.textContent || ''} ${o.value || ''} ${o.dataset.qs || ''}`.toLowerCase(); }
+function qsApply(sel, q) {
+  const words = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  let shown = 0, last = null;
+  for (const o of sel.options) {
+    const keep = !words.length || !o.value || words.every(w => qsOptionText(o).includes(w)) || o.selected && sel.multiple;
+    o.hidden = !keep;
+    if (keep && o.value) { shown++; last = o; }
+  }
+  return { shown, last };
+}
+function qsDetach() {
+  const active = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('qs-input') ? { id: document.activeElement.dataset.qsFor, pos: document.activeElement.selectionStart } : null;
+  document.querySelectorAll('.qs-input').forEach(el => el.remove());
+  return active;
+}
+function qsAttach(active) {
+  document.querySelectorAll('select[id]').forEach(sel => {
+    if (sel.dataset.noQs != null || sel.closest('[data-no-qs]')) return;
+    const real = [...sel.options].filter(o => o.value).length;
+    if (real < QS_MIN_OPTIONS) return;
+    const inp = document.createElement('input');
+    inp.type = 'search'; inp.className = 'qs-input'; inp.dataset.qsFor = sel.id;
+    inp.setAttribute('autocomplete', 'off'); inp.setAttribute('autocapitalize', 'off'); inp.spellcheck = false; inp.setAttribute('data-no-spell', '');
+    inp.placeholder = `🔍 Type to search ${real} choices (name, username, department…)`;
+    inp.value = qsState[sel.id] || '';
+    sel.parentNode.insertBefore(inp, sel);
+    if (inp.value) qsApply(sel, inp.value);
+    inp.addEventListener('input', () => {
+      qsState[sel.id] = inp.value;
+      const { shown, last } = qsApply(sel, inp.value);
+      inp.classList.toggle('qs-none', !!inp.value && !shown);
+      if (shown === 1 && !sel.multiple && sel.value !== last.value) { sel.value = last.value; sel.dispatchEvent(new Event('input', { bubbles: true })); sel.dispatchEvent(new Event('change', { bubbles: true })); }
+    });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const first = [...sel.options].find(o => o.value && !o.hidden);
+        if (first && !sel.multiple) { sel.value = first.value; sel.dispatchEvent(new Event('change', { bubbles: true })); }
+        else if (first && sel.multiple) { first.selected = true; sel.dispatchEvent(new Event('change', { bubbles: true })); }
+      } else if (e.key === 'Escape') { inp.value = ''; qsState[sel.id] = ''; qsApply(sel, ''); }
+    });
+    if (active && active.id === sel.id) { inp.focus(); try { inp.setSelectionRange(active.pos, active.pos); } catch (e) {} }
+  });
+}
 function render() {
+  const qsActive = qsDetach();
+  try { renderCore(); } finally { try { qsAttach(qsActive); } catch (e) { /* the search box is a convenience */ } }
+}
+function renderCore() {
   const snapshot = snapshotFieldValues();
   const leaderboardPositions = captureLeaderboardRowPositions();
   try {
@@ -6790,6 +6924,7 @@ function renderInner() {
   else if (ui.adminTab === 'budget' && typeof renderBudgetView === 'function') body = renderBudgetView();
   else if (ui.adminTab === 'estimation' && typeof renderEstimationView === 'function') body = renderEstimationView();
   else if (ui.adminTab === 'accountsdept' && typeof renderAccountsDeptView === 'function') body = renderAccountsDeptView();
+  else if (ui.adminTab === 'dpr' && typeof renderDprView === 'function' && dprTabVisible()) body = renderDprView();
   else if (ui.adminTab === 'alltasks' && session.role === 'admin') body = renderAllTasksCard();
   else if (ui.adminTab === 'accounts' && session.role === 'admin') body = renderAccountsView();
   else if (ui.adminTab === 'performance' && session.role === 'admin') body = renderPerformanceView();
@@ -6832,6 +6967,7 @@ function renderInner() {
   if (ui.adminTab === 'budget' && typeof bindBudgetView === 'function') bindBudgetView();
   if (ui.adminTab === 'estimation' && typeof bindEstimationView === 'function') bindEstimationView();
   if (ui.adminTab === 'accountsdept' && typeof bindAccountsDeptView === 'function') bindAccountsDeptView();
+  if (ui.adminTab === 'dpr' && typeof bindDprView === 'function') bindDprView();
   bindClosureForms();
   if (ui.adminTab === 'tasks') bindApprovalsHint();
   if (ui.adminTab === 'calendar') bindCalendarView();

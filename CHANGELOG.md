@@ -4,6 +4,31 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Daily Progress Report, department tagging, project heads optional, Follow up and quick search everywhere
+### Added
+- **Daily Progress Report** (menu → Departments → Daily Progress): one report per project per day with three parts —
+  🏗 Work progress, 📥 Material inward (received from, challan / GRN) and 📤 Material outward (**issued to whom**,
+  gate pass) — every entry with its time stamp and who added it. Add entries on the page or **⬆ Import** the site's
+  Excel / CSV (three sheets, or one sheet with a Type column; ⬇ Template provided; the file is previewed before it
+  is saved, and importing the same day again only adds new rows). Filters: project, date range, kind, search;
+  **📦 Material totals** shows received vs issued per material. Seen by Admin, the site team (Execution), Store and
+  Purchase; Admin, site and Store add / import; Purchase reads. Tables `dpr_reports`, `dpr_entries`; routes
+  `/api/dpr…`.
+- **Tag departments** on a new task: pick departments (search box) and each department's head (team lead) is
+  tagged in Level 1. A department with no head set is shown greyed (Admin marks heads under Accounts → Team lead).
+- **📣 Follow up everywhere an open task is shown**: on every task row (without opening it), on every notification
+  about an open task (approvals and closures included), in "Waiting for your decision", on the Approvals and Task
+  Closure pages and on more-time requests.
+- **Quick search in every long dropdown** (8+ choices — people, places, departments…): type part of a name,
+  username or department and the list narrows; one match is picked; Enter picks the first.
+### Changed
+- **Project heads are no longer tagged automatically.** On a new task, after picking the project, tick the heads to
+  keep informed (e.g. Suraj / Rahul for Mihir Amara) — or leave them unticked. Bulk import adds none by itself (put
+  them in the Follow Up column if wanted). Estimate approvals by project heads are unchanged.
+- **Estimation** is now visible (view only) to the site team (Execution) and Pooja Raut (`EST_VIEW_USERS`).
+- Locations: people can be found by **username** (live map search and every person list shows name · username);
+  task search also matches the creator, project and people kept informed.
+
 ## [Unreleased] — New-account login fix, one approval count everywhere, estimation documents step by step
 ### Fixed
 - **New accounts / reset passwords could not log in.** The temporary-password box was a hidden password field the

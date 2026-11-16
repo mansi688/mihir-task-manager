@@ -374,7 +374,7 @@
   // ---------- live ----------
   function liveHTML() {
     const L = S.live;
-    const people = L ? L.people.filter(p => !S.liveFilter || (p.name + ' ' + (p.team || '') + ' ' + (p.place ? p.place.name : '')).toLowerCase().includes(S.liveFilter.toLowerCase())) : [];
+    const people = L ? L.people.filter(p => !S.liveFilter || S.liveFilter.toLowerCase().split(/\s+/).filter(Boolean).every(w => (p.name + ' ' + (p.username || '') + ' ' + (p.team || '') + ' ' + (p.place ? p.place.name : '') + ' ' + (p.project || '')).toLowerCase().includes(w))) : [];
     const counts = {};
     if (L) L.people.forEach(p => { counts[p.status] = (counts[p.status] || 0) + 1; });
     return `
@@ -382,7 +382,7 @@
       <div class="card loc-side">
         <div class="small muted" style="margin-bottom:6px;">${L ? `${L.people.length} in a work session now` : 'Loading…'} · updates every 15 s</div>
         <div class="loc-legend">${Object.entries(STATUS).filter(([k]) => counts[k]).map(([k, v]) => `<span><i style="background:${v.color}"></i>${v.label} ${counts[k]}</span>`).join('')}</div>
-        <input type="search" id="loc-live-filter" placeholder="Search name, department, place…" value="${esc(S.liveFilter)}">
+        <input type="search" id="loc-live-filter" placeholder="Search name, username, department, place…" autocomplete="off" autocapitalize="off" spellcheck="false" value="${esc(S.liveFilter)}">
         <div class="loc-people">
           ${L && !L.people.length ? '<div class="small muted" style="padding:10px 0;">Nobody is in a work session right now. People appear here only while they have tracking switched on.</div>' : ''}
           ${people.map(p => `
@@ -412,7 +412,7 @@
   // ---------- history ----------
   function peopleOptions(selected) {
     const list = (userDirectory || []).slice().sort((a, b) => a.name.localeCompare(b.name));
-    return `<option value="">— pick a person —</option>` + list.map(u => `<option value="${esc(u.username)}" ${u.username === selected ? 'selected' : ''}>${esc(u.name)}${u.team ? ` (${esc(u.team)})` : ''}</option>`).join('');
+    return `<option value="">— pick a person —</option>` + list.map(u => `<option value="${esc(u.username)}" ${u.username === selected ? 'selected' : ''}>${esc(u.name)} · ${esc(u.username)}${u.team ? ` (${esc(u.team)})` : ''}</option>`).join('');
   }
   function historyHTML() {
     const H = S.hist;
