@@ -484,6 +484,8 @@ async function init() {
     note TEXT, mode TEXT, reference TEXT, by_username TEXT NOT NULL, by_name TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_budget_allotments_user ON budget_allotments(username)');
   await ensureColumn('users', 'budget_topup_asked_at', 'TEXT');
+  await ensureColumn('users', 'recovery_pin_hash', 'TEXT');
+  await ensureColumn('users', 'recovery_pin_set_at', 'TEXT');
   await ensureColumn('deliveries', 'last_followup_by', 'TEXT');
   await ensureColumn('deliveries', 'followup_count', 'INTEGER DEFAULT 0');
   await run('CREATE INDEX IF NOT EXISTS idx_deliveries_status ON deliveries(status, expected_at)');
@@ -498,6 +500,35 @@ async function init() {
     requested_deadline TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
     decided_by TEXT, decided_by_name TEXT, decided_at TEXT, decision_note TEXT, approved_deadline TEXT, created_at TEXT NOT NULL)`);
   await run('CREATE INDEX IF NOT EXISTS idx_deadline_requests ON deadline_requests(task_id, status)');
+  // ---- Attendance, leave and payroll (backend/payroll.js) ----
+  await run(`CREATE TABLE IF NOT EXISTS attendance_days(
+    username TEXT NOT NULL, day TEXT NOT NULL,
+    check_in_at TEXT, in_lat DOUBLE PRECISION, in_lng DOUBLE PRECISION, in_acc INTEGER, in_place TEXT, in_away BOOLEAN, in_photo TEXT,
+    check_out_at TEXT, out_lat DOUBLE PRECISION, out_lng DOUBLE PRECISION, out_acc INTEGER, out_place TEXT, out_away BOOLEAN, out_photo TEXT,
+    status_override TEXT, override_reason TEXT, override_by TEXT, override_at TEXT, ot_minutes_override INTEGER, manual_in TEXT, manual_out TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT, PRIMARY KEY(username, day))`);
+  await run('CREATE INDEX IF NOT EXISTS idx_attendance_day ON attendance_days(day)');
+  await run(`CREATE TABLE IF NOT EXISTS leave_requests(
+    id SERIAL PRIMARY KEY, username TEXT NOT NULL, from_day TEXT NOT NULL, to_day TEXT NOT NULL, half_day BOOLEAN NOT NULL DEFAULT FALSE,
+    kind TEXT NOT NULL, days NUMERIC NOT NULL, reason TEXT, status TEXT NOT NULL DEFAULT 'pending',
+    decided_by TEXT, decided_by_name TEXT, decided_at TEXT, decision_note TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_leave_user ON leave_requests(username, status)');
+  await run('CREATE TABLE IF NOT EXISTS payroll_settings(id INTEGER PRIMARY KEY, data JSONB NOT NULL, updated_by TEXT, updated_at TEXT)');
+  await run('CREATE TABLE IF NOT EXISTS payroll_holidays(day TEXT PRIMARY KEY, name TEXT NOT NULL)');
+  await run(`CREATE TABLE IF NOT EXISTS salary_structures(
+    username TEXT PRIMARY KEY, basic NUMERIC NOT NULL DEFAULT 0, hra NUMERIC NOT NULL DEFAULT 0, conveyance NUMERIC NOT NULL DEFAULT 0, special NUMERIC NOT NULL DEFAULT 0,
+    pf_applicable BOOLEAN NOT NULL DEFAULT TRUE, esi_mode TEXT NOT NULL DEFAULT 'auto', pt_slab TEXT NOT NULL DEFAULT 'standard', ot_rate NUMERIC, paid_leave_per_year NUMERIC,
+    bank_name TEXT, account_no TEXT, ifsc TEXT, pan TEXT, uan TEXT, esi_no TEXT, employee_code TEXT, joined_on TEXT, active BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_by TEXT, updated_at TEXT)`);
+  await run(`CREATE TABLE IF NOT EXISTS salary_advances(
+    id SERIAL PRIMARY KEY, username TEXT NOT NULL, amount NUMERIC NOT NULL, instalment NUMERIC NOT NULL, recovered NUMERIC NOT NULL DEFAULT 0,
+    given_on TEXT NOT NULL, reason TEXT, status TEXT NOT NULL DEFAULT 'open', created_by TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE TABLE IF NOT EXISTS salary_advance_recoveries(id SERIAL PRIMARY KEY, advance_id INTEGER NOT NULL, run_id INTEGER NOT NULL, amount NUMERIC NOT NULL, created_at TEXT NOT NULL)');
+  await run(`CREATE TABLE IF NOT EXISTS payroll_runs(
+    id SERIAL PRIMARY KEY, period TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'draft', prepared_by TEXT, prepared_at TEXT,
+    submitted_by TEXT, submitted_at TEXT, approved_by TEXT, approved_at TEXT, paid_by TEXT, paid_at TEXT, paid_note TEXT)`);
+  await run(`CREATE TABLE IF NOT EXISTS payroll_lines(
+    id SERIAL PRIMARY KEY, run_id INTEGER NOT NULL, username TEXT NOT NULL, data JSONB NOT NULL, manual JSONB, net NUMERIC NOT NULL DEFAULT 0, UNIQUE(run_id, username))`);
   // ---- Daily progress report (DPR): one report per project per day; entries = work done / material in / out ----
   await run(`CREATE TABLE IF NOT EXISTS dpr_reports(
     id SERIAL PRIMARY KEY, project TEXT NOT NULL, report_date TEXT NOT NULL, manpower TEXT, weather TEXT, notes TEXT,
@@ -598,6 +629,9 @@ async function init() {
   await run('ALTER TABLE delivery_files ALTER COLUMN delivery_id DROP NOT NULL'); // bills of payments not tied to a delivery
   await ensureColumn('delivery_files', 'doc_type', 'TEXT');
   await ensureColumn('delivery_files', 'note', 'TEXT');
+  await ensureColumn('delivery_files', 'geo_lat', 'DOUBLE PRECISION');
+  await ensureColumn('delivery_files', 'geo_lng', 'DOUBLE PRECISION');
+  await ensureColumn('delivery_files', 'geo_acc', 'INTEGER');
   await ensureColumn('delivery_files', 'payment_id', 'INTEGER');
   // Chat: 'general' (everyone) or 'team:<department>' rooms; files hang off a message.
   await run(`CREATE TABLE IF NOT EXISTS chat_messages(
@@ -712,6 +746,8 @@ module.exports = {
   async setDeliveryAccess(username, allowed) { await run('UPDATE users SET manage_deliveries=? WHERE username=?', [allowed ? 1 : 0, username]); },
   async requireGuideAgain(username) { await run('UPDATE users SET needs_guide=1, guide_done_at=NULL WHERE username=?', [username]); },
   async getUserFresh(username) { return get('SELECT * FROM users WHERE username=?', [username]); },
+  async setRecoveryPin(username, hash) { await run('UPDATE users SET recovery_pin_hash=?, recovery_pin_set_at=? WHERE username=?', [hash, new Date().toISOString(), username]); },
+  async forcePasswordUnlock(username) { await run('UPDATE users SET failed_login_count=0, locked_until=NULL, must_change_password=0 WHERE username=?', [username]); usersVersion++; userListCache = null; },
   // Login: the username exactly as typed, else ignoring capitals (phones capitalise the first letter).
   async getUserForLogin(username) { return (await get('SELECT * FROM users WHERE username=?', [username])) || get('SELECT * FROM users WHERE lower(username)=lower(?) ORDER BY username LIMIT 1', [username]); },
   async listUsers() {
@@ -1433,7 +1469,7 @@ module.exports = {
         row = r.rows && r.rows[0];
       }
       if (!row) throw new Error('Could not create the delivery — please try again.');
-      for (const f of files || []) await tx.run('INSERT INTO delivery_files(delivery_id,kind,name,data,uploaded_by,created_at) VALUES(?,?,?,?,?,?)', [row.id, 'attachment', f.name, f.data, d.created_by, now]);
+      for (const f of files || []) await tx.run('INSERT INTO delivery_files(delivery_id,kind,name,data,uploaded_by,created_at,geo_lat,geo_lng,geo_acc) VALUES(?,?,?,?,?,?,?,?,?)', [row.id, 'attachment', f.name, f.data, d.created_by, now, f.geo ? f.geo.lat : null, f.geo ? f.geo.lng : null, f.geo ? f.geo.acc : null]);
       return row;
     });
   },
@@ -1449,7 +1485,7 @@ module.exports = {
           [username, `%,${username},%`, username, username, username]);
     if (!rows.length) return [];
     const ids = rows.map(r => r.id);
-    const files = await all('SELECT id, delivery_id, kind, doc_type, note, payment_id, name, taken_at, uploaded_by, created_at FROM delivery_files WHERE delivery_id = ANY(?::int[]) ORDER BY id', [ids]);
+    const files = await all('SELECT id, delivery_id, kind, doc_type, note, payment_id, name, taken_at, geo_lat, geo_lng, geo_acc, uploaded_by, created_at FROM delivery_files WHERE delivery_id = ANY(?::int[]) ORDER BY id', [ids]);
     const pays = await all('SELECT * FROM delivery_payments WHERE delivery_id = ANY(?::int[]) ORDER BY paid_at, id', [ids]);
     return rows.map(r => {
       const payments = pays.filter(p => p.delivery_id === r.id).map(p => ({ ...p, amount: Number(p.amount), bills: files.filter(f => f.payment_id === p.id).map(f => ({ id: f.id, name: f.name })) }));
@@ -1467,7 +1503,7 @@ module.exports = {
   },
   async addDeliveryFiles(id, kind, files, uploadedBy) {
     const now = new Date().toISOString();
-    for (const f of files || []) await run('INSERT INTO delivery_files(delivery_id,kind,name,data,taken_at,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)', [Number(id), kind, f.name, f.data, f.taken_at || null, uploadedBy, now]);
+    for (const f of files || []) await run('INSERT INTO delivery_files(delivery_id,kind,name,data,taken_at,uploaded_by,created_at,geo_lat,geo_lng,geo_acc) VALUES(?,?,?,?,?,?,?,?,?,?)', [Number(id), kind, f.name, f.data, f.taken_at || null, uploadedBy, now, f.geo ? f.geo.lat : null, f.geo ? f.geo.lng : null, f.geo ? f.geo.acc : null]);
   },
   async listOpenDeliveriesForReminders() {
     const since = new Date(Date.now() - 30 * 864e5).toISOString();
@@ -1485,7 +1521,7 @@ module.exports = {
   },
   async addDeliveryDocument(id, docType, files, note, uploadedBy) {
     const now = new Date().toISOString();
-    for (const f of files || []) await run('INSERT INTO delivery_files(delivery_id,kind,doc_type,note,name,data,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?,?)', [Number(id), 'document', docType, note || null, f.name, f.data, uploadedBy, now]);
+    for (const f of files || []) await run('INSERT INTO delivery_files(delivery_id,kind,doc_type,note,name,data,uploaded_by,created_at,geo_lat,geo_lng,geo_acc) VALUES(?,?,?,?,?,?,?,?,?,?,?)', [Number(id), 'document', docType, note || null, f.name, f.data, uploadedBy, now, f.geo ? f.geo.lat : null, f.geo ? f.geo.lng : null, f.geo ? f.geo.acc : null]);
   },
   async deliveryDocTypesPresent(id) { return (await all("SELECT DISTINCT doc_type FROM delivery_files WHERE delivery_id=? AND kind='document'", [Number(id)])).map(r => r.doc_type); },
   async deleteDeliveryFile(fileId) { const r = await run('DELETE FROM delivery_files WHERE id=?', [Number(fileId)]); return r.rowCount > 0; },
@@ -1496,7 +1532,7 @@ module.exports = {
       const d = did ? await tx.get('SELECT ref, title FROM deliveries WHERE id=?', [did]) : null;
       const r = await tx.get(`INSERT INTO delivery_payments(delivery_id,delivery_ref,delivery_title,amount,purpose,paid_to,mode,paid_at,note,no_bill_reason,paid_by,paid_by_name,created_at,verify_status)
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'pending') RETURNING *`, [did, d ? d.ref : null, d ? d.title : null, p.amount, p.purpose, p.paid_to, p.mode, p.paid_at, p.note, p.no_bill_reason, p.paid_by, p.paid_by_name, now]);
-      for (const f of bills || []) await tx.run('INSERT INTO delivery_files(delivery_id,kind,payment_id,name,data,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)', [did, 'bill', r.id, f.name, f.data, p.paid_by, now]);
+      for (const f of bills || []) await tx.run('INSERT INTO delivery_files(delivery_id,kind,payment_id,name,data,uploaded_by,created_at,geo_lat,geo_lng,geo_acc) VALUES(?,?,?,?,?,?,?,?,?,?)', [did, 'bill', r.id, f.name, f.data, p.paid_by, now, f.geo ? f.geo.lat : null, f.geo ? f.geo.lng : null, f.geo ? f.geo.acc : null]);
       return r;
     });
   },
@@ -1548,7 +1584,7 @@ module.exports = {
   async setPaymentReply(id, note) { return get("UPDATE delivery_payments SET reply_note=?, verify_status='pending' WHERE id=? RETURNING *", [note, Number(id)]); },
   async addPaymentBills(paymentId, deliveryId, files, by) {
     const now = new Date().toISOString();
-    for (const f of files || []) await run('INSERT INTO delivery_files(delivery_id,kind,payment_id,name,data,uploaded_by,created_at) VALUES(?,?,?,?,?,?,?)', [deliveryId == null ? null : Number(deliveryId), 'bill', Number(paymentId), f.name, f.data, by, now]);
+    for (const f of files || []) await run('INSERT INTO delivery_files(delivery_id,kind,payment_id,name,data,uploaded_by,created_at,geo_lat,geo_lng,geo_acc) VALUES(?,?,?,?,?,?,?,?,?,?)', [deliveryId == null ? null : Number(deliveryId), 'bill', Number(paymentId), f.name, f.data, by, now, f.geo ? f.geo.lat : null, f.geo ? f.geo.lng : null, f.geo ? f.geo.acc : null]);
   },
   // Balance for one person: allotted − returned − paid (rejected payments do not count).
   async holderBalance(username) {

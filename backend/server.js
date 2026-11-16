@@ -414,7 +414,10 @@ function collectUploads(body, maxSizeChars) {
     const data = (f || {}).data;
     const err = validateUploadedFile(data, name, maxSizeChars);
     if (err) return { error: `${name}: ${err}` };
-    files.push({ name, data });
+    // Where a photo was taken (deliveries stamp it on the photo and keep it): only real coordinates are kept.
+    const g = (f || {}).geo, lat = g && Number(g.lat), lng = g && Number(g.lng), acc = g && Number(g.acc);
+    const geo = g && isFinite(lat) && isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? { lat, lng, acc: isFinite(acc) && acc >= 0 ? Math.round(acc) : null } : null;
+    files.push(geo ? { name, data, geo } : { name, data });
   }
   return { files };
 }
@@ -927,7 +930,7 @@ app.post('/api/auth/login', loginRateLimiter, async (req, res) => {
     await auditFromReq(req, 'login', `Logged in.`, { username: user.username, name: user.name });
   }
   const token = sign({ username: user.username, role: user.role, name: user.name, tv: user.token_version || 0, sid });
-  res.json({ token, user: { username: user.username, role: user.role, name: user.name, mustChangePassword: !!user.must_change_password, needsGuide: !!user.needs_guide && !user.guide_done_at } });
+  res.json({ token, user: { username: user.username, role: user.role, name: user.name, mustChangePassword: !!user.must_change_password, needsGuide: !!user.needs_guide && !user.guide_done_at, hasRecoveryPin: !!user.recovery_pin_hash } });
 });
 // Invalidates every existing login token for this account (all devices/browsers) by bumping
 // token_version — the same mechanism change-password already relies on. This session's own new
@@ -951,46 +954,50 @@ function otpRateLimited(username) {
   otpRequestLog.set(username, recent);
   return recent.length > OTP_MAX_REQUESTS;
 }
-app.post('/api/auth/forgot-password', async (req, res) => {
-  const username = str((req.body || {}).username).trim();
-  const genericResponse = { ok: true, message: 'If that account exists and has an email on file, a reset code has been sent to it.' };
-  if (!username) return res.json({ ...genericResponse, emailConfigured: !!mailTransporter });
-  if (otpRateLimited(username)) return res.json({ ...genericResponse, emailConfigured: !!mailTransporter });
-  if (!mailTransporter) return res.json({ ...genericResponse, emailConfigured: false });
-  const user = await db.getUserFresh(username);
-  if (!user || !user.email) return res.json({ ...genericResponse, emailConfigured: true });
-  const otp = String(Math.floor(100000 + Math.random() * 900000));
-  const otpHash = bcrypt.hashSync(otp, 10);
-  const expires = new Date(Date.now() + 10 * 60000).toISOString();
-  await db.setPasswordResetOtp(user.username, otpHash, expires);
-  try {
-    await sendOtpEmail(user.email, otp, user.name);
-  } catch (e) {
-    console.error('Failed to send password-reset email:', e.message);
-  }
-  res.json({ ...genericResponse, emailConfigured: true });
-});
-app.post('/api/auth/reset-with-otp', async (req, res) => {
-  const username = str((req.body || {}).username).trim();
-  const otp = str((req.body || {}).otp).trim();
-  const newPassword = str((req.body || {}).newPassword);
-  const user = await db.getUserFresh(username);
-  if (!user || !user.password_reset_otp_hash || !user.password_reset_otp_expires) {
-    return res.status(400).json({ error: 'No reset code is pending for this account — request a new one.' });
-  }
-  if (new Date(user.password_reset_otp_expires) < new Date()) {
-    await db.clearPasswordResetOtp(username);
-    return res.status(400).json({ error: 'That code has expired — request a new one.' });
-  }
-  if (!bcrypt.compareSync(otp, user.password_reset_otp_hash)) {
-    return res.status(400).json({ error: 'Incorrect code.' });
-  }
-  const pwErr1 = validatePasswordStrength(newPassword); if (pwErr1) return res.status(400).json({ error: pwErr1 });
-  await db.setPassword(user.username, bcrypt.hashSync(newPassword, 10));
-  await db.clearPasswordResetOtp(username);
-  await auditFromReq(req, 'password_reset_via_otp', `Reset their own password using a forgot-password code.`, { username: user.username, name: user.name });
+// Forgot password — no email, no OTP. Everyone sets a 4–6 digit RECOVERY PIN once (asked after login, and on
+// My Profile). "Forgot password?" on the login page takes username + PIN + a new password. 5 wrong PINs lock the
+// PIN for 15 minutes. Without a PIN, the person's team lead (or Admin) resets the password.
+const pinTries = new Map(); // username -> { n, until }
+function pinLocked(username) { const t = pinTries.get(username); return t && t.until && t.until > Date.now() ? t.until : 0; }
+function pinFailed(username) { const t = pinTries.get(username) || { n: 0 }; t.n++; if (t.n >= 5) { t.until = Date.now() + 15 * 60000; t.n = 0; } pinTries.set(username, t); }
+const PIN_RE = /^\d{4,6}$/;
+function weakPin(pin) { return /^(\d)\1+$/.test(pin) || '0123456789'.includes(pin) || '9876543210'.includes(pin); }
+async function teamLeadsOf(user) {
+  if (!user || !user.team) return [];
+  return (await db.listUsers()).filter(u => u.team === user.team && Number(u.is_team_lead) === 1 && u.username !== user.username);
+}
+app.post('/api/auth/recovery-pin', auth(ALL_ROLES), async (req, res) => {
+  const pin = str((req.body || {}).pin).trim();
+  if (!PIN_RE.test(pin)) return res.status(400).json({ error: 'The PIN must be 4 to 6 digits.' });
+  if (weakPin(pin)) return res.status(400).json({ error: 'That PIN is too easy to guess (like 1111 or 1234) — pick another.' });
+  await db.setRecoveryPin(req.user.username, bcrypt.hashSync(pin, 10));
+  await auditFromReq(req, 'recovery_pin_set', 'Set their password recovery PIN.');
   res.json({ ok: true });
 });
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const username = str((req.body || {}).username).trim();
+  const pin = str((req.body || {}).pin).trim();
+  const newPassword = str((req.body || {}).newPassword).trim();
+  if (!username) return res.status(400).json({ error: 'Enter your username.' });
+  const user = await db.getUserForLogin(username);
+  if (!user) return res.status(400).json({ error: 'Username or recovery PIN is wrong.' });
+  const lockedUntil = pinLocked(user.username);
+  if (lockedUntil) return res.status(429).json({ error: `Too many wrong PINs — try again after ${new Date(lockedUntil).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit' })}.` });
+  if (!user.recovery_pin_hash) {
+    const leads = await teamLeadsOf(user);
+    return res.status(400).json({ error: `No recovery PIN is set for this account. Ask ${leads.length ? `your team lead (${leads.map(l => l.name).join(' or ')}) or Admin` : 'Admin'} to reset your password — then set a PIN on My Profile.`, noPin: true });
+  }
+  if (!pin) return res.status(400).json({ error: 'Enter your recovery PIN.' });
+  if (!bcrypt.compareSync(pin, user.recovery_pin_hash)) { pinFailed(user.username); return res.status(400).json({ error: 'Username or recovery PIN is wrong.' }); }
+  const pwErr1 = validatePasswordStrength(newPassword); if (pwErr1) return res.status(400).json({ error: pwErr1 });
+  await db.setPassword(user.username, bcrypt.hashSync(newPassword, 10));
+  await db.forcePasswordUnlock(user.username);
+  pinTries.delete(user.username);
+  await auditFromReq(req, 'password_reset_via_pin', 'Reset their own password with their recovery PIN.', { username: user.username, name: user.name });
+  res.json({ ok: true, username: user.username });
+});
+// The old email-code reset is switched off.
+app.post('/api/auth/reset-with-otp', (req, res) => res.status(410).json({ error: 'Email codes are no longer used — use "Forgot password?" with your recovery PIN.' }));
 app.post('/api/auth/logout-everywhere', auth(ALL_ROLES), async (req, res) => {
   await db.bumpTokenVersion(req.user.username);
   const user = await db.getUserFresh(req.user.username);
@@ -1050,7 +1057,7 @@ app.post('/api/push/unsubscribe', auth(ALL_ROLES), async (req, res) => {
 app.get('/api/auth/me', auth(ALL_ROLES), async (req, res) => {
   const user = await db.getUserFresh(req.user.username);
   res.json({ username: user.username, role: user.role, name: user.name, email: user.email, phone: user.phone, team: user.team, designation: user.designation, isTeamLead: !!user.is_team_lead,
-    needsGuide: !!user.needs_guide && !user.guide_done_at });
+    needsGuide: !!user.needs_guide && !user.guide_done_at, hasRecoveryPin: !!user.recovery_pin_hash });
 });
 // Welcome guide finished (language → video → questions). Score is kept so Admin can see who may need help.
 const GUIDE_LANGS = ['en', 'hi', 'mr'];
@@ -1150,9 +1157,16 @@ app.post('/api/users/:username/rename', auth(['admin']), async (req, res) => {
   await auditFromReq(req, 'username_changed', `Renamed account "${oldUsername}" to "${newUsername}"`);
   res.json({ ok: true, newUsername });
 });
-app.post('/api/users/:username/reset-password', auth(['admin']), async (req, res) => {
+app.post('/api/users/:username/reset-password', auth(ALL_ROLES), async (req, res) => {
   const user = await db.getUser(req.params.username);
   if (!user) return res.status(404).json({ error: 'User not found.' });
+  // Admin resets anyone; a team lead resets the people of their own team (not Admin accounts, not themselves).
+  if (req.user.role !== 'admin') {
+    const me = await db.getUserFresh(req.user.username);
+    if (!(me && Number(me.is_team_lead) === 1 && me.team && me.team === user.team && user.role !== 'admin' && user.username !== me.username)) {
+      return res.status(403).json({ error: 'Only Admin, or the team lead of their team, can reset this password.' });
+    }
+  }
   const newPassword = str((req.body || {}).newPassword).trim();
   const pwErr1 = validatePasswordStrength(newPassword); if (pwErr1) return res.status(400).json({ error: pwErr1 });
   await db.forcePasswordReset(user.username, bcrypt.hashSync(newPassword, 10));
@@ -3960,6 +3974,8 @@ const { mountPayables } = require('./payables');
 const payables = mountPayables(app, { db, auth, ALL_ROLES, auditFromReq, collectUploads, MAX_FILE_CHARS, str, PROJECT_OPTIONS, localDateStr });
 /* backend/compliance.js — monthly compliance due dates (TDS, GST, PT, PF …): reminders 10 and 2 days before to Accounts + Admin. */
 const { mountCompliance } = require('./compliance');
+const { mountPayroll } = require('./payroll');
+mountPayroll(app, { db, auth, ALL_ROLES, auditFromReq, str });
 const { mountDpr } = require('./dpr');
 mountDpr(app, { db, auth, ALL_ROLES, auditFromReq, str, PROJECT_OPTIONS });
 const compliance = mountCompliance(app, { db, auth, ALL_ROLES, auditFromReq, str, localDateStr, collectUploads, MAX_FILE_CHARS });

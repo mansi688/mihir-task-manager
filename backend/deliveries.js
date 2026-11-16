@@ -92,7 +92,9 @@ function mountDeliveries(app, deps) {
   }
   const label = (d) => `"${d.title}" (${d.ref})`;
   const whenText = (w) => { if (!w) return ''; const [d, t] = w.split('T'); const dt = new Date(d + 'T12:00:00+05:30'); return dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) + (t ? ` ${t}` : ''); };
-  const notifyMany = async (users, except, type, message, taskId, ref) => { for (const u of new Set(users)) if (u && u !== except) await db.createNotification({ username: u, type, message, task_id: taskId || null, ...(ref || {}) }); };
+  // The Budget page is switched off (BUDGET_ENABLED=true brings it back): its notifications are not sent.
+  const BUDGET_ON = /^(1|true|yes|on)$/i.test(String(process.env.BUDGET_ENABLED || ''));
+  const notifyMany = async (users, except, type, message, taskId, ref) => { if (!BUDGET_ON && /^budget_/.test(type)) return; for (const u of new Set(users)) if (u && u !== except) await db.createNotification({ username: u, type, message, task_id: taskId || null, ...(ref || {}) }); };
   // Everyone tagged on a delivery can open its task: they are put on the task's "Keep informed" list.
   async function keepInformedOnTask(d, users, by) {
     if (!d.task_id) return;

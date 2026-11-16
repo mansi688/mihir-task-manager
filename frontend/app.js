@@ -141,7 +141,7 @@ if (token) {
   if (safeStorage.getItem('ls_pw_reminder_dismissed') === 'true') ui.showPasswordChangeModal = false;
 }
 function resetAllAppState() {
-  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; extReqData = { toDecide: [], mine: [] }; extReqLoaded = false; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; if (typeof estData !== 'undefined') { estData = null; estSummary = { canView: false }; } if (typeof apData !== 'undefined') { apData = null; apSummary = { canView: false }; } if (typeof compData !== 'undefined') compData = null; if (typeof dprData !== 'undefined') { dprData = null; ui.dpr = null; } menuLoaded = {};
+  myTasks = []; watchTasks = []; allTasks = []; userDirectory = []; teamsList = []; projectsList = []; sectionsList = []; phasesList = []; currentProjectDrawings = []; openTaskTitles = []; completionStats = []; ratingsData = []; approvalDecisionsDetail = []; auditLogEntries = []; myApprovalRequests = []; allApprovalRequests = []; approvalStats = []; monthlyLeaderboard = { leaderboard: [], periodLabel: '' }; weeklyLeaderboard = { leaderboard: [], periodLabel: '' }; peakHoursData = []; myDashboardData = null; hrDashboardData = null; hrRosterData = []; reportsTaskList = []; currentTaskReport = null; myNotifications = []; unreadNotifCount = 0; closureData = { toDecide: [], mine: [], keptOpen: [] }; extReqData = { toDecide: [], mine: [] }; extReqLoaded = false; notifTaskInfo = {}; if (typeof deliveriesData !== 'undefined') deliveriesData = { canManage: false, items: [] }; if (typeof dlvLastNotifId !== 'undefined') dlvLastNotifId = null; if (typeof budgetData !== 'undefined') budgetData = { canAllot: false, canVerify: false, seesAll: false, holders: [], allotments: [], payments: [] }; if (typeof estData !== 'undefined') { estData = null; estSummary = { canView: false }; } if (typeof apData !== 'undefined') { apData = null; apSummary = { canView: false }; } if (typeof compData !== 'undefined') compData = null; if (typeof dprData !== 'undefined') { dprData = null; ui.dpr = null; } if (typeof attMe !== 'undefined') { attMe = null; hrData = {}; attSummary = { canSeeAttendance: false, canSeePayroll: false }; ui.att = null; ui.hr = null; } menuLoaded = {};
   ui = defaultUiState(); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
   announcements = []; canPostAnnouncements = false; chat.rooms = []; chat.messages = {}; chat.hasOlder = {}; chat.lastVersion = null;
 }
@@ -634,6 +634,8 @@ const CAD_DRAWING_EXTENSIONS = ['.dwg', '.dxf', '.rvt', '.rfa', '.skp', '.dgn', 
 
 /* ==================== ROLES / NAV ==================== */
 const ROLE_LABEL = { admin: 'Admin', member: 'Team Member', director: 'Director' };
+// The Budget page is not used — hidden from the menu (set to true to bring it back).
+const BUDGET_PAGE_ON = false;
 // ---- Steady menu: Budget / Estimation / Accounts Dept depend on data that arrives a moment after login, which made
 // the menu jump. Until it arrives, use what this person had last time (saved on this device), or else their department.
 let menuLoaded = {};
@@ -655,7 +657,7 @@ function menuShows(key, liveFn) {
   const mem = menuMemory();
   return key in mem ? !!mem[key] : menuGuess(key);
 }
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries', budget: 'Budget', estimation: 'Estimation & Billing', accountsdept: 'Accounts Department', dpr: 'Daily Progress Report' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries', budget: 'Budget', estimation: 'Estimation & Billing', accountsdept: 'Accounts Department', dpr: 'Daily Progress Report', attendance: 'My Attendance', payroll: 'HR & Payroll' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -768,7 +770,7 @@ function renderSidebar() {
       items.splice(at >= 0 ? at + 1 : items.length, 0, { key: 'approvals', label: 'Approvals', icon: 'clipboard', badge: () => approvalsNeedingMeCount() },
         { key: 'closure', label: 'Task Closure', icon: 'checkCircle', badge: () => myPendingDecisions().filter(x => x.kind === 'closure').length },
         { key: 'deliveries', label: 'Deliveries', icon: 'truck', badge: () => (typeof deliveriesNeedingMeCount === 'function' ? deliveriesNeedingMeCount() : 0) });
-      if (typeof budgetTabVisible === 'function' && menuShows('budget', budgetTabVisible)) {
+      if (BUDGET_PAGE_ON && typeof budgetTabVisible === 'function' && menuShows('budget', budgetTabVisible)) {
         const di = items.findIndex(i => i.key === 'deliveries');
         items.splice(di + 1, 0, { key: 'budget', label: 'Budget', icon: 'wallet', badge: () => budgetAttentionCount() });
       }
@@ -780,6 +782,10 @@ function renderSidebar() {
   if (typeof estimationTabVisible === 'function' && menuShows('estimation', estimationTabVisible)) deptItems.push({ key: 'estimation', label: 'Estimation', icon: 'clipboard', badge: () => estimationBadge() });
   if (typeof accountsDeptTabVisible === 'function' && menuShows('accountsdept', accountsDeptTabVisible)) deptItems.push({ key: 'accountsdept', label: 'Accounts Dept', icon: 'wallet', badge: () => (typeof accountsDeptBadge === 'function' ? accountsDeptBadge() : 0) });
   if (typeof dprTabVisible === 'function' && dprTabVisible()) deptItems.push({ key: 'dpr', label: 'Daily Progress', icon: 'clipboard', badge: () => 0 });
+  if (typeof hrTabVisible === 'function' && hrTabVisible()) deptItems.push({ key: 'payroll', label: 'HR & Payroll', icon: 'users', badge: () => hrBadge() });
+  // Everyone: their own attendance (check in / out, leave, payslips) — first in "You".
+  if (typeof renderAttendanceView === 'function') { const you = groups.find(g => g.group === 'You'); const item = { key: 'attendance', label: 'My Attendance', icon: 'clock', badge: () => 0 };
+    if (you) you.items = [item, ...you.items.filter(i => i.key !== 'attendance')]; else groups.push({ group: 'You', items: [item] }); }
   if (deptItems.length) { const ti = groups.findIndex(g => g.group === 'Tasks'); groups.splice(ti >= 0 ? ti + 1 : groups.length, 0, { group: 'Departments', items: deptItems }); }
   if (window.LocationUI) window.LocationUI.navGroups(groups); // frontend/location.js (only when switched on)
   const active = currentTabKey();
@@ -833,18 +839,18 @@ const NOTIF_TYPE_CAT = {
   task_reminder: 'reminder', task_reminder_recurring: 'reminder', task_reminder_3day: 'reminder', deadline_window: 'reminder', deadline_soon: 'reminder', deadline_due_today: 'reminder', follow_up: 'reminder',
   deadline_passed: 'warning', task_overdue_days: 'warning', task_warning: 'warning', task_warning_urgent: 'warning', task_warning_creator: 'warning', task_flagged: 'flagged', admin_late_flag: 'flagged', weekly_warning_digest: 'warning',
   task_assigned: 'task', task_reply: 'task', task_closed: 'task', task_reopened: 'task', task_deleted: 'task', task_rejected: 'task', individual_deadline_set: 'task', level_changed: 'task', mentioned_in_comment: 'task', followup_tagged: 'task', meeting_summary: 'task',
-  task_submitted: 'approval', approval_requested: 'approval', approval_rejected: 'approval', approval_approved: 'approval', closure_requested: 'approval', extension_requested: 'approval', extension_decided: 'approval', closure_approved: 'approval', closure_declined: 'approval', est_submitted: 'approval', est_decided: 'approval', est_remark: 'approval', est_jmr_open: 'approval', est_recon_due: 'approval', est_completed: 'approval', ap_bill_added: 'approval', ap_reminder: 'reminder', ap_update: 'approval', ap_reply: 'approval', ap_followup: 'approval', compliance_due: 'reminder', compliance_done: 'approval',
+  task_submitted: 'approval', approval_requested: 'approval', approval_rejected: 'approval', approval_approved: 'approval', closure_requested: 'approval', extension_requested: 'approval', leave_requested: 'approval', leave_decided: 'approval', payroll_submitted: 'approval', payroll_approved: 'approval', payslip_ready: 'approval', extension_decided: 'approval', closure_approved: 'approval', closure_declined: 'approval', est_submitted: 'approval', est_decided: 'approval', est_remark: 'approval', est_jmr_open: 'approval', est_recon_due: 'approval', est_completed: 'approval', ap_bill_added: 'approval', ap_reminder: 'reminder', ap_update: 'approval', ap_reply: 'approval', ap_followup: 'approval', compliance_due: 'reminder', compliance_done: 'approval',
   chat_mention: 'message', announcement: 'message',
   location: 'location', location_alert: 'location', site_visit: 'location', place_linked: 'location',
   delivery_scheduled: 'delivery', delivery_update: 'delivery', delivery_delivered: 'delivery', delivery_unloaded: 'delivery', delivery_reminder: 'delivery', delivery_followup: 'delivery', delivery_document: 'delivery', delivery_payment: 'delivery', budget_verify: 'delivery', budget_allotted: 'delivery', budget_verified: 'delivery', budget_topup: 'delivery',
 };
 const notifCat = n => NOTIF_TYPE_CAT[n.type] || 'other';
-const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', extension_requested: 'clock', extension_decided: 'clock', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin', delivery_scheduled: 'truck', delivery_update: 'truck', delivery_delivered: 'truck', delivery_unloaded: 'checkCircle', delivery_reminder: 'clock', delivery_followup: 'truck', delivery_document: 'clipboard', delivery_payment: 'clipboard', budget_verify: 'wallet', budget_allotted: 'wallet', budget_verified: 'wallet', budget_topup: 'wallet', est_submitted: 'clipboard', est_decided: 'checkCircle', est_remark: 'chat', est_jmr_open: 'checkCircle', est_recon_due: 'clipboard', est_completed: 'checkCircle', ap_bill_added: 'wallet', ap_reminder: 'clock', ap_update: 'wallet', ap_reply: 'chat', ap_followup: 'wallet', compliance_due: 'clock', compliance_done: 'checkCircle' };
-const NOTIF_TYPE_LABEL = { task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', extension_requested: 'More time requested', extension_decided: 'Deadline extension decision', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked', delivery_scheduled: 'Delivery coming', delivery_update: 'Delivery update', delivery_delivered: 'Delivered at site', delivery_unloaded: 'Unloaded at site', delivery_reminder: 'Delivery reminder', delivery_followup: 'Delivery follow-up', delivery_document: 'Delivery document', delivery_payment: 'Delivery payment', budget_verify: 'Payment to verify', budget_allotted: 'Money allotted', budget_verified: 'Payment checked', budget_topup: 'Top-up requested', est_submitted: 'Estimation to approve', est_decided: 'Estimation decision', est_remark: 'Estimation remark', est_jmr_open: 'Estimate approved — JMR open', est_recon_due: 'Reconciliation report due', est_completed: 'Estimate completed', ap_bill_added: 'New vendor bill', ap_reminder: 'Payment due', ap_update: 'Bill update from Accounts', ap_reply: 'Reply from Purchase', ap_followup: 'Payment follow-up', compliance_due: 'Compliance due date', compliance_done: 'Compliance done' };
+const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', extension_requested: 'clock', leave_requested: 'clock', leave_decided: 'checkCircle', payroll_submitted: 'wallet', payroll_approved: 'wallet', payslip_ready: 'wallet', extension_decided: 'clock', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin', delivery_scheduled: 'truck', delivery_update: 'truck', delivery_delivered: 'truck', delivery_unloaded: 'checkCircle', delivery_reminder: 'clock', delivery_followup: 'truck', delivery_document: 'clipboard', delivery_payment: 'clipboard', budget_verify: 'wallet', budget_allotted: 'wallet', budget_verified: 'wallet', budget_topup: 'wallet', est_submitted: 'clipboard', est_decided: 'checkCircle', est_remark: 'chat', est_jmr_open: 'checkCircle', est_recon_due: 'clipboard', est_completed: 'checkCircle', ap_bill_added: 'wallet', ap_reminder: 'clock', ap_update: 'wallet', ap_reply: 'chat', ap_followup: 'wallet', compliance_due: 'clock', compliance_done: 'checkCircle' };
+const NOTIF_TYPE_LABEL = { task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', extension_requested: 'More time requested', leave_requested: 'Leave requested', leave_decided: 'Leave decision', payroll_submitted: 'Payroll to approve', payroll_approved: 'Payroll approved', payslip_ready: 'Payslip ready', extension_decided: 'Deadline extension decision', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked', delivery_scheduled: 'Delivery coming', delivery_update: 'Delivery update', delivery_delivered: 'Delivered at site', delivery_unloaded: 'Unloaded at site', delivery_reminder: 'Delivery reminder', delivery_followup: 'Delivery follow-up', delivery_document: 'Delivery document', delivery_payment: 'Delivery payment', budget_verify: 'Payment to verify', budget_allotted: 'Money allotted', budget_verified: 'Payment checked', budget_topup: 'Top-up requested', est_submitted: 'Estimation to approve', est_decided: 'Estimation decision', est_remark: 'Estimation remark', est_jmr_open: 'Estimate approved — JMR open', est_recon_due: 'Reconciliation report due', est_completed: 'Estimate completed', ap_bill_added: 'New vendor bill', ap_reminder: 'Payment due', ap_update: 'Bill update from Accounts', ap_reply: 'Reply from Purchase', ap_followup: 'Payment follow-up', compliance_due: 'Compliance due date', compliance_done: 'Compliance done' };
 // Where tapping a notification takes you.
 function notifTarget(n) {
   if (/^closure_/.test(n.type)) return 'data-notif-goto-tab="closure"';
-  if (/^budget_/.test(n.type)) return 'data-notif-goto-tab="budget"';
+  if (/^budget_/.test(n.type)) return 'data-notif-goto-tab="deliveries"';
   if (/^est_/.test(n.type)) return 'data-notif-goto-tab="estimation"';
   if (/^ap_/.test(n.type)) return 'data-notif-goto-tab="accountsdept"';
   if (/^compliance_/.test(n.type)) return 'data-notif-goto-tab="accountsdept" data-notif-ap-tab="compliance"';
@@ -855,6 +861,8 @@ function notifTarget(n) {
   if (n.type === 'location_alert') return 'data-notif-goto-tab="locations"';
   if (n.type === 'location') return 'data-notif-goto-tab="mytracking"';
   if (/^approval_/.test(n.type)) return 'data-notif-goto-tab="approvals"';
+  if (n.type === 'leave_decided' || n.type === 'payslip_ready') return 'data-notif-goto-tab="attendance"';
+  if (n.type === 'leave_requested' || /^payroll_/.test(n.type)) return 'data-notif-goto-tab="payroll"';
   return '';
 }
 function istDayKey(iso) { try { return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }); } catch (e) { return ''; } }
@@ -1274,6 +1282,9 @@ function notifRequestAnswered(n) {
   if (n.type === 'closure_requested') return !!(info && (info.status !== 'open' || (info.canDecide && !info.closureId)));
   if (n.type === 'extension_requested') return extReqLoaded && !(extReqData.toDecide || []).some(r => String(r.id) === String(n.ref_id));
   if (n.type === 'approval_requested' && n.ref_type === 'approval' && n.ref_id) { const r = (notifRefs.approval || {})[n.ref_id]; return !!(r && (r.status !== 'pending' || r.mine)); }
+  if (n.type === 'leave_requested' && n.ref_id && attSummary && Array.isArray(attSummary.pendingLeave)) return !attSummary.pendingLeave.some(l => String(l.id) === String(n.ref_id));
+  if ((n.type === 'payroll_submitted' && attSummary && Array.isArray(attSummary.payrollToApprove) && !attSummary.payrollToApprove.length)
+    || (n.type === 'payroll_approved' && attSummary && Array.isArray(attSummary.payrollToPay) && !attSummary.payrollToPay.length)) return true;
   if (n.type === 'est_submitted') return typeof estSummary !== 'undefined' && estSummary && estSummary.canView && 'toApprove' in estSummary && !Number(estSummary.toApprove);
   return false;
 }
@@ -1429,29 +1440,21 @@ function renderLoginPage() {
         ${passwordFieldHTML('lg-pass', '••••••••')}
         <button class="btn btn-primary btn-block" style="margin-top:18px;" data-act="login">Log in</button>
         ${ui.loginErr ? `<div class="err">${esc(ui.loginErr)}</div>` : ''}
+        ${ui.loginOk ? `<div class="notice" style="margin-top:8px;">✅ ${esc(ui.loginOk)}</div>` : ''}
         <p class="hint"><a href="#" data-act="toggle-forgot-password">Forgot password?</a></p>
         <button type="button" class="guide-open-link" data-act="open-guide">📺 Watch the app guide · <span>English · हिंदी · मराठी</span></button>
         ${ui.showForgotPassword ? `
         <div class="notice" style="margin-top:4px;">
-          ${ui.forgotPasswordStage === 'otp-sent' ? `
-            <p style="margin:0 0 8px;">If that account has an email on file, a 6-digit code was sent to it. Enter it below along with your new password.</p>
-            <label>Reset Code</label>
-            <input type="text" id="fp-otp" placeholder="123456" maxlength="6">
-            <label>New Password</label>
-            ${passwordFieldHTML('fp-new-password', 'At least 6 characters')}
-            <button class="btn btn-primary btn-sm" style="margin-top:8px;" data-act="submit-otp-reset">Reset Password</button>
-            ${ui.forgotPasswordErr ? `<div class="err" style="margin-top:6px;">${esc(ui.forgotPasswordErr)}</div>` : ''}
-          ` : ui.forgotPasswordStage === 'email-not-configured' ? `
-            <p style="margin:0 0 8px;font-weight:700;">Email reset isn't set up on this server yet.</p>
-            <p class="small muted" style="margin:0 0 10px;">Nothing was sent — there's no email system connected here yet, so a code was never going to arrive. This isn't specific to your account. Please contact your <b>Admin</b> directly (in person, chat, or however you'd normally reach them) and ask them to reset your password from the <b>Accounts</b> page — it takes them a few seconds, no email required.</p>
-            <button class="btn btn-sm" data-act="back-to-forgot-request">← Try a different username</button>
-          ` : `
-            <label>Username</label>
-            <input type="text" id="fp-username" placeholder="Your username">
-            <button class="btn btn-primary btn-sm" style="margin-top:8px;" data-act="request-otp">Email Me a Reset Code</button>
-            ${ui.forgotPasswordErr ? `<div class="err" style="margin-top:6px;">${esc(ui.forgotPasswordErr)}</div>` : ''}
-            <p class="small muted" style="margin-top:10px;">If email isn't set up on this server, or your account has none on file, ask an <b>Admin</b> to reset it from <b>Accounts</b> instead — or, if nobody can log in at all, whoever has server access can run <code>node reset-password.js &lt;username&gt; &lt;newpassword&gt;</code> from the project folder.</p>
-          `}
+          <p style="margin:0 0 8px;"><b>Reset your password with your recovery PIN</b> — the 4–6 digit PIN you set in the app.</p>
+          <label>Username</label>
+          <input type="text" id="fp-username" placeholder="e.g. rahul.p" autocomplete="username" autocapitalize="off" spellcheck="false" value="${esc(ui.forgotPasswordUsername || '')}">
+          <label>Recovery PIN</label>
+          <input type="password" id="fp-pin" inputmode="numeric" maxlength="6" placeholder="4–6 digits" autocomplete="off">
+          <label>New password</label>
+          ${passwordFieldHTML('fp-new-password', '8+ characters, letters and numbers')}
+          <button class="btn btn-primary btn-sm" style="margin-top:8px;" data-act="submit-pin-reset">Reset password</button>
+          ${ui.forgotPasswordErr ? `<div class="err" style="margin-top:6px;">${esc(ui.forgotPasswordErr)}</div>` : ''}
+          <p class="small muted" style="margin-top:10px;">No PIN set yet? Ask your <b>team lead</b> (or Admin) to reset your password, then set a PIN on <b>My Profile</b>.</p>
         </div>` : ''}
       </div>
     </div>
@@ -1483,7 +1486,8 @@ function bindLogin() {
     try {
       const data = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
       token = data.token;
-      session = { username: data.user.username, role: data.user.role, name: data.user.name, mustChangePassword: data.user.mustChangePassword, needsGuide: !!data.user.needsGuide };
+      ui.loginOk = '';
+      session = { username: data.user.username, role: data.user.role, name: data.user.name, mustChangePassword: data.user.mustChangePassword, needsGuide: !!data.user.needsGuide, hasRecoveryPin: !!data.user.hasRecoveryPin };
       safeStorage.setItem('ls_token', token); safeStorage.setItem('ls_session', JSON.stringify(session));
       ui.loginErr = ''; ui.adminTab = 'today'; safeStorage.setItem('ls_last_tab', 'today');
       if (typeof guideAfterLogin === 'function') await guideAfterLogin(!!data.user.needsGuide);
@@ -1498,46 +1502,22 @@ function bindLogin() {
   if (guideLink) guideLink.onclick = (e) => { e.preventDefault(); if (typeof openGuide !== 'function') return; openGuide('pre'); render(); window.scrollTo(0, 0); };
   const forgotLink = document.querySelector('[data-act="toggle-forgot-password"]');
   if (forgotLink) forgotLink.onclick = (e) => { e.preventDefault(); ui.showForgotPassword = !ui.showForgotPassword; ui.forgotPasswordStage = 'request'; ui.forgotPasswordErr = ''; render(); };
-  const requestOtp = async () => {
-    const username = document.getElementById('fp-username').value.trim();
-    if (!username) { ui.forgotPasswordErr = 'Enter your username first.'; render(); return; }
+  const submitPinReset = async () => {
+    const username = (document.getElementById('fp-username') || {}).value.trim();
+    const pin = (document.getElementById('fp-pin') || {}).value.trim();
+    const newPassword = (document.getElementById('fp-new-password') || {}).value.trim();
+    ui.forgotPasswordUsername = username;
+    if (!username || !pin || !newPassword) { ui.forgotPasswordErr = 'Enter your username, recovery PIN and a new password.'; render(); return; }
     try {
-      const result = await api('/api/auth/forgot-password', { method: 'POST', body: JSON.stringify({ username }) });
-      ui.forgotPasswordUsername = username;
-      // Previously this always moved straight to "check your email for a code" — even when no
-      // email was ever actually sent, because SMTP isn't configured on the server yet. That left
-      // whoever hit this genuinely stuck: told to wait for a code that would never arrive, with
-      // no indication why or what to do instead. Now it tells them plainly and gives them a real
-      // next step, instead of a silent dead end.
-      ui.forgotPasswordStage = result.emailConfigured ? 'otp-sent' : 'email-not-configured';
-      ui.forgotPasswordErr = '';
-      render();
+      await api('/api/auth/forgot-password', { method: 'POST', body: JSON.stringify({ username, pin, newPassword }) });
+      ui.showForgotPassword = false; ui.forgotPasswordErr = ''; ui.loginOk = 'Password changed — log in with your new password.'; render();
+      const u = document.getElementById('lg-user'); if (u) u.value = username;
     } catch (e) { ui.forgotPasswordErr = e.message; render(); }
   };
-  const requestOtpBtn = document.querySelector('[data-act="request-otp"]');
-  if (requestOtpBtn) requestOtpBtn.onclick = requestOtp;
-  const backToRequestBtn = document.querySelector('[data-act="back-to-forgot-request"]');
-  if (backToRequestBtn) backToRequestBtn.onclick = () => { ui.forgotPasswordStage = 'request'; ui.forgotPasswordErr = ''; render(); };
-  const fpUsernameField = document.getElementById('fp-username');
-  onEnter(fpUsernameField, requestOtp);
-  const submitOtpReset = async () => {
-    const otp = document.getElementById('fp-otp').value.trim();
-    const newPassword = document.getElementById('fp-new-password').value;
-    if (!otp || !newPassword) { ui.forgotPasswordErr = 'Enter both the code and your new password.'; render(); return; }
-    try {
-      await api('/api/auth/reset-with-otp', { method: 'POST', body: JSON.stringify({ username: ui.forgotPasswordUsername, otp, newPassword }) });
-      ui.showForgotPassword = false;
-      ui.forgotPasswordStage = 'request';
-      setBanner('Password reset — log in with your new password.', 'ok');
-      render();
-    } catch (e) { ui.forgotPasswordErr = e.message; render(); }
-  };
-  const submitOtpBtn = document.querySelector('[data-act="submit-otp-reset"]');
-  if (submitOtpBtn) submitOtpBtn.onclick = submitOtpReset;
-  ['fp-otp', 'fp-new-password'].forEach(id => {
-    const el = document.getElementById(id);
-    onEnter(el, submitOtpReset);
-  });
+  const pinResetBtn = document.querySelector('[data-act="submit-pin-reset"]');
+  if (pinResetBtn) pinResetBtn.onclick = submitPinReset;
+  ['fp-username', 'fp-pin', 'fp-new-password'].forEach(id => onEnter(document.getElementById(id), submitPinReset));
+
 }
 function renderForcedPasswordChange() {
   return `
@@ -2105,6 +2085,7 @@ function dataRequests() {
     deliveriesResp: '/api/deliveries', budgetResp: '/api/budget', estSummaryResp: '/api/estimation/summary', apSummaryResp: '/api/payables/summary',
     closureData: `/api/closure-requests${session.role === 'admin' && ui.closureScope === 'all' ? '?scope=all' : ''}`,
     extReq: '/api/extension-requests',
+    attSummary: '/api/attendance/summary',
   };
   if (isAdmin) { core.allTasks = '/api/tasks'; core.allApprovalRequests = '/api/approvals'; }
   const extras = {
@@ -2143,13 +2124,14 @@ function applyData(key, v) {
     case 'phasesList': phasesList = v; break;
     case 'openTaskTitles': openTaskTitles = v; break;
     case 'me':
-      session = { ...session, email: v.email, phone: v.phone, team: v.team, designation: v.designation, isTeamLead: !!v.isTeamLead,
+      session = { ...session, email: v.email, phone: v.phone, team: v.team, designation: v.designation, isTeamLead: !!v.isTeamLead, hasRecoveryPin: typeof v.hasRecoveryPin === 'boolean' ? v.hasRecoveryPin : session.hasRecoveryPin,
         // (a reply that left the server before the guide was saved must not reopen it)
         needsGuide: typeof v.needsGuide === 'boolean' ? (v.needsGuide && Date.now() - (typeof guideCompletedAt === 'number' ? guideCompletedAt : 0) > 120000) : !!session.needsGuide };
       safeStorage.setItem('ls_session', JSON.stringify(session));
       break;
     case 'notif': myNotifications = v.items; unreadNotifCount = v.unread; setTimeout(updateTabTitle, 0); autoSeeAnsweredRequests(); notifTaskInfo = v.tasks || {}; notifRefs = v.refs || { approval: {}, payment: {} }; if (typeof dlvSoundsForNotifications === 'function') dlvSoundsForNotifications(v.items); break;
     case 'closureData': closureData = v || { toDecide: [], mine: [], keptOpen: [] }; break;
+    case 'attSummary': if (typeof attSummary !== 'undefined') attSummary = v || { canSeeAttendance: false, canSeePayroll: false }; break;
     case 'extReq': extReqData = v && Array.isArray(v.toDecide) ? v : { toDecide: [], mine: [] }; extReqLoaded = !!(v && Array.isArray(v.toDecide)); autoSeeAnsweredRequests(); break;
     case 'apSummaryResp': if (typeof apSummary !== 'undefined') apSummary = v || { canView: false }; menuLoaded.accountsdept = true; break;
     case 'complianceResp': if (typeof compData !== 'undefined') compData = v && Array.isArray(v.items) ? v : compData; break;
@@ -4093,6 +4075,11 @@ function computePendingDecisions() {
   for (const [tid, info] of Object.entries(notifTaskInfo || {})) if (info && info.status === 'open' && info.closureId) add(`close|${info.closureId}`, { kind: 'closure', id: info.closureId, taskId: tid, title: info.title });
   const extNotif = notifRefIds('extension_requested');
   for (const r of extReqData.toDecide || []) if (!admin || r.task_creator === me || r.task_creator === r.username || extNotif.has(String(r.id))) add(`ext|${r.id}`, { kind: 'ext', id: r.id, taskId: r.task_id, title: r.task_title, req: r, at: r.created_at });
+  if (typeof attSummary !== 'undefined' && attSummary) {
+    for (const l of attSummary.pendingLeave || []) if (l.username !== me || admin) add(`leave|${l.id}`, { kind: 'leave', id: l.id, req: l, title: 'Leave', at: l.created_at });
+    for (const p of attSummary.payrollToApprove || []) add(`payapprove|${p}`, { kind: 'payroll', period: p, step: 'approve', title: 'Payroll' });
+    for (const p of attSummary.payrollToPay || []) add(`paypay|${p}`, { kind: 'payroll', period: p, step: 'pay', title: 'Payroll' });
+  }
   if (typeof estSummary !== 'undefined' && estSummary && estSummary.canView) {
     if (estSummary.toApprove) add('est|approve', { kind: 'est', count: Number(estSummary.toApprove) || 0, title: 'Estimation' });
     if (estSummary.returned) add('est|returned', { kind: 'estret', count: Number(estSummary.returned) || 0, title: 'Estimation' });
@@ -4105,6 +4092,8 @@ function notifCoveredBy(n, list) {
   const keys = list.__keys || (list.__keys = new Set(list.map(x => x.key)));
   const tasks = list.__tasks || (list.__tasks = new Set(list.filter(x => x.taskId && ['part', 'release', 'closure'].includes(x.kind)).map(x => x.taskId)));
   if (n.type === 'extension_requested') return keys.has(`ext|${n.ref_id}`);
+  if (n.type === 'leave_requested') return keys.has(`leave|${n.ref_id}`);
+  if (n.type === 'payroll_submitted' || n.type === 'payroll_approved') return list.some(x => x.kind === 'payroll');
   if (n.ref_type === 'approval' && n.ref_id != null && notifCat(n) === 'approval') return keys.has(`doc|${n.ref_id}`);
   if (/^est_/.test(n.type)) return n.type === 'est_submitted' && keys.has('est|approve');
   return !!(n.task_id && tasks.has(n.task_id) && (notifCat(n) === 'approval' || ['task_flagged', 'admin_late_flag', 'task_warning_creator'].includes(n.type) || /submitted|closure/.test(n.type)));
@@ -4138,6 +4127,11 @@ function pendingDecisionRowHTML(x) {
       ${act && act.kind === 'keepopen' && act.key === key ? form('Why does it stay open? (at least 5 characters)', 'Keep open') : ''}</div>`;
   }
   if (x.kind === 'ext') return `<div class="pd-row">${extRequestBoxHTML(x.req, { withTask: true })}</div>`;
+  if (x.kind === 'leave') { const l = x.req; return `<div class="pd-row">${head(`<b>${esc(personName(l.username))}</b> asks for ${l.kind === 'paid' ? 'paid' : 'unpaid'} leave: <b>${esc(l.from_day)}${l.to_day !== l.from_day ? ` – ${esc(l.to_day)}` : ''}</b>${l.half_day ? ' (half day)' : ''} · ${Number(l.days)} day${Number(l.days) === 1 ? '' : 's'}`)}
+    ${l.reason ? `<div class="small muted">“${esc(l.reason)}”</div>` : ''}
+    <div class="na-btns"><input type="text" id="pdl-${l.id}" placeholder="Note (needed to reject)" style="width:auto;flex:1;min-width:160px;margin:0;"><button type="button" class="btn btn-sm btn-primary" data-pd-leave="${l.id}|approve">✓ Approve</button><button type="button" class="btn btn-sm btn-danger" data-pd-leave="${l.id}|reject">✗ Reject</button></div></div>`; }
+  if (x.kind === 'payroll') return `<div class="pd-row">${head(x.step === 'approve' ? `<b>${esc(attMonthLabel(x.period))}</b> payroll is waiting for your approval` : `<b>${esc(attMonthLabel(x.period))}</b> payroll is approved — pay it and mark it paid`)}
+    <div class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-pd-payroll="${esc(x.period)}">Open HR & Payroll ›</button></div></div>`;
   if (x.kind === 'release') return `<div class="pd-row">${head(`Level ${x.stage} of <b>${esc(x.title)}</b> is ready to release (${(x.people || []).map(p => esc(personName(p.username))).join(', ')})`)}
     <div class="na-btns"><button type="button" class="btn btn-sm btn-primary" data-tab-go="approvals">Open Approvals ›</button>${open}</div></div>`;
   if (x.kind === 'doc') {
@@ -5516,9 +5510,10 @@ function renderProfileView() {
     <label>Name</label><input type="text" id="profile-name" value="${esc(session.name)}">
     <button class="btn btn-primary btn-sm" style="margin-top:8px;" data-act="save-profile-name">Save Name</button>
   </div>
+  ${recoveryPinCardHTML(false)}
   <div class="card">
     <div class="card-title">Email</div>
-    <p class="small muted">Used for account recovery ("Forgot Password") if your Admin has set up email on this server.</p>
+    <p class="small muted">Optional — for your own records.</p>
     <label>Email</label><input type="email" id="profile-email" value="${esc(session.email || '')}" placeholder="you@example.com">
     <button class="btn btn-primary btn-sm" style="margin-top:8px;" data-act="save-profile-email">Save Email</button>
   </div>
@@ -5585,6 +5580,29 @@ function bindProfile() {
   };
 }
 
+/* ==================== RECOVERY PIN (forgot password without email) ==================== */
+function recoveryPinCardHTML(prompt) {
+  const has = !!session.hasRecoveryPin;
+  return `<div class="card pin-card ${prompt ? 'pin-prompt' : ''}" id="pin-card-${prompt ? 'prompt' : 'profile'}">
+    <div class="card-title">🔑 Recovery PIN ${has ? '<span class="bud-chip good">Set</span>' : ''}</div>
+    <p class="small muted" style="margin-top:0;">${prompt ? 'Set a 4–6 digit PIN now — if you ever forget your password, use <b>Forgot password?</b> on the login page with this PIN and set a new one yourself. No email needed.' : has ? 'You can reset a forgotten password yourself with this PIN (login page → Forgot password?). Change it here.' : 'Set it so you can reset a forgotten password yourself (login page → Forgot password?).'}</p>
+    <div class="pin-row"><input type="password" id="pin-new-${prompt ? 'p' : 'f'}" inputmode="numeric" maxlength="6" placeholder="New PIN (4–6 digits)" autocomplete="off">
+      <input type="password" id="pin-again-${prompt ? 'p' : 'f'}" inputmode="numeric" maxlength="6" placeholder="Type it again" autocomplete="off">
+      <button class="btn btn-primary btn-sm" data-pin-save="${prompt ? 'p' : 'f'}">${has ? 'Change PIN' : 'Save PIN'}</button>
+      ${prompt ? '<button class="btn btn-sm" data-pin-later>Later</button>' : ''}</div>
+  </div>`;
+}
+function bindRecoveryPin() {
+  document.querySelectorAll('[data-pin-save]').forEach(b => b.onclick = async () => {
+    const k = b.dataset.pinSave; const pin = (document.getElementById(`pin-new-${k}`) || {}).value || ''; const again = (document.getElementById(`pin-again-${k}`) || {}).value || '';
+    if (!/^\d{4,6}$/.test(pin)) { setBanner('The PIN must be 4 to 6 digits.'); render(); return; }
+    if (pin !== again) { setBanner('The two PINs are not the same.'); render(); return; }
+    try { await api('/api/auth/recovery-pin', { method: 'POST', body: JSON.stringify({ pin }) }); session.hasRecoveryPin = true; safeStorage.setItem('ls_session', JSON.stringify(session)); setBanner('Recovery PIN saved — remember it.', 'ok'); render(); }
+    catch (e) { setBanner(e.message); render(); }
+  });
+  const later = document.querySelector('[data-pin-later]'); if (later) later.onclick = () => { ui.pinLater = true; render(); };
+}
+
 /* ==================== MY TEAM (team leads only, delegated member management) ==================== */
 function renderMyTeamView() {
   const myTeammates = userDirectory.filter(u => u.team === session.team && u.username !== session.username);
@@ -5602,13 +5620,23 @@ function renderMyTeamView() {
   <div class="card">
     <div class="card-title">Teammates in ${esc(session.team || '—')}</div>
     ${myTeammates.length === 0 ? `<div class="empty">No one else in your team yet.</div>` : `
-    <table><tr><th>Name</th><th>Username</th><th>Team Lead</th></tr>
-    ${myTeammates.map(u => `<tr><td>${esc(u.name)}</td><td class="mono">${esc(u.username)}</td><td>${u.is_team_lead ? '★ Lead' : '—'}</td></tr>`).join('')}
+    <table><tr><th>Name</th><th>Username</th><th>Team Lead</th><th>Password</th></tr>
+    ${myTeammates.map(u => `<tr><td>${esc(u.name)}</td><td class="mono">${esc(u.username)}</td><td>${u.is_team_lead ? '★ Lead' : '—'}</td>
+      <td>${session.isTeamLead && u.role !== 'admin' ? (ui.teamResetFor === u.username ? `<div class="temp-pw-cell">${tempPasswordFieldHTML(`team-reset-${u.username}`, 'new temporary password')}<button class="btn btn-primary btn-sm" data-team-reset-save="${esc(u.username)}">Set</button><button class="btn btn-sm" data-team-reset="">Cancel</button></div>` : `<button class="btn btn-sm" data-team-reset="${esc(u.username)}">Reset password</button>`) : ''}</td></tr>`).join('')}
     </table>`}
   </div>`;
 }
 function bindMyTeam() {
   bindPasswordToggles(); bindLoginDetailsCard();
+  document.querySelectorAll('[data-team-reset]').forEach(b => b.onclick = () => { ui.teamResetFor = b.dataset.teamReset || null; render(); });
+  document.querySelectorAll('[data-team-reset-save]').forEach(b => b.onclick = async () => {
+    const u = b.dataset.teamResetSave; const pw = ((document.getElementById(`team-reset-${u}`) || {}).value || '').trim();
+    if (pw.length < 8) { setBanner('The new password must be at least 8 characters, with letters and numbers.'); render(); return; }
+    try { await api(`/api/users/${encodeURIComponent(u)}/reset-password`, { method: 'POST', body: JSON.stringify({ newPassword: pw }) });
+      ui.teamResetFor = null; ui.lastLoginDetails = { username: u, name: personName(u), password: pw, reset: true };
+      setBanner(`Password reset for ${personName(u)} — send them the login details shown at the top.`, 'ok'); render(); window.scrollTo(0, 0); }
+    catch (e) { setBanner(e.message); render(); }
+  });
   const submit = document.querySelector('[data-act="submit-new-team-member"]');
   if (submit) submit.onclick = async () => {
     const username = document.getElementById('new-team-username').value.trim();
@@ -6819,56 +6847,85 @@ function morphHTML(container, html) {
   morphChildren(container, temp);
 }
 
-// ---- Quick search in every long dropdown ----
-// Any list with many choices (people, projects, places, departments…) gets a small search box above it: type
-// part of a name, username, department or any word in the option and the list keeps only what matches; when one
-// choice is left it is picked. Added after each render and taken off before the next one, so the page's own
-// markup (and its morphing) never sees it.
+// ---- Type-to-search in every long dropdown ----
+// A dropdown with many choices (people, projects, places, departments…) becomes a box you type into: type part of a
+// name, username or department and the list under it shows only what matches; tap one (or Enter for the first) to pick
+// it. The real <select> stays (hidden) and gets the value, so every form works as before. Lists that allow several
+// choices keep a small filter box above them. Added after each render and removed before the next one.
 const QS_MIN_OPTIONS = 8;
-const qsState = {}; // select id → typed text
+const qsState = {}; // select id → text being typed (only while that box has focus)
 function qsOptionText(o) { return `${o.textContent || ''} ${o.value || ''} ${o.dataset.qs || ''}`.toLowerCase(); }
-function qsApply(sel, q) {
-  const words = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
-  let shown = 0, last = null;
-  for (const o of sel.options) {
-    const keep = !words.length || !o.value || words.every(w => qsOptionText(o).includes(w)) || o.selected && sel.multiple;
-    o.hidden = !keep;
-    if (keep && o.value) { shown++; last = o; }
-  }
+function qsMatches(o, words) { return !words.length || words.every(w => qsOptionText(o).includes(w)); }
+function qsWords(q) { return String(q || '').toLowerCase().split(/\s+/).filter(Boolean); }
+function qsApply(sel, q) { // multiple-choice lists: hide what does not match
+  const words = qsWords(q); let shown = 0, last = null;
+  for (const o of sel.options) { const keep = !o.value || qsMatches(o, words) || o.selected; o.hidden = !keep; if (keep && o.value) { shown++; last = o; } }
   return { shown, last };
 }
 function qsDetach() {
-  const active = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('qs-input') ? { id: document.activeElement.dataset.qsFor, pos: document.activeElement.selectionStart } : null;
-  document.querySelectorAll('.qs-input').forEach(el => el.remove());
+  const ae = document.activeElement;
+  const active = ae && ae.classList && (ae.classList.contains('qs-input') || ae.classList.contains('qs-combo-input')) ? { id: ae.dataset.qsFor, pos: ae.selectionStart, combo: ae.classList.contains('qs-combo-input'), text: ae.value } : null;
+  document.querySelectorAll('.qs-input, .qs-combo').forEach(el => el.remove());
+  document.querySelectorAll('select.qs-hidden').forEach(s => { s.classList.remove('qs-hidden'); });
   return active;
+}
+function qsSelectedText(sel) { const o = sel.options[sel.selectedIndex]; return o && o.value ? o.textContent.trim() : ''; }
+function qsCombo(sel, active) {
+  const wrap = document.createElement('div'); wrap.className = 'qs-combo';
+  const inp = document.createElement('input');
+  inp.type = 'text'; inp.className = 'qs-combo-input'; inp.dataset.qsFor = sel.id;
+  ['autocomplete', 'autocapitalize', 'autocorrect'].forEach(a => inp.setAttribute(a, 'off')); inp.spellcheck = false; inp.setAttribute('data-no-spell', '');
+  const ph = sel.options[0] && !sel.options[0].value ? sel.options[0].textContent.trim() : 'Pick…';
+  inp.placeholder = `🔍 ${ph.replace(/^—\s*|\s*—$/g, '')} — type to search`;
+  inp.value = qsSelectedText(sel); inp.disabled = sel.disabled;
+  const list = document.createElement('div'); list.className = 'qs-combo-list'; list.hidden = true;
+  wrap.appendChild(inp); wrap.appendChild(list);
+  sel.parentNode.insertBefore(wrap, sel); sel.classList.add('qs-hidden');
+  let hi = 0, items = [];
+  const show = (q) => {
+    const words = qsWords(q);
+    items = [...sel.options].filter(o => !o.disabled && (o.value || !words.length) && qsMatches(o, words)).slice(0, 80);
+    hi = Math.max(0, items.findIndex(o => o.value && o.value === sel.value)); if (words.length) hi = items.findIndex(o => o.value); if (hi < 0) hi = 0;
+    list.innerHTML = items.length ? items.map((o, i) => `<div class="qs-opt ${i === hi ? 'hi' : ''} ${o.value === sel.value && o.value ? 'cur' : ''}" data-i="${i}">${(typeof esc === 'function' ? esc : String)(o.textContent.trim())}</div>`).join('') : '<div class="qs-none-msg">No match</div>';
+    list.hidden = false;
+    const h = list.querySelector('.hi'); if (h && h.scrollIntoView) h.scrollIntoView({ block: 'nearest' });
+  };
+  const pick = (o) => {
+    list.hidden = true; delete qsState[sel.id];
+    if (!o) { inp.value = qsSelectedText(sel); return; }
+    inp.value = o.value ? o.textContent.trim() : '';
+    if (sel.value !== o.value) { sel.value = o.value; sel.dispatchEvent(new Event('input', { bubbles: true })); sel.dispatchEvent(new Event('change', { bubbles: true })); }
+  };
+  inp.addEventListener('focus', () => { inp.select(); show(qsState[sel.id] || ''); });
+  inp.addEventListener('click', () => { if (list.hidden) { inp.select(); show(''); } });
+  inp.addEventListener('input', () => { qsState[sel.id] = inp.value; show(inp.value); });
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (list.hidden) show(''); hi = Math.max(0, Math.min(items.length - 1, hi + (e.key === 'ArrowDown' ? 1 : -1))); list.querySelectorAll('.qs-opt').forEach((d, i) => d.classList.toggle('hi', i === hi)); const h = list.querySelector('.hi'); if (h && h.scrollIntoView) h.scrollIntoView({ block: 'nearest' }); }
+    else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); if (!list.hidden && items[hi]) { pick(items[hi]); inp.blur(); } }
+    else if (e.key === 'Escape') { pick(null); inp.blur(); }
+  });
+  list.addEventListener('mousedown', (e) => { const d = e.target.closest('.qs-opt'); if (!d) return; e.preventDefault(); pick(items[Number(d.dataset.i)]); inp.blur(); });
+  inp.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== inp) { list.hidden = true; delete qsState[sel.id]; inp.value = qsSelectedText(sel); } }, 150));
+  if (active && active.id === sel.id && active.combo) { inp.focus(); inp.value = active.text; qsState[sel.id] = active.text; show(active.text); try { inp.setSelectionRange(active.pos, active.pos); } catch (e) {} }
+}
+function qsFilterBox(sel, active) {
+  const real = [...sel.options].filter(o => o.value).length;
+  const inp = document.createElement('input');
+  inp.type = 'search'; inp.className = 'qs-input'; inp.dataset.qsFor = sel.id;
+  inp.setAttribute('autocomplete', 'off'); inp.setAttribute('autocapitalize', 'off'); inp.spellcheck = false; inp.setAttribute('data-no-spell', '');
+  inp.placeholder = `🔍 Filter ${real} choices`;
+  inp.value = qsState[sel.id] || '';
+  sel.parentNode.insertBefore(inp, sel);
+  if (inp.value) qsApply(sel, inp.value);
+  inp.addEventListener('input', () => { qsState[sel.id] = inp.value; const { shown } = qsApply(sel, inp.value); inp.classList.toggle('qs-none', !!inp.value && !shown); });
+  if (active && active.id === sel.id && !active.combo) { inp.focus(); try { inp.setSelectionRange(active.pos, active.pos); } catch (e) {} }
 }
 function qsAttach(active) {
   document.querySelectorAll('select[id]').forEach(sel => {
-    if (sel.dataset.noQs != null || sel.closest('[data-no-qs]')) return;
+    if (sel.dataset.noQs != null || sel.closest('[data-no-qs]') || !sel.offsetParent && sel.type !== 'select-multiple' && getComputedStyle(sel).display === 'none') return;
     const real = [...sel.options].filter(o => o.value).length;
     if (real < QS_MIN_OPTIONS) return;
-    const inp = document.createElement('input');
-    inp.type = 'search'; inp.className = 'qs-input'; inp.dataset.qsFor = sel.id;
-    inp.setAttribute('autocomplete', 'off'); inp.setAttribute('autocapitalize', 'off'); inp.spellcheck = false; inp.setAttribute('data-no-spell', '');
-    inp.placeholder = `🔍 Type to search ${real} choices (name, username, department…)`;
-    inp.value = qsState[sel.id] || '';
-    sel.parentNode.insertBefore(inp, sel);
-    if (inp.value) qsApply(sel, inp.value);
-    inp.addEventListener('input', () => {
-      qsState[sel.id] = inp.value;
-      const { shown, last } = qsApply(sel, inp.value);
-      inp.classList.toggle('qs-none', !!inp.value && !shown);
-      if (shown === 1 && !sel.multiple && sel.value !== last.value) { sel.value = last.value; sel.dispatchEvent(new Event('input', { bubbles: true })); sel.dispatchEvent(new Event('change', { bubbles: true })); }
-    });
-    inp.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        const first = [...sel.options].find(o => o.value && !o.hidden);
-        if (first && !sel.multiple) { sel.value = first.value; sel.dispatchEvent(new Event('change', { bubbles: true })); }
-        else if (first && sel.multiple) { first.selected = true; sel.dispatchEvent(new Event('change', { bubbles: true })); }
-      } else if (e.key === 'Escape') { inp.value = ''; qsState[sel.id] = ''; qsApply(sel, ''); }
-    });
-    if (active && active.id === sel.id) { inp.focus(); try { inp.setSelectionRange(active.pos, active.pos); } catch (e) {} }
+    if (sel.multiple) qsFilterBox(sel, active); else qsCombo(sel, active);
   });
 }
 function render() {
@@ -6921,10 +6978,12 @@ function renderInner() {
   else if (ui.adminTab === 'approvals') body = renderApprovalsView();
   else if (ui.adminTab === 'closure') body = renderClosureView();
   else if (ui.adminTab === 'deliveries' && typeof renderDeliveriesView === 'function') body = renderDeliveriesView();
-  else if (ui.adminTab === 'budget' && typeof renderBudgetView === 'function') body = renderBudgetView();
+  else if (ui.adminTab === 'budget' && BUDGET_PAGE_ON && typeof renderBudgetView === 'function') body = renderBudgetView();
   else if (ui.adminTab === 'estimation' && typeof renderEstimationView === 'function') body = renderEstimationView();
   else if (ui.adminTab === 'accountsdept' && typeof renderAccountsDeptView === 'function') body = renderAccountsDeptView();
   else if (ui.adminTab === 'dpr' && typeof renderDprView === 'function' && dprTabVisible()) body = renderDprView();
+  else if (ui.adminTab === 'attendance' && typeof renderAttendanceView === 'function') body = renderAttendanceView();
+  else if (ui.adminTab === 'payroll' && typeof renderHrPayrollView === 'function' && hrTabVisible()) body = renderHrPayrollView();
   else if (ui.adminTab === 'alltasks' && session.role === 'admin') body = renderAllTasksCard();
   else if (ui.adminTab === 'accounts' && session.role === 'admin') body = renderAccountsView();
   else if (ui.adminTab === 'performance' && session.role === 'admin') body = renderPerformanceView();
@@ -6953,6 +7012,7 @@ function renderInner() {
         <main class="content">
           <div id="banner-slot">${bannerHTML()}</div>
           <div id="notif-prompt-box">${dataLoadedOnce ? notifPromptHTML() : ''}</div>
+          ${dataLoadedOnce && session.hasRecoveryPin === false && !ui.pinLater ? recoveryPinCardHTML(true) : ''}
           ${body}
         </main>
       </div>
@@ -6961,13 +7021,16 @@ function renderInner() {
   if (ui.adminTab === 'tasks' || ui.adminTab === 'alltasks' || ui.adminTab === 'calendar' || ui.adminTab === 'mydashboard' || showingToday) { bindMyTasks(); bindFollowupForm(); bindSubtaskForm(); bindAddAssigneeForm(); }
   if (ui.adminTab === 'approvals') { bindApprovalForm(); bindApprovalsSection(); bindApprovalsView(); bindMyTasks(); bindClosureView(); bindNotifExtras(); }
   bindExtensionControls();
+  bindRecoveryPin();
   if (ui.adminTab === 'notifications') bindNotificationsView();
   if (ui.adminTab === 'closure') bindClosureView();
   if (ui.adminTab === 'deliveries' && typeof bindDeliveriesView === 'function') bindDeliveriesView();
-  if (ui.adminTab === 'budget' && typeof bindBudgetView === 'function') bindBudgetView();
+  if (ui.adminTab === 'budget' && BUDGET_PAGE_ON && typeof bindBudgetView === 'function') bindBudgetView();
   if (ui.adminTab === 'estimation' && typeof bindEstimationView === 'function') bindEstimationView();
   if (ui.adminTab === 'accountsdept' && typeof bindAccountsDeptView === 'function') bindAccountsDeptView();
   if (ui.adminTab === 'dpr' && typeof bindDprView === 'function') bindDprView();
+  if (ui.adminTab === 'attendance' && typeof bindAttendanceView === 'function') bindAttendanceView();
+  if (ui.adminTab === 'payroll' && typeof bindHrPayrollView === 'function') bindHrPayrollView();
   bindClosureForms();
   if (ui.adminTab === 'tasks') bindApprovalsHint();
   if (ui.adminTab === 'calendar') bindCalendarView();

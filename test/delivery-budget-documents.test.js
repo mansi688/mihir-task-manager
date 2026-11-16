@@ -1,3 +1,5 @@
+// The Budget page is switched off in the app; its backend is still tested with it switched on.
+process.env.BUDGET_ENABLED = 'true';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startTestServer, api, login, createMember, futureDate } = require('../testlib/helpers');

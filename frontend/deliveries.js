@@ -202,7 +202,8 @@ function deliveryProofHTML(d) {
     ${p.busy ? '<div class="small muted">Preparing photo…</div>' : ''}
     <label for="dlv-proof-note-${d.id}">Note <span class="muted small">(optional — e.g. quantity counted, damage)</span></label>
     <textarea id="dlv-proof-note-${d.id}" placeholder="${stage === 'delivered' ? 'e.g. 400 boxes received, 2 broken' : 'e.g. stacked in Tower B store'}">${dlvEsc(p.note || '')}</textarea>
-    <div class="small muted">Each photo is stamped with the date, time and ${dlvEsc(d.ref)}.</div>
+    <div class="small muted">Each photo is stamped with the date, time, ${dlvEsc(d.ref)} and the GPS location where it was taken — allow location when the phone asks.</div>
+    ${p.geoWarn ? `<div class="small dlv-warn-text">⚠ Location not added (${dlvEsc(p.geoWarn)}) — turn on location for this site to geo-tag the photos.</div>` : ''}
     ${p.err ? `<div class="err">${dlvEsc(p.err)}</div>` : ''}
     <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn btn-primary" data-dlv-proof-send="${d.id}" ${p.saving || p.busy ? 'disabled' : ''}>${p.saving ? 'Uploading…' : (stage === 'delivered' ? '✓ Delivery done' : '✓ Unloading done')}</button>
@@ -216,7 +217,7 @@ function deliveryCardHTML(d) {
   const manage = dlvCanManage();
   const mine = dlvMine(d) || manage;
   const files = d.files || [];
-  const fileBtn = (f, label) => `<button type="button" class="dlv-file" data-dlv-file="${d.id}:${f.id}" title="${dlvEsc(f.name)}">${label}</button>`;
+  const fileBtn = (f, label) => `<button type="button" class="dlv-file" data-dlv-file="${d.id}:${f.id}" title="${dlvEsc(f.name)}">${label}</button>${dlvMapLink(f)}`;
   const proofs = (kind) => files.filter(f => f.kind === kind);
   const overdue = ['scheduled', 'dispatched'].includes(d.status) && d.expected_at && String(d.expected_at).slice(0, 10) < (typeof istDayKey === 'function' ? istDayKey(new Date().toISOString()) : '');
   const row = (k, v) => v ? `<div class="dlv-kv"><span>${k}</span><b>${v}</b></div>` : '';
@@ -327,7 +328,7 @@ function dlvDocsHTML(d) {
         <b>${dlvEsc(t.label)}</b> <span class="dlv-req ${req.has(t.key) ? 'need' : ''}">${req.has(t.key) ? 'Required' : 'Optional'}</span>
         ${!fs.length && req.has(t.key) ? `<span class="small muted">— not uploaded yet</span>` : ''}
         ${!fs.length && canUp && !form ? `<button type="button" class="btn btn-sm" data-dlv-doc-new="${d.id}:${sub}:${t.key}">⬆ Upload</button>` : ''}</div>
-      ${fs.map(f => `<div class="dlv-doc-file">${`<button type="button" class="dlv-file" data-dlv-file="${d.id}:${f.id}" title="${dlvEsc(f.name)}">📎 ${dlvEsc(f.name)}</button>`}
+      ${fs.map(f => `<div class="dlv-doc-file">${`<button type="button" class="dlv-file" data-dlv-file="${d.id}:${f.id}" title="${dlvEsc(f.name)}">📎 ${dlvEsc(f.name)}</button>${dlvMapLink(f)}`}
         <span class="small muted">${dlvEsc(personName(f.uploaded_by))} · ${dlvEsc(dlvTime(f.created_at))}</span>
         ${f.note ? `<span class="small">"${dlvEsc(f.note)}"</span>` : ''}
         ${canDel(f) ? `<button type="button" class="dlv-x" data-dlv-file-del="${d.id}:${f.id}" title="Remove this file" aria-label="Remove">✕</button>` : ''}</div>`).join('')}
@@ -368,7 +369,7 @@ function dlvMoneyHTML(d) {
   const canDel = p => (typeof budgetData !== 'undefined' && budgetData.canAllot) || ((p.verify_status || 'pending') !== 'verified' && (manage || (p.paid_by === session.username && Date.now() - new Date(p.created_at).getTime() < 48 * 3600000)));
   const stChip = p => typeof budChip === 'function' ? budChip(p.verify_status || 'pending') : '';
   return `<div class="dlv-money">
-    <div class="small muted">Porter / transport / unloading money paid for this delivery. It comes out of the payer's allotted money in <b>Budget</b>, where the Director verifies each bill. <button type="button" class="linkish" data-dlv-act="open-budget">Open Budget ›</button></div>
+    <div class="small muted">Porter / transport / unloading money paid for this delivery, with the bill.</div>
     <div class="dlv-section" style="margin-top:12px;">Payments ${pays.length ? `<span class="muted small">(${pays.length})</span>` : ''}</div>
     ${pays.length ? `<div class="dlv-perf-wrap"><table class="dlv-perf dlv-pays"><thead><tr><th>Date</th><th>For</th><th>Paid to</th><th>Mode</th><th>By</th><th style="text-align:right;">Amount</th><th>Bill</th><th>Status</th><th></th></tr></thead><tbody>
       ${pays.map(p => `<tr class="${p.verify_status === 'rejected' ? 'bud-row-rej' : ''}"><td>${dlvEsc(dlvWhen(p.paid_at))}</td><td>${dlvEsc(p.purpose)}${p.note ? `<div class="small muted">${dlvEsc(p.note)}</div>` : ''}</td><td>${dlvEsc(p.paid_to || '—')}</td><td>${dlvEsc(p.mode || '—')}</td>
@@ -485,8 +486,26 @@ function deliveryPerformanceHTML() {
     </table></div>` : '<div class="empty">No deliveries in this period yet.</div>'}
   </div>`;
 }
+// Where the phone is right now, for geo-tagging photos (asked once, reused for 2 minutes). Never blocks a photo:
+// without permission / GPS the photo is stamped "location not available".
+let dlvGeoCache = null;
+function dlvGeo() {
+  if (dlvGeoCache && Date.now() - dlvGeoCache.at < 120000) return Promise.resolve(dlvGeoCache.v);
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) { resolve({ error: 'no GPS on this device' }); return; }
+    let done = false; const finish = (v) => { if (done) return; done = true; if (!v.error) dlvGeoCache = { at: Date.now(), v }; resolve(v); };
+    setTimeout(() => finish({ error: 'location took too long' }), 12000);
+    navigator.geolocation.getCurrentPosition(
+      p => finish({ lat: Math.round(p.coords.latitude * 1e6) / 1e6, lng: Math.round(p.coords.longitude * 1e6) / 1e6, acc: Math.round(p.coords.accuracy || 0) }),
+      e => finish({ error: e && e.code === 1 ? 'location permission is off' : 'location not available' }),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+  });
+}
+function dlvGeoLine(g) { return g && !g.error ? `📍 ${g.lat.toFixed(6)}, ${g.lng.toFixed(6)}${g.acc ? ` (±${g.acc} m)` : ''}` : `📍 Location not available${g && g.error ? ` — ${g.error}` : ''}`; }
+function dlvMapLink(f) { return f && f.geo_lat != null && f.geo_lng != null ? `<a class="dlv-geo" href="https://www.google.com/maps?q=${f.geo_lat},${f.geo_lng}" target="_blank" rel="noopener" title="Where this photo was taken${f.geo_acc ? ` (±${f.geo_acc} m)` : ''}">📍 Map</a>` : ''; }
 // Writes the date/time, delivery number and person onto the photo itself — proof that survives a download.
-function dlvStampPhoto(dataUrl, text) {
+// A second line carries the GPS location where the photo was taken.
+function dlvStampPhoto(dataUrl, text, text2) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -495,9 +514,12 @@ function dlvStampPhoto(dataUrl, text) {
         const g = c.getContext('2d'); g.drawImage(img, 0, 0);
         const fs = Math.max(14, Math.round(img.width / 34)); const pad = Math.round(fs * 0.6);
         g.font = `700 ${fs}px sans-serif`;
-        const bandH = fs + pad * 2;
+        const lines = [text, text2].filter(Boolean);
+        const lineH = Math.round(fs * 1.35);
+        const bandH = lineH * lines.length + pad * 2 - (lineH - fs);
         g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect(0, img.height - bandH, img.width, bandH);
-        g.fillStyle = '#fff'; g.textBaseline = 'middle'; g.fillText(text, pad, img.height - bandH / 2, img.width - pad * 2);
+        g.fillStyle = '#fff'; g.textBaseline = 'middle';
+        lines.forEach((l, i) => g.fillText(l, pad, img.height - bandH + pad + fs / 2 + i * lineH, img.width - pad * 2));
         resolve(c.toDataURL('image/jpeg', 0.8));
       } catch (e) { resolve(dataUrl); }
     };
@@ -648,10 +670,12 @@ function bindDeliveriesView() {
   const readFiles = (input, target, stampWord, ref, max = 10) => {
     const list = Array.from(input.files || []).slice(0, max - (target.files || []).length); if (!list.length) return;
     target.busy = true; target.err = ''; render(); let left = list.length;
+    const geoP = list.some(f => /^image\//i.test(f.type || '')) ? dlvGeo() : Promise.resolve(null);
     list.forEach(file => readAnyFile(file, async (data) => {
       if (data && /^data:image\//i.test(data)) {
+        const geo = await geoP;
         const stamp = `${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${ref} · ${stampWord} · ${session.name}`;
-        target.files.push({ name: file.name.replace(/\.[^.]+$/, '') + '.jpg', data: await dlvStampPhoto(data, stamp) });
+        target.files.push({ name: file.name.replace(/\.[^.]+$/, '') + '.jpg', data: await dlvStampPhoto(data, stamp, dlvGeoLine(geo)), geo: geo && !geo.error ? geo : null });
       } else if (data) target.files.push({ name: file.name, data });
       if (--left === 0) { target.busy = false; render(); }
     }));
@@ -738,12 +762,15 @@ function bindDeliveriesView() {
     if (input) input.onchange = () => {
       const list = Array.from(input.files || []).slice(0, 10 - (p.files || []).length); if (!list.length) return;
       p.busy = true; p.err = ''; render(); let left = list.length;
+      const geoP = dlvGeo();
       list.forEach(file => readAnyFile(file, async (data) => {
         if (data && /^data:image\//i.test(data)) {
+          const geo = await geoP;
+          if (geo && geo.error) p.geoWarn = geo.error;
           const now = new Date();
           const stamp = `${now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${d ? d.ref : ''} · ${p.stage === 'delivered' ? 'Delivered' : 'Unloaded'} · ${session.name}`;
-          const stamped = await dlvStampPhoto(data, stamp);
-          p.files.push({ name: `${d ? d.ref : 'delivery'}-${p.stage}-${p.files.length + 1}.jpg`, data: stamped, taken_at: now.toISOString() });
+          const stamped = await dlvStampPhoto(data, stamp, dlvGeoLine(geo));
+          p.files.push({ name: `${d ? d.ref : 'delivery'}-${p.stage}-${p.files.length + 1}.jpg`, data: stamped, taken_at: now.toISOString(), geo: geo && !geo.error ? geo : null });
         } else if (data) p.err = 'Only photos can be used as proof.';
         if (--left === 0) { p.busy = false; render(); }
       }));
@@ -754,7 +781,7 @@ function bindDeliveriesView() {
       if (!p.files.length) { p.err = 'Add at least one photo as proof.'; render(); return; }
       p.saving = true; p.err = ''; render();
       try {
-        await api(`/api/deliveries/${p.id}/proof`, { method: 'POST', body: JSON.stringify({ stage: p.stage, note: p.note, attachments: p.files.map(x => ({ name: x.name, data: x.data })), takenAt: p.files.map(x => x.taken_at) }) });
+        await api(`/api/deliveries/${p.id}/proof`, { method: 'POST', body: JSON.stringify({ stage: p.stage, note: p.note, attachments: p.files.map(x => ({ name: x.name, data: x.data, geo: x.geo || undefined })), takenAt: p.files.map(x => x.taken_at) }) });
         const stage = p.stage; ui.deliveryProof = null;
         if (stage === 'delivered') dlvPlaySound('delivered');
         setBanner(stage === 'delivered' ? 'Delivery confirmed with photos. Next: confirm the unloading.' : 'Unloading confirmed — everyone has been told.', 'ok');

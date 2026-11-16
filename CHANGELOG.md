@@ -4,6 +4,57 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Type-to-search dropdowns; forgot password with a recovery PIN
+### Changed
+- **Dropdowns search as you type in them** (no separate search bar): every list with 8+ choices — people, places,
+  departments… — is a box you type into; the list under it shows only what matches (name, username or department);
+  tap one or press Enter for the first. Lists that allow several choices keep a small filter box.
+- **Forgot password — no email, no OTP.** Everyone sets a 4–6 digit **recovery PIN** once (a card asks for it after
+  login until it is set; change it on My Profile). On the login page, **Forgot password?** takes username + PIN + a new
+  password and the person is straight back in. 5 wrong PINs lock the PIN for 15 minutes; easy PINs (1111, 1234) are
+  refused. Without a PIN, the person's **team lead** (or Admin) resets the password — team leads now have
+  **Reset password** next to each member on **My Team** (their own team only, never Admin accounts). The old email-code
+  reset is switched off. New columns `users.recovery_pin_hash / recovery_pin_set_at`.
+
+## [Unreleased] — Attendance, leave and payroll
+### Added
+- **My Attendance** (everyone, menu → You): **📷 Check in / Check out** takes a selfie and the GPS location; the
+  location is matched to the Places on the Locations page (site / office) and "not at a site" is flagged (never
+  blocked). Days without a check-in are filled from **location tracking** when the person was tracked (first and last
+  position); a missing check-out too. Month calendar (Present, Half day, Absent, Paid / Unpaid leave, Weekly off,
+  Holiday, late marks, OT), **leave** (balance, ask for paid / unpaid / half-day leave, withdraw) and **payslips**.
+- **HR & Payroll** (Admin, HR, Accounts — menu → Departments):
+  - **Today** — who checked in, when, where, late, not at a site, selfies.
+  - **Register** — everyone × every day of the month; HR / Admin tap a day to correct it (reason kept).
+  - **Leave** — approve / reject (a reason is needed to reject); paid leave is limited to the yearly quota.
+  - **Salaries** — Basic, HRA, Conveyance, Special; PF yes / no; ESI auto / always / never; PT standard / women's
+    slab / exempt; OT rate; leave quota; PAN, UAN, ESI no.; bank account and IFSC.
+  - **Advances** — amount and monthly instalment, recovered automatically when a month is paid.
+  - **Payroll** — HR prepares a month from attendance + leave + advances (adjust OT / other earnings / deductions per
+    person), sends it to Admin, **Admin approves**, **Accounts marks it paid** — then everyone sees their payslip.
+    ⬇ Salary register and ⬇ Bank transfer sheet (Excel). Payslip view with Print / PDF.
+  - **Rules & holidays** — shift times, grace, late marks per ½-day cut, full / half-day hours, OT after, OT ×,
+    weekly off, paid leave per year, selfie required; PF % / ceiling, ESI % / limit; holiday list.
+  - Calculation: paid days = present + weekly offs + holidays + paid leave + ½ per half day − ½ day per N late marks;
+    earned = each component × paid days ÷ days in month; OT = time beyond the shift × (OT rate or gross ÷ 30 ÷
+    full-day hours × OT ×); PF 12% of earned Basic up to ₹15,000; ESI 0.75% when gross ≤ ₹21,000 (employer 3.25%);
+    Maharashtra PT slabs; net = earnings − PF − ESI − PT − advance − other deductions. Rates are editable.
+- Leave requests and payroll approvals / payments appear in **Waiting for your decision** and are counted with the
+  other approvals. New notification types: leave requested / decided, payroll to approve / approved, payslip ready.
+- Tables: `attendance_days`, `leave_requests`, `payroll_settings`, `payroll_holidays`, `salary_structures`,
+  `salary_advances`, `salary_advance_recoveries`, `payroll_runs`, `payroll_lines`.
+
+## [Unreleased] — Geo-tagged delivery photos; Budget page removed
+### Added
+- **Geo-tagged delivery photos**: every photo taken in Deliveries (delivery and unloading proof, documents, bill
+  photos) gets a second stamp line with the GPS location where it was taken (📍 lat, lng ±accuracy), and the
+  coordinates are saved with the photo — a 📍 Map link next to each photo opens the spot in Google Maps. If the phone's
+  location is off the photo is still taken, stamped "Location not available", and the person is told to turn it on.
+  New columns `delivery_files.geo_lat / geo_lng / geo_acc`.
+### Removed
+- **Budget page** taken out of the menu (and its notifications are no longer sent). Delivery payments with bills stay
+  on each delivery's Money tab. The data is kept; `BUDGET_ENABLED=true` (server) brings the notifications back.
+
 ## [Unreleased] — Daily Progress Report, department tagging, project heads optional, Follow up and quick search everywhere
 ### Added
 - **Daily Progress Report** (menu → Departments → Daily Progress): one report per project per day with three parts —

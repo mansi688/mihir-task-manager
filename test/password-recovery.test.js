@@ -1,91 +1,46 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const bcrypt = require('bcrypt');
 const { startTestServer, api, login, createMember } = require('../testlib/helpers');
 
-// Honesty note: this sandbox has no real SMTP credentials, so actual email delivery is not
-// verified here — that would need a real mail account. What IS fully verified: the server
-// correctly reports "email not configured" when SMTP env vars are absent (matching this app's
-// default state), and the OTP verification logic itself (correct/wrong/expired codes, and that a
-// successful reset does NOT force yet another password change) — by injecting a known OTP hash
-// directly, the same way the actual server would have stored one after really sending an email.
-test('forgot-password gracefully reports email is not configured (this app\'s default state)', async (t) => {
+// Forgot password without email: the person's own recovery PIN; otherwise their team lead (or Admin) resets it.
+test('forgot password with a recovery PIN; team leads reset their own team', async (t) => {
   const { baseUrl, stop } = await startTestServer();
   t.after(() => stop());
-  const res = await api(baseUrl, '/api/auth/forgot-password', { method: 'POST', body: { username: 'admin' } });
-  assert.equal(res.status, 200);
-  assert.equal(res.data.emailConfigured, false, 'without SMTP_HOST/USER/PASS set, this must clearly report email is not configured');
-});
+  const admin = await login(baseUrl, 'admin', 'admin123');
+  const P = (tok, path, body) => api(baseUrl, path, { method: 'POST', token: tok, body });
+  const amit = await createMember(baseUrl, admin, 'amit.s', 'Amit S', 'Store Department');
+  const lead = await createMember(baseUrl, admin, 'store.lead', 'Store Lead', 'Store Department');
+  const other = await createMember(baseUrl, admin, 'sales.one', 'Sales One', 'Sales Department');
+  assert.equal((await P(admin, '/api/users/store.lead/team-lead', { isTeamLead: true })).status, 200);
+  const L = (u, p) => P(null, '/api/auth/login', { username: u, password: p });
 
-test('forgot-password never reveals whether a username exists', async (t) => {
-  const { baseUrl, stop } = await startTestServer();
-  t.after(() => stop());
-  const realUser = await api(baseUrl, '/api/auth/forgot-password', { method: 'POST', body: { username: 'admin' } });
-  const fakeUser = await api(baseUrl, '/api/auth/forgot-password', { method: 'POST', body: { username: 'no_such_person_at_all' } });
-  assert.equal(realUser.status, fakeUser.status);
-  assert.deepEqual(realUser.data, fakeUser.data, 'the response must be identical whether or not the username is real — never confirm/deny account existence to an unauthenticated caller');
-});
-
-test('repeated OTP requests for the same account are rate-limited', async (t) => {
-  const { baseUrl, stop } = await startTestServer();
-  t.after(() => stop());
-  const adminToken = await login(baseUrl, 'admin', 'admin123');
-  await createMember(baseUrl, adminToken, 'ratelimited', 'Rate Limited Test');
-
-  // The response is identical either way (never reveals whether the limit was hit, matching the
-  // same "don't leak account state" principle as the existence check above) — but internally,
-  // requests beyond the limit must not count as a genuine new attempt. Confirmed indirectly: this
-  // just verifies calling it many times in a row never errors or crashes the server.
-  const results = [];
-  for (let i = 0; i < 6; i++) {
-    results.push(await api(baseUrl, '/api/auth/forgot-password', { method: 'POST', body: { username: 'ratelimited' } }));
-  }
-  assert.ok(results.every(r => r.status === 200), 'even well beyond the rate limit, the endpoint must keep responding cleanly, never error');
-  assert.ok(results.every(r => r.data.ok === true), 'the response shape must stay identical throughout, whether or not the limit was hit — same "never reveal internal state" principle');
-
-  const stillAlive = await api(baseUrl, '/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'admin123' } });
-  assert.equal(stillAlive.status, 200, 'the server must remain fully healthy after repeated requests');
-});
-
-test('OTP verification logic: correct code resets password permanently (no forced re-change)', async (t) => {
-  const { baseUrl, getRawClient, stop } = await startTestServer();
-  t.after(() => stop());
-  const adminToken = await login(baseUrl, 'admin', 'admin123');
-  await createMember(baseUrl, adminToken, 'otptest', 'OTP Test');
-
-  // Simulate what the server does internally after a real email send: store a hashed OTP with
-  // an expiry, exactly as /api/auth/forgot-password would have.
-  const otp = '482913';
-  const raw = await getRawClient();
-  await raw.query('UPDATE users SET password_reset_otp_hash=$1, password_reset_otp_expires=$2 WHERE username=$3', [bcrypt.hashSync(otp, 10), new Date(Date.now() + 10 * 60000).toISOString(), 'otptest']);
-  await raw.end();
-
-  const wrongCode = await api(baseUrl, '/api/auth/reset-with-otp', { method: 'POST', body: { username: 'otptest', otp: '000000', newPassword: 'NewRealPass123' } });
-  assert.equal(wrongCode.status, 400, 'an incorrect code must be rejected');
-
-  const correctCode = await api(baseUrl, '/api/auth/reset-with-otp', { method: 'POST', body: { username: 'otptest', otp, newPassword: 'NewRealPass123' } });
-  assert.equal(correctCode.status, 200, 'the correct code with a valid new password should succeed');
-
-  const loginResult = await api(baseUrl, '/api/auth/login', { method: 'POST', body: { username: 'otptest', password: 'NewRealPass123' } });
-  assert.equal(loginResult.status, 200);
-  assert.equal(loginResult.data.user.mustChangePassword, false, 'resetting via OTP must NOT force yet another password change — the person just deliberately chose this password');
-
-  const reuseCode = await api(baseUrl, '/api/auth/reset-with-otp', { method: 'POST', body: { username: 'otptest', otp, newPassword: 'AnotherPass123' } });
-  assert.equal(reuseCode.status, 400, 'a used OTP must not be reusable');
-});
-
-test('an expired OTP is rejected', async (t) => {
-  const { baseUrl, getRawClient, stop } = await startTestServer();
-  t.after(() => stop());
-  const adminToken = await login(baseUrl, 'admin', 'admin123');
-  await createMember(baseUrl, adminToken, 'expiretest', 'Expire Test');
-
-  const otp = '111222';
-  const raw = await getRawClient();
-  await raw.query('UPDATE users SET password_reset_otp_hash=$1, password_reset_otp_expires=$2 WHERE username=$3', [bcrypt.hashSync(otp, 10), new Date(Date.now() - 60000).toISOString(), 'expiretest']); // expired 1 minute ago
-  await raw.end();
-
-  const res = await api(baseUrl, '/api/auth/reset-with-otp', { method: 'POST', body: { username: 'expiretest', otp, newPassword: 'NewRealPass123' } });
-  assert.equal(res.status, 400);
-  assert.match(res.data.error, /expired/i);
+  await t.test('no PIN yet → told to ask the team lead', async () => {
+    const r = await P(null, '/api/auth/forgot-password', { username: 'amit.s', pin: '4826', newPassword: 'Brick@2468' });
+    assert.equal(r.status, 400); assert.equal(r.data.noPin, true); assert.match(r.data.error, /Store Lead/);
+    assert.equal((await L('amit.s', 'TestPass123')).data.user.hasRecoveryPin, false);
+  });
+  await t.test('setting a PIN (no weak PINs)', async () => {
+    assert.equal((await P(amit, '/api/auth/recovery-pin', { pin: '12' })).status, 400);
+    assert.equal((await P(amit, '/api/auth/recovery-pin', { pin: '1111' })).status, 400);
+    assert.equal((await P(amit, '/api/auth/recovery-pin', { pin: '1234' })).status, 400);
+    assert.equal((await P(amit, '/api/auth/recovery-pin', { pin: '4826' })).status, 200);
+    assert.equal((await api(baseUrl, '/api/auth/me', { token: amit })).data.hasRecoveryPin, true);
+  });
+  await t.test('reset with the PIN; wrong PINs lock it for a while', async () => {
+    assert.equal((await P(null, '/api/auth/forgot-password', { username: 'amit.s', pin: '0000', newPassword: 'Brick@2468' })).status, 400);
+    const ok = await P(null, '/api/auth/forgot-password', { username: 'Amit.S', pin: '4826', newPassword: 'Brick@2468' });
+    assert.equal(ok.status, 200, JSON.stringify(ok.data));
+    const li = await L('amit.s', 'Brick@2468');
+    assert.equal(li.status, 200); assert.equal(li.data.user.mustChangePassword, false);
+    for (let i = 0; i < 5; i++) await P(null, '/api/auth/forgot-password', { username: 'amit.s', pin: '9137', newPassword: 'Brick@1357' });
+    assert.equal((await P(null, '/api/auth/forgot-password', { username: 'amit.s', pin: '4826', newPassword: 'Brick@1357' })).status, 429);
+    assert.equal((await P(null, '/api/auth/reset-with-otp', { username: 'amit.s', otp: '1' })).status, 410, 'email codes are switched off');
+  });
+  await t.test('the team lead resets people of their own team only', async () => {
+    assert.equal((await P(lead, '/api/users/amit.s/reset-password', { newPassword: 'Store@5512' })).status, 200);
+    assert.equal((await L('amit.s', 'Store@5512')).data.user.mustChangePassword, true);
+    assert.equal((await P(lead, '/api/users/sales.one/reset-password', { newPassword: 'Store@5512' })).status, 403);
+    assert.equal((await P(other, '/api/users/amit.s/reset-password', { newPassword: 'Store@5512' })).status, 403);
+    assert.equal((await P(lead, '/api/users/admin/reset-password', { newPassword: 'Store@5512' })).status, 403);
+  });
 });

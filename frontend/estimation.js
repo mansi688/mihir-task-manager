@@ -796,8 +796,8 @@ function accOverviewHTML() {
     </div>
   </div>
   <div class="card">
-    <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">Site payments (porter / transport)</div><button class="btn btn-sm" data-acc-goto="budget">Open Budget ›</button></div>
-    <div class="small muted">Money allotted to people on site and what they paid, with bills — verified by the Director.</div>
+    <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">Site payments (porter / transport)</div></div>
+    <div class="small muted">What people on site paid for porter / transport, with bills.</div>
     ${pays.length ? `<div class="dlv-perf-wrap"><table class="dlv-perf bud-table"><thead><tr><th>Date</th><th>Paid by</th><th>For</th><th style="text-align:right;">Amount</th><th>Bill</th><th>Status</th></tr></thead><tbody>
       ${pays.slice(0, 15).map(p => `<tr><td class="nowrap">${estEsc(estDate(String(p.paid_at || '').slice(0, 10)))}</td><td>${estEsc(p.paid_by_name || personName(p.paid_by))}</td><td>${estEsc(p.purpose)}${p.d_ref ? ` <span class="small muted">${estEsc(p.d_ref)}</span>` : ''}</td>
         <td style="text-align:right;">${estInr(p.amount)}</td><td>${(p.bills || []).length ? '🧾' : '<span class="dlv-nobill">No bill</span>'}</td><td>${typeof budChip === 'function' ? budChip(p.verify_status || 'pending') : ''}</td></tr>`).join('')}
