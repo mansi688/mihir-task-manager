@@ -366,7 +366,7 @@ html[data-theme="dark"] .ripple{background:rgba(255,255,255,0.25);}
 .card-title{font-family:var(--body);font-size:13px;letter-spacing:0.2px;color:var(--muted);font-weight:700;margin:0 0 14px;}
 label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px;margin-top:12px;font-weight:600;}
 label:first-child{margin-top:0;}
-input[type=text],input[type=password],input[type=number],select,textarea{
+input[type=text],input[type=password],input[type=number],input[type=search],select,textarea{
   width:100%;background:var(--panel-2);border:1px solid var(--line);color:var(--ink);
   padding:10px 12px;border-radius:var(--radius-input);font-size:14px;font-family:var(--body);transition:border-color .15s ease, box-shadow .15s ease;
 }
@@ -1849,7 +1849,11 @@ select.field-err,input.field-err{border-color:var(--danger);box-shadow:0 0 0 2px
 /* Type-to-search dropdowns */
 select.qs-hidden{display:none !important;}
 .qs-combo{position:relative;width:100%;}
-.qs-combo-input{width:100%;margin:0;}
+input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !important;cursor:pointer;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%23777' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 11px center;}
+.qs-combo-input:focus{cursor:text;}
+.qs-combo-input::placeholder{color:var(--ink);opacity:.85;}
 .qs-combo-list{position:absolute;left:0;right:0;top:100%;z-index:60;max-height:260px;overflow:auto;background:var(--card,#fff);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.15);margin-top:3px;}
 .qs-opt{padding:8px 12px;cursor:pointer;font-size:14px;}
 .qs-opt.hi{background:color-mix(in srgb,var(--c-blue,#2D5FA8) 12%,transparent);}

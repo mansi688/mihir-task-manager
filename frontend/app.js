@@ -6875,8 +6875,18 @@ function qsCombo(sel, active) {
   const inp = document.createElement('input');
   inp.type = 'text'; inp.className = 'qs-combo-input'; inp.dataset.qsFor = sel.id;
   ['autocomplete', 'autocapitalize', 'autocorrect'].forEach(a => inp.setAttribute(a, 'off')); inp.spellcheck = false; inp.setAttribute('data-no-spell', '');
-  const ph = sel.options[0] && !sel.options[0].value ? sel.options[0].textContent.trim() : 'Pick…';
-  inp.placeholder = `🔍 ${ph.replace(/^—\s*|\s*—$/g, '')} — type to search`;
+  // Looks exactly like the dropdown it replaces (same size, place and arrow); you can just type in it.
+  inp.placeholder = sel.options[0] && !sel.options[0].value ? sel.options[0].textContent.trim() : '';
+  inp.title = 'Type to search — name, username or department';
+  if (sel.getAttribute('style')) inp.setAttribute('style', sel.getAttribute('style'));
+  const w = sel.getBoundingClientRect().width, cs = getComputedStyle(sel);
+  if (w > 0 && sel.style.width) wrap.style.width = `${Math.round(w)}px`;
+  inp.style.width = '100%';
+  if (cs.display.startsWith('inline')) wrap.style.display = 'inline-block';
+  if (cs.flex && cs.flex !== '0 1 auto') wrap.style.flex = cs.flex;
+  if (cs.maxWidth && cs.maxWidth !== 'none') wrap.style.maxWidth = cs.maxWidth;
+  wrap.style.margin = cs.margin; inp.style.margin = '0';
+  if (cs.fontSize) inp.style.fontSize = cs.fontSize; if (cs.minHeight && cs.minHeight !== '0px') inp.style.minHeight = cs.minHeight;
   inp.value = qsSelectedText(sel); inp.disabled = sel.disabled;
   const list = document.createElement('div'); list.className = 'qs-combo-list'; list.hidden = true;
   wrap.appendChild(inp); wrap.appendChild(list);

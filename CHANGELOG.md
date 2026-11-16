@@ -4,6 +4,11 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Dropdowns keep their look
+### Changed
+- Searchable dropdowns now look exactly like the original dropdowns (same size and arrow, same placeholder) — you
+  simply type in them to search. Search boxes on pages are styled like the other inputs.
+
 ## [Unreleased] — Type-to-search dropdowns; forgot password with a recovery PIN
 ### Changed
 - **Dropdowns search as you type in them** (no separate search bar): every list with 8+ choices — people, places,
