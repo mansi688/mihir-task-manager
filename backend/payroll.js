@@ -211,7 +211,8 @@ function mountPayroll(app, deps) {
     // LH: half leave (paid) + the other half worked/absent — a half day leave on an otherwise absent day pays half
     const lhAbsentHalf = list.filter(d => d.status === 'LH' && !d.in).length * 0.5;
     const paidDays = Math.max(0, r2(paid - lhAbsentHalf));
-    return { counts: c, lateMarks: late, lateCutDays: lateCut, otMinutes: ot, paidDays, lopDays: r2(list.length - paidDays), daysInMonth: list.length };
+    const overBreak = list.reduce((a, d) => a + (d.overBreak || 0), 0);
+    return { counts: c, lateMarks: late, lateCutDays: lateCut, otMinutes: ot, overBreakMin: overBreak, paidDays, lopDays: r2(list.length - paidDays), daysInMonth: list.length };
   }
 
   // ---------- leave balance
@@ -626,7 +627,7 @@ function mountPayroll(app, deps) {
     if (advanceCut < advance) { let rest = advanceCut; for (const p of advParts) { p.amount = r2(Math.min(p.amount, rest)); rest = r2(rest - p.amount); } }
     const totalDed = r2(pf + esi + pt + advanceCut + otherDed);
     return {
-      name: u.name, team: u.team || '', employee_code: s.employee_code || '', daysInMonth: D, paidDays: sum.paidDays, lopDays: sum.lopDays, counts: sum.counts, lateMarks: sum.lateMarks, lateCutDays: sum.lateCutDays,
+      name: u.name, team: u.team || '', employee_code: s.employee_code || '', daysInMonth: D, paidDays: sum.paidDays, lopDays: sum.lopDays, counts: sum.counts, lateMarks: sum.lateMarks, lateCutDays: sum.lateCutDays, overBreakMin: sum.overBreakMin,
       monthly: { ...comp, gross: r2(monthlyGross) }, earned: { ...earned, gross: earnedGross }, otHours, otRate: r2(otRate), otPay, otherEarn, otherEarnNote: (manual && manual.other_earn_note) || '',
       pf, esi, pt, advance: advanceCut, advParts, otherDed, otherDedNote: (manual && manual.other_ded_note) || '', employerPf, employerEsi,
       totalEarn, totalDed, net: r2(totalEarn - totalDed), bank: { bank_name: s.bank_name || '', account_no: s.account_no || '', ifsc: s.ifsc || '' }, pan: s.pan || '', uan: s.uan || '', esi_no: s.esi_no || '',

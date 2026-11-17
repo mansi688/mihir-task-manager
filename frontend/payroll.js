@@ -14,7 +14,7 @@ const ATT_LABEL = { P: 'Present', H: 'Half day', A: 'Absent', L: 'Paid leave', L
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const HR_TABS = [['today', 'Today'], ['register', 'Register'], ['leave', 'Leave'], ['salaries', 'Salaries'], ['advances', 'Advances'], ['payroll', 'Payroll'], ['rules', 'Rules & holidays']];
 function attEsc(s) { return typeof esc === 'function' ? esc(s) : String(s == null ? '' : s); }
-function inr(n) { return n == null || n === '' ? '—' : '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 }); }
+function inr(n) { if (n == null || n === '') return '—'; const v = Number(n); return '₹' + v.toLocaleString('en-IN', { minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2 }); }
 function attToday() { return typeof istDayKey === 'function' ? istDayKey(new Date().toISOString()) : new Date().toISOString().slice(0, 10); }
 function attMonthNow() { return attToday().slice(0, 7); }
 function attShiftMonth(p, n) { const [y, m] = p.split('-').map(Number); const d = new Date(Date.UTC(y, m - 1 + n, 1)); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; }
@@ -118,9 +118,8 @@ function renderAttendanceView() {
         <button type="button" class="btn btn-sm" data-att-act="break-start" ${p && p.busy ? 'disabled' : ''}>☕ Start break</button>`}
     </div>` : ''}
     ${!(t && t.out) && !(t && t.onBreak) ? `<div class="att-punch">
-      <label class="btn btn-primary att-punch-btn ${p && p.busy ? 'disabled' : ''}">${p && p.busy ? '⏳ ' + attEsc(p.msg || 'Working…') : t && t.in ? '📷 Check out' : '📷 Check in'}
-        <input type="file" id="att-selfie" accept="image/*" capture="user" hidden ${p && p.busy ? 'disabled' : ''}></label>
-      <div class="small muted">Takes a selfie and your location${R.selfieRequired ? '' : ' (selfie optional)'} — allow the camera and location when the phone asks.</div>
+      <button type="button" class="btn btn-primary att-punch-btn ${p && p.busy ? 'disabled' : ''}" data-att-act="punch" ${p && p.busy ? 'disabled' : ''}>${p && p.busy ? '⏳ ' + attEsc(p.msg || 'Working…') : t && t.in ? '📷 Check out' : '📷 Check in'}</button>
+      <div class="small muted">Opens the camera for a live selfie and takes your location — allow the camera and location when the phone asks. Photos from the gallery can't be used.</div>
     </div>` : t && t.out ? '<div class="small" style="margin-top:8px;">✅ Done for today.</div>' : ''}
     ${p && p.err ? `<div class="err">${attEsc(p.err)}</div>` : ''}
     ${p && p.done ? `<div class="notice">${attEsc(p.done)}</div>` : ''}
@@ -164,7 +163,45 @@ function renderAttendanceView() {
     <div class="card-title">Payslips</div>
     ${(d.payslips || []).length ? `<div class="att-list">${d.payslips.map(p => `<div class="att-list-row"><div><b>${attEsc(p.label)}</b> <span class="small muted">net ${inr(p.net)}</span></div><button class="btn btn-sm" data-slip="${attEsc(p.period)}:${attEsc(d.me.username)}">View payslip</button></div>`).join('')}</div>` : '<div class="small muted">Your payslips appear here once the month is paid.</div>'}
   </div>
-  ${payslipModalHTML()}`;
+  ${payslipModalHTML()}${attCameraHTML()}`;
+}
+// ---------- live selfie camera (no gallery / file picker)
+let attCamStream = null;
+function attCameraHTML() {
+  const c = (ui.att || {}).cam; if (!c) return '';
+  return `<div class="att-modal att-cam-modal"><div class="att-modal-box att-cam-box">
+    <div class="card-title" style="margin:0 0 8px;">${c.which === 'out' ? 'Check out' : 'Check in'} — live selfie</div>
+    ${c.err ? `<div class="err">${attEsc(c.err)}</div>` : '<div class="att-cam-wrap"><video id="att-video" autoplay playsinline muted></video><div class="att-cam-ring"></div></div>'}
+    <div class="att-cam-btns">${c.err ? '' : '<button type="button" class="btn btn-primary att-shutter" data-att-cam="shoot" disabled>📸 Take photo</button>'}<button type="button" class="btn" data-att-cam="cancel">Cancel</button></div>
+    <div class="small muted" style="margin-top:6px;">Face the camera in good light. The photo is taken now — not from the gallery.</div>
+  </div></div>`;
+}
+function attStopCamera() { try { (attCamStream && attCamStream.getTracks() || []).forEach(t => t.stop()); } catch (e) {} attCamStream = null; }
+async function attStartCamera() {
+  const c = (ui.att || {}).cam; const v = document.getElementById('att-video'); if (!c || !v) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { c.err = 'This phone / browser cannot open the camera here. Open the app in Chrome (https) and try again.'; render(); return; }
+  try {
+    attCamStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 720 }, height: { ideal: 960 } }, audio: false });
+    if (!(ui.att || {}).cam) { attStopCamera(); return; }
+    const vv = document.getElementById('att-video'); if (!vv) { attStopCamera(); return; }
+    vv.srcObject = attCamStream; await vv.play().catch(() => {});
+    const sh = document.querySelector('[data-att-cam="shoot"]'); if (sh) sh.disabled = false;
+  } catch (e) {
+    c.err = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError') ? 'Camera permission is off. Allow the camera for this app (Chrome → ⋮ → Settings → Site settings → Camera) and try again.' : 'The camera could not be opened — close other apps using it and try again.';
+    render();
+  }
+}
+// Frame from the live video → small JPEG with the time and name written on it.
+function attGrabFrame() {
+  const v = document.getElementById('att-video'); if (!v || !v.videoWidth) return null;
+  const w = Math.min(540, v.videoWidth), h = Math.round(v.videoHeight * w / v.videoWidth);
+  const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d');
+  g.translate(w, 0); g.scale(-1, 1); g.drawImage(v, 0, 0, w, h); g.setTransform(1, 0, 0, 1, 0, 0);
+  const fs = Math.max(12, Math.round(w / 30)), pad = Math.round(fs * 0.6), bandH = fs + pad * 2;
+  g.fillStyle = 'rgba(0,0,0,0.55)'; g.fillRect(0, h - bandH, w, bandH);
+  g.fillStyle = '#fff'; g.font = `600 ${fs}px sans-serif`; g.textBaseline = 'middle';
+  g.fillText(`${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${session.name}`, pad, h - bandH / 2, w - pad * 2);
+  return c.toDataURL('image/jpeg', 0.65);
 }
 function payslipModalHTML() {
   const sl = (ui.att || {}).slip; if (!sl) return '';
@@ -181,6 +218,7 @@ function payslipBodyHTML(l, u, label, buttons) {
       <div><span>Days in month</span><b>${l.daysInMonth}</b></div><div><span>Paid days</span><b>${l.paidDays}</b></div><div><span>Loss of pay days</span><b>${l.lopDays}</b></div>
       ${l.pan ? `<div><span>PAN</span><b>${attEsc(l.pan)}</b></div>` : ''}${l.uan ? `<div><span>UAN</span><b>${attEsc(l.uan)}</b></div>` : ''}${l.bank && l.bank.account_no ? `<div><span>Bank</span><b>${attEsc(l.bank.bank_name || '')} ••${attEsc(String(l.bank.account_no).slice(-4))}</b></div>` : ''}
     </div>
+    ${l.counts ? `<div class="payslip-att"><b>Attendance</b> ${[['Present', (l.counts.P || 0)], ['Half days', l.counts.H], ['Absent', l.counts.A], ['Paid leave', (l.counts.L || 0) + (l.counts.LH || 0)], ['Unpaid leave', l.counts.U], ['Weekly offs', l.counts.WO], ['Holidays', l.counts.HO]].filter(([, v]) => v).map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join('')}${l.lateMarks ? `<span>Late marks <b>${l.lateMarks}</b>${l.lateCutDays ? ` (−${l.lateCutDays} day)` : ''}</span>` : ''}${l.otHours ? `<span>Overtime <b>${l.otHours} h</b></span>` : ''}${l.overBreakMin ? `<span>Break over allowance <b>${Math.round(l.overBreakMin / 6) / 10} h</b></span>` : ''}</div>` : ''}
     <div class="payslip-cols">
       <table><thead><tr><th>Earnings</th><th class="num">Amount</th></tr></thead><tbody>
         ${row('Basic', l.earned.basic)}${row('HRA', l.earned.hra)}${row('Conveyance', l.earned.conveyance)}${row('Special allowance', l.earned.special)}
@@ -223,12 +261,10 @@ function bindAttendanceView() {
   const s = attState();
   bindPayslipModal();
   document.querySelectorAll('[data-att-month]').forEach(b => b.onclick = () => { const n = Number(b.dataset.attMonth); s.month = n === 0 ? attMonthNow() : attShiftMonth(s.month, n); render(); attLoad(true); });
-  const inp = document.getElementById('att-selfie');
-  if (inp) inp.onchange = async () => {
-    const file = inp.files && inp.files[0]; if (!file) return;
+  const doPunch = async (photo) => {
     const which = attMe && attMe.todayRec && attMe.todayRec.in ? 'out' : 'in';
     s.punch = { busy: true, msg: 'Getting your location…' }; render();
-    const [geo, photo] = await Promise.all([attGeo(), attSmallJpeg(file)]);
+    const geo = await attGeo();
     s.punch.msg = 'Saving…'; render();
     try {
       const r = await api(`/api/attendance/check-${which}`, { method: 'POST', body: JSON.stringify({ ...(geo && !geo.error ? geo : {}), photo }) });
@@ -236,8 +272,19 @@ function bindAttendanceView() {
       s.punch = { done: `${which === 'in' ? 'Checked in' : 'Checked out'} at ${r.at}${where}${r.late ? ' — marked late' : ''}.${geo && geo.error ? ` Location not saved (${geo.error}).` : ''}` };
       if (typeof attSummary !== 'undefined') attSummary = { ...attSummary, [which === 'in' ? 'checkedIn' : 'checkedOut']: true };
       await attLoad(true);
-    } catch (e) { s.punch = { err: e.message }; render(); }
+    } catch (e) { s.punch = { err: e.message + (geo && geo.error ? ` (${geo.error})` : '') }; render(); }
   };
+  document.querySelectorAll('[data-att-act="punch"]').forEach(b => b.onclick = () => {
+    const which = attMe && attMe.todayRec && attMe.todayRec.in ? 'out' : 'in';
+    if (attMe && attMe.rules && attMe.rules.selfieRequired === false && !navigator.mediaDevices) { doPunch(null); return; }
+    s.punch = null; s.cam = { which }; render(); setTimeout(attStartCamera, 30);
+  });
+  document.querySelectorAll('[data-att-cam]').forEach(b => b.onclick = () => {
+    if (b.dataset.attCam === 'cancel') { attStopCamera(); s.cam = null; render(); return; }
+    const photo = attGrabFrame();
+    if (!photo) { s.cam.err = 'The camera is not ready yet — wait a second and tap Take photo again.'; render(); return; }
+    attStopCamera(); s.cam = null; doPunch(photo);
+  });
   const act = (n, fn) => document.querySelectorAll(`[data-att-act="${n}"]`).forEach(b => b.onclick = fn);
   const brk = async (which) => {
     s.punch = { busy: true, msg: which === 'end' ? 'Checking you are back at the site…' : 'Starting break…' }; render();
@@ -558,3 +605,5 @@ function bindHrPayrollView() {
   act('hol-add', async () => { try { await api('/api/payroll/holidays', { method: 'POST', body: JSON.stringify(s.holiday || {}) }); s.holiday = null; reload('rules'); } catch (e) { setBanner(e.message); render(); } });
   document.querySelectorAll('[data-hol-del]').forEach(b => b.onclick = async () => { try { await api(`/api/payroll/holidays/${b.dataset.holDel}`, { method: 'DELETE' }); reload('rules'); } catch (e) { setBanner(e.message); render(); } });
 }
+// Never leave the camera on when the person moves to another page.
+setInterval(() => { if (attCamStream && (typeof ui === 'undefined' || ui.adminTab !== 'attendance' || !ui.att || !ui.att.cam)) attStopCamera(); }, 1500);

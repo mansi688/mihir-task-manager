@@ -4,6 +4,15 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Live selfie camera; attendance on the payslip
+### Changed
+- **Check in / out with the live camera only**: 📷 Check in opens the front camera inside the app (preview with a face
+  guide → 📸 Take photo). No gallery or file picker, so an old photo can't be used. The date, time and name are written
+  on the selfie. The camera switches off as soon as the photo is taken, cancelled, or the page is left.
+- **Payslips show the attendance they were worked out from**: present, half days, absent, paid / unpaid leave, weekly
+  offs, holidays, late marks (and the day cut), overtime, break time over the allowance. Amounts always show paise
+  with two digits.
+
 ## [Unreleased] — Check in only at site, 1-hour break allowance, all payslips at once
 ### Changed
 - **Check in / check out only inside a site** (Rules & holidays → "Check in / out: Only inside a site / office", on by
