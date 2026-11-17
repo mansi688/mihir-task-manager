@@ -1859,3 +1859,5 @@ input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !importan
 .qs-opt.hi{background:color-mix(in srgb,var(--c-blue,#2D5FA8) 12%,transparent);}
 .qs-opt.cur{font-weight:700;}
 .qs-none-msg{padding:8px 12px;color:var(--muted);font-size:13px;}
+.att-break{margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;gap:6px;align-items:flex-start;}
+.att-break.on{border-color:var(--c-amber,#d98e04);background:color-mix(in srgb,var(--c-amber,#d98e04) 8%,var(--panel));}

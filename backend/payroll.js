@@ -2,6 +2,12 @@
 
    ATTENDANCE — everyone checks in and out on the phone: the GPS position and a selfie are saved with each, and the
    position is matched to the Places of the Locations page (sites / office): "not at a site" is flagged, never blocked.
+   LOCATION RULE (Settings → "Check in / out only inside a site", on by default): check-in, check-out and coming back
+   from a break are accepted only inside the circle of a Place (site / office). People marked "can check in anywhere"
+   (drivers, purchase…) are exempt. Between check-in and check-out a person may be out of the site for a BREAK
+   (☕ Start break → Back from break) — up to the break allowance (1 hour) a day is free; break time beyond it, and time
+   location tracking saw them outside every site outside a break beyond what is left of the allowance, is taken off
+   the hours worked (so a long absence turns a full day into a half day or absent).
    A day without a check-in is filled from location tracking when the person was tracked that day (first and last
    position = in / out); a missing check-out is filled from tracking the same way.
    Each day is worked out from the rules in Settings: shift start + grace → late mark; hours ≥ full day → Present,
@@ -33,6 +39,7 @@ const ExcelJS = require('exceljs');
 const DEFAULTS = {
   shiftStart: '09:30', shiftEnd: '18:30', graceMin: 15, fullDayHours: 8, halfDayHours: 4, weeklyOff: [0],
   lateMarksPerHalfDay: 3, otAfterMin: 30, otMultiplier: 1, paidLeavePerYear: 18, selfieRequired: true,
+  locationRequired: true, breakAllowanceMin: 60,
   pfPercent: 12, pfWageCeiling: 15000, pfOnFullBasic: false, employerPfPercent: 12,
   esiEmployeePercent: 0.75, esiEmployerPercent: 3.25, esiGrossLimit: 21000,
 };
@@ -139,7 +146,10 @@ function mountPayroll(app, deps) {
     else if (inAt && !outAt && span && span.last > inAt && day < today) { outAt = span.last; source = 'phone+tracking'; }
     if (rec && rec.manual_in) { inAt = rec.manual_in; source = 'corrected'; }
     if (rec && rec.manual_out) { outAt = rec.manual_out; source = 'corrected'; }
-    const worked = inAt && outAt ? Math.max(0, Math.round((Date.parse(outAt) - Date.parse(inAt)) / 60000)) : null;
+    const spanMin = inAt && outAt ? Math.max(0, Math.round((Date.parse(outAt) - Date.parse(inAt)) / 60000)) : null;
+    const breakMin = rec ? breakMinutes(rec.breaks, outAt) : 0, awayMin = rec ? Number(rec.away_minutes || 0) : 0;
+    const extra = Math.max(0, breakMin + awayMin - Number(S.breakAllowanceMin || 0));
+    const worked = spanMin == null ? null : rec && (rec.manual_in || rec.manual_out) ? spanMin : Math.max(0, spanMin - extra);
     const startMin = minutesOf(S.shiftStart);
     const inMin = inAt ? minutesOf(istHM(inAt)) : null;
     const late = inAt && !off && !hol && startMin != null && inMin != null && inMin > startMin + Number(S.graceMin || 0) ? inMin - startMin : 0;
@@ -167,8 +177,11 @@ function mountPayroll(app, deps) {
     if (rec && rec.status_override) { status = rec.status_override; flags.push('corrected'); }
     if (rec && rec.ot_minutes_override != null) ot = Number(rec.ot_minutes_override);
     if (rec && (rec.in_away || rec.out_away)) flags.push('not at a site');
+    if (breakMin) flags.push(`break ${breakMin} min`);
+    if (awayMin) flags.push(`away ${awayMin} min`);
+    if (extra && worked != null) flags.push(`${extra} min over the break allowance not counted`);
     if (source === 'tracking') flags.push('from tracking');
-    return { day, status, in: inAt ? istHM(inAt) : '', out: outAt ? istHM(outAt) : '', worked, late: status === 'P' || status === 'H' ? late : 0, ot: Math.max(0, ot), source, flags,
+    return { day, status, in: inAt ? istHM(inAt) : '', out: outAt ? istHM(outAt) : '', worked, breakMin, awayMin, overBreak: extra, late: status === 'P' || status === 'H' ? late : 0, ot: Math.max(0, ot), source, flags,
       inPlace: rec && rec.in_place || '', outPlace: rec && rec.out_place || '', hasInPhoto: !!(rec && rec.has_in_photo), hasOutPhoto: !!(rec && rec.has_out_photo),
       note: rec && rec.override_reason || '', holiday: hol, leaveKind: leave ? leave.kind : null };
   }
@@ -177,7 +190,7 @@ function mountPayroll(app, deps) {
     const days = monthDays(period), from = days[0], to = days[days.length - 1];
     const S = await settings();
     const holidays = Object.fromEntries((await holidaysBetween(from, to)).map(h => [h.day, h.name]));
-    const recs = usernames.length ? await rows(`SELECT username, day, check_in_at, check_out_at, in_place, out_place, in_away, out_away, status_override, override_reason, ot_minutes_override, manual_in, manual_out,
+    const recs = usernames.length ? await rows(`SELECT username, day, check_in_at, check_out_at, in_place, out_place, in_away, out_away, status_override, override_reason, ot_minutes_override, manual_in, manual_out, breaks, away_minutes,
       (in_photo IS NOT NULL) AS has_in_photo, (out_photo IS NOT NULL) AS has_out_photo FROM attendance_days WHERE username = ANY($1::text[]) AND day BETWEEN $2 AND $3`, [usernames, from, to]) : [];
     const spans = await trackingSpans(usernames, from, to);
     const leaves = await leavesBetween(usernames, from, to);
@@ -223,6 +236,38 @@ function mountPayroll(app, deps) {
     return n;
   }
 
+  // ---------- location rule & breaks
+  async function locationBlock(username, S, geo, where, placeList, what) {
+    if (!S.locationRequired || !placeList.length) return null;
+    const u = await one('SELECT att_anywhere FROM users WHERE username=$1', [username]);
+    if (u && u.att_anywhere) return null;
+    if (!geo) return `Turn on location to ${what} — it works only inside a site or the office.`;
+    if (where.away) return `You are not inside a site — ${what} only from inside a site or the office${where.nearest ? ` (you are ${where.nearest.metres >= 1000 ? `${(where.nearest.metres / 1000).toFixed(1)} km` : `${where.nearest.metres} m`} from ${where.nearest.name})` : ''}. If GPS is weak, step outside for a moment and try again.`;
+    return null;
+  }
+  function closeOpenBreak(breaks, at, place) { return (Array.isArray(breaks) ? breaks : []).map(b => b.end ? b : { ...b, end: at, back_place: place || null }); }
+  function breakMinutes(breaks, outAt) {
+    let m = 0;
+    for (const b of Array.isArray(breaks) ? breaks : []) { const end = b.end || outAt || (b.start && new Date().toISOString()); if (b.start && end) m += Math.max(0, (Date.parse(end) - Date.parse(b.start)) / 60000); }
+    return Math.round(m);
+  }
+  // Minutes location tracking saw the person outside every site between check-in and check-out, outside breaks.
+  async function awayMinutes(username, fromIso, toIso, breaks, placeList) {
+    if (!placeList.length) return 0;
+    let pts;
+    try { pts = await rows('SELECT recorded_at, lat, lng, accuracy_m FROM location_points WHERE username=$1 AND recorded_at BETWEEN $2 AND $3 ORDER BY recorded_at', [username, fromIso, toIso]); } catch (e) { return 0; }
+    if (!pts || pts.length < 2) return 0;
+    const inBreak = (t) => (breaks || []).some(b => b.start && Date.parse(b.start) <= t && t <= Date.parse(b.end || toIso));
+    let away = 0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const t = new Date(pts[i].recorded_at).getTime(), t2 = new Date(pts[i + 1].recorded_at).getTime();
+      if (inBreak(t)) continue;
+      const w = placeFor(Number(pts[i].lat), Number(pts[i].lng), Number(pts[i].accuracy_m || 0), placeList);
+      if (w.away) away += Math.min(30, (t2 - t) / 60000); // a gap in tracking counts at most 30 minutes
+    }
+    return Math.round(away);
+  }
+
   // ======================= ATTENDANCE =======================
   const cleanGeo = (b) => {
     const lat = Number(b.lat), lng = Number(b.lng), acc = Number(b.acc);
@@ -244,7 +289,10 @@ function mountPayroll(app, deps) {
     if (photo === 'bad') return res.status(400).json({ error: 'The selfie could not be read — take it again.' });
     if (photo === 'big') return res.status(400).json({ error: 'The selfie is too large — take it again.' });
     if (S.selfieRequired && !photo) return res.status(400).json({ error: 'Take a selfie to ' + (which === 'in' ? 'check in.' : 'check out.') });
-    const where = placeFor(geo && geo.lat, geo && geo.lng, geo && geo.acc, await places());
+    const placeList = await places();
+    const where = placeFor(geo && geo.lat, geo && geo.lng, geo && geo.acc, placeList);
+    const block = await locationBlock(req.user.username, S, geo, where, placeList, which === 'in' ? 'check in' : 'check out');
+    if (block) return res.status(400).json({ error: block, outside: true, nearest: where.nearest });
     const rec = await one('SELECT * FROM attendance_days WHERE username=$1 AND day=$2', [req.user.username, day]);
     const t = now();
     if (which === 'in') {
@@ -255,12 +303,43 @@ function mountPayroll(app, deps) {
       [req.user.username, day, t, geo && geo.lat, geo && geo.lng, geo && geo.acc, where.place, !!(geo && where.away), photo]);
     } else {
       if (!rec || !rec.check_in_at) return res.status(400).json({ error: 'Check in first.' });
-      await q('UPDATE attendance_days SET check_out_at=$3, out_lat=$4, out_lng=$5, out_acc=$6, out_place=$7, out_away=$8, out_photo=$9, updated_at=$3 WHERE username=$1 AND day=$2',
-        [req.user.username, day, t, geo && geo.lat, geo && geo.lng, geo && geo.acc, where.place, !!(geo && where.away), photo]);
+      if (rec.check_out_at) return res.status(400).json({ error: `You already checked out today at ${istHM(rec.check_out_at)}.` });
+      // an open break ends at check-out; time tracking saw outside every site (outside breaks) is kept for the day
+      const breaks = closeOpenBreak(rec.breaks, t, where.place);
+      const away = await awayMinutes(req.user.username, rec.check_in_at, t, breaks, placeList);
+      await q('UPDATE attendance_days SET check_out_at=$3, out_lat=$4, out_lng=$5, out_acc=$6, out_place=$7, out_away=$8, out_photo=$9, breaks=$10, away_minutes=$11, updated_at=$3 WHERE username=$1 AND day=$2',
+        [req.user.username, day, t, geo && geo.lat, geo && geo.lng, geo && geo.acc, where.place, !!(geo && where.away), photo, JSON.stringify(breaks), away]);
     }
     const late = which === 'in' && minutesOf(istHM(t)) > minutesOf(S.shiftStart) + Number(S.graceMin || 0);
     res.json({ ok: true, at: istHM(t), place: where.place, away: !!(geo && where.away), nearest: where.nearest, noLocation: !geo, late });
   }
+  // ☕ Breaks: start anywhere; come back inside a site. Up to the break allowance a day is free.
+  app.post('/api/attendance/break-start', auth(ALL_ROLES), async (req, res) => {
+    const day = istDay();
+    const rec = await one('SELECT * FROM attendance_days WHERE username=$1 AND day=$2', [req.user.username, day]);
+    if (!rec || !rec.check_in_at) return res.status(400).json({ error: 'Check in first.' });
+    if (rec.check_out_at) return res.status(400).json({ error: 'You have already checked out today.' });
+    const breaks = Array.isArray(rec.breaks) ? rec.breaks : [];
+    if (breaks.some(b => !b.end)) return res.status(400).json({ error: 'You are already on a break.' });
+    breaks.push({ start: now() });
+    await q('UPDATE attendance_days SET breaks=$3, updated_at=$4 WHERE username=$1 AND day=$2', [req.user.username, day, JSON.stringify(breaks), now()]);
+    const S = await settings();
+    res.json({ ok: true, at: istHM(now()), usedMin: breakMinutes(breaks, null), allowanceMin: Number(S.breakAllowanceMin || 0) });
+  });
+  app.post('/api/attendance/break-end', auth(ALL_ROLES), async (req, res) => {
+    const S = await settings(); const day = istDay();
+    const rec = await one('SELECT * FROM attendance_days WHERE username=$1 AND day=$2', [req.user.username, day]);
+    const breaks = rec && Array.isArray(rec.breaks) ? rec.breaks : [];
+    if (!breaks.some(b => !b.end)) return res.status(400).json({ error: 'You are not on a break.' });
+    const geo = cleanGeo(req.body || {}); const placeList = await places();
+    const where = placeFor(geo && geo.lat, geo && geo.lng, geo && geo.acc, placeList);
+    const block = await locationBlock(req.user.username, S, geo, where, placeList, 'end the break');
+    if (block) return res.status(400).json({ error: block, outside: true, nearest: where.nearest });
+    const t = now(); const closed = closeOpenBreak(breaks, t, where.place);
+    await q('UPDATE attendance_days SET breaks=$3, updated_at=$4 WHERE username=$1 AND day=$2', [req.user.username, day, JSON.stringify(closed), t]);
+    const used = breakMinutes(closed, null), allow = Number(S.breakAllowanceMin || 0);
+    res.json({ ok: true, at: istHM(t), usedMin: used, allowanceMin: allow, overMin: Math.max(0, used - allow), place: where.place });
+  });
   app.post('/api/attendance/check-in', auth(ALL_ROLES), (req, res) => punch(req, res, 'in'));
   app.post('/api/attendance/check-out', auth(ALL_ROLES), (req, res) => punch(req, res, 'out'));
 
@@ -271,12 +350,17 @@ function mountPayroll(app, deps) {
     const mo = await monthFor([m.username], period);
     const list = mo.days[m.username];
     const today = istDay();
-    const rec = await one('SELECT check_in_at, check_out_at, in_place, out_place, in_away, out_away FROM attendance_days WHERE username=$1 AND day=$2', [m.username, today]);
+    const rec = await one('SELECT check_in_at, check_out_at, in_place, out_place, in_away, out_away, breaks FROM attendance_days WHERE username=$1 AND day=$2', [m.username, today]);
     const S = mo.settings;
+    const anywhere = await one('SELECT att_anywhere FROM users WHERE username=$1', [m.username]);
+    const brs = rec && Array.isArray(rec.breaks) ? rec.breaks : [];
     res.json({
       me: { username: m.username, name: m.name, canSeeAttendance: m.canSeeAttendance, canSeePayroll: m.canSeePayroll },
-      today, period, todayRec: rec ? { in: istHM(rec.check_in_at), out: istHM(rec.check_out_at), inPlace: rec.in_place, outPlace: rec.out_place, inAway: rec.in_away, outAway: rec.out_away } : null,
-      rules: { shiftStart: S.shiftStart, shiftEnd: S.shiftEnd, graceMin: S.graceMin, fullDayHours: S.fullDayHours, halfDayHours: S.halfDayHours, selfieRequired: !!S.selfieRequired, weeklyOff: S.weeklyOff, lateMarksPerHalfDay: S.lateMarksPerHalfDay },
+      today, period, todayRec: rec ? { in: istHM(rec.check_in_at), out: istHM(rec.check_out_at), inPlace: rec.in_place, outPlace: rec.out_place, inAway: rec.in_away, outAway: rec.out_away,
+        onBreak: brs.some(b => !b.end), breakSince: (brs.find(b => !b.end) || {}).start ? istHM(brs.find(b => !b.end).start) : '', breakStartIso: (brs.find(b => !b.end) || {}).start || null,
+        breakUsedMin: breakMinutes(brs, null), breaks: brs.map(b => ({ start: istHM(b.start), end: b.end ? istHM(b.end) : '' })) } : null,
+      locationRule: { required: !!S.locationRequired && !(anywhere && anywhere.att_anywhere), anywhere: !!(anywhere && anywhere.att_anywhere), places: (await places()).map(p => p.name) },
+      rules: { shiftStart: S.shiftStart, shiftEnd: S.shiftEnd, graceMin: S.graceMin, fullDayHours: S.fullDayHours, halfDayHours: S.halfDayHours, selfieRequired: !!S.selfieRequired, weeklyOff: S.weeklyOff, lateMarksPerHalfDay: S.lateMarksPerHalfDay, breakAllowanceMin: Number(S.breakAllowanceMin || 0) },
       days: list, summary: summarise(list.filter(d => d.day <= today), S), holidays: mo.holidays,
       leave: { balance: await leaveBalance(m.username, period.slice(0, 4)), requests: await rows('SELECT * FROM leave_requests WHERE username=$1 ORDER BY created_at DESC LIMIT 30', [m.username]) },
       payslips: await rows(`SELECT r.period, r.status, l.net FROM payroll_lines l JOIN payroll_runs r ON r.id=l.run_id WHERE l.username=$1 AND r.status IN ('approved','paid') ORDER BY r.period DESC LIMIT 24`, [m.username])
@@ -349,6 +433,17 @@ function mountPayroll(app, deps) {
     res.json({ ok: true });
   });
 
+  // HR / Admin: who may check in anywhere (drivers, purchase…)
+  app.post('/api/attendance/anywhere/:username', auth(ALL_ROLES), async (req, res) => {
+    const m = await me(req.user);
+    if (!m.canPrepare) return res.status(403).json({ error: 'Only HR and Admin change this.' });
+    const u = await db.getUser(req.params.username); if (!u) return res.status(404).json({ error: 'User not found.' });
+    const on = !!(req.body || {}).anywhere;
+    await q('UPDATE users SET att_anywhere=$2 WHERE username=$1', [u.username, on]);
+    await auditFromReq(req, 'attendance_anywhere', `${u.name} ${on ? 'can now check in from anywhere' : 'must check in inside a site again'}.`);
+    res.json({ ok: true });
+  });
+
   // ======================= LEAVE =======================
   app.post('/api/leave', auth(ALL_ROLES), async (req, res) => {
     const b = req.body || {};
@@ -406,7 +501,8 @@ function mountPayroll(app, deps) {
     const m = await me(req.user);
     if (!m.canSeeAttendance) return res.status(403).json({ error: 'Not allowed.' });
     const y = String(req.query.year || istDay().slice(0, 4));
-    res.json({ settings: await settings(), defaults: DEFAULTS, holidays: await holidaysBetween(`${y}-01-01`, `${y}-12-31`), canEdit: m.canPrepare, year: y });
+    const anywhere = (await rows('SELECT username, name, team FROM users WHERE att_anywhere = true ORDER BY name'));
+    res.json({ settings: await settings(), defaults: DEFAULTS, holidays: await holidaysBetween(`${y}-01-01`, `${y}-12-31`), canEdit: m.canPrepare, year: y, anywhere, placesCount: (await places()).length });
   });
   app.post('/api/payroll/settings', auth(ALL_ROLES), async (req, res) => {
     const m = await me(req.user);
@@ -415,11 +511,12 @@ function mountPayroll(app, deps) {
     const hm = (v) => /^\d{2}:\d{2}$/.test(String(v || '')) ? String(v) : null;
     const num = (v, lo, hi) => { const n = Number(v); return isFinite(n) && n >= lo && n <= hi ? n : null; };
     for (const [k, f] of Object.entries({ shiftStart: hm, shiftEnd: hm })) if (b[k] != null) { const v = f(b[k]); if (!v) return res.status(400).json({ error: `${k}: use HH:MM.` }); next[k] = v; }
-    const ranges = { graceMin: [0, 180], fullDayHours: [1, 16], halfDayHours: [0.5, 12], lateMarksPerHalfDay: [0, 31], otAfterMin: [0, 600], otMultiplier: [0, 5], paidLeavePerYear: [0, 60],
+    const ranges = { breakAllowanceMin: [0, 240], graceMin: [0, 180], fullDayHours: [1, 16], halfDayHours: [0.5, 12], lateMarksPerHalfDay: [0, 31], otAfterMin: [0, 600], otMultiplier: [0, 5], paidLeavePerYear: [0, 60],
       pfPercent: [0, 30], pfWageCeiling: [0, 1000000], employerPfPercent: [0, 30], esiEmployeePercent: [0, 10], esiEmployerPercent: [0, 20], esiGrossLimit: [0, 1000000] };
     for (const [k, [lo, hi]] of Object.entries(ranges)) if (b[k] != null && b[k] !== '') { const v = num(b[k], lo, hi); if (v == null) return res.status(400).json({ error: `${k} must be between ${lo} and ${hi}.` }); next[k] = v; }
     if (b.weeklyOff != null) next.weeklyOff = (Array.isArray(b.weeklyOff) ? b.weeklyOff : []).map(Number).filter(n => n >= 0 && n <= 6);
     if (b.selfieRequired != null) next.selfieRequired = !!b.selfieRequired;
+    if (b.locationRequired != null) next.locationRequired = !!b.locationRequired;
     if (b.pfOnFullBasic != null) next.pfOnFullBasic = !!b.pfOnFullBasic;
     if (next.halfDayHours > next.fullDayHours) return res.status(400).json({ error: 'Half-day hours cannot be more than full-day hours.' });
     await q('INSERT INTO payroll_settings(id, data, updated_by, updated_at) VALUES(1,$1,$2,$3) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at', [next, m.username, now()]);
@@ -653,6 +750,16 @@ function mountPayroll(app, deps) {
     const d = { ...l.data };
     if (self && !m.canSeePayroll) { d.employerPf = undefined; d.employerEsi = undefined; }
     res.json({ period, label: monthLabel(period), status: run.status, username: req.params.username, line: d });
+  });
+  // Every payslip of a month in one go (HR / Accounts / Admin) — printed or saved as one PDF from the page.
+  app.get('/api/payroll/runs/:period/payslips', auth(ALL_ROLES), async (req, res) => {
+    const m = await me(req.user);
+    if (!m.canSeePayroll) return res.status(403).json({ error: 'Not allowed.' });
+    const period = validPeriod(req.params.period);
+    const run = period && await one('SELECT * FROM payroll_runs WHERE period=$1', [period]);
+    if (!run) return res.status(404).json({ error: 'Prepare the month first.' });
+    const lines = await rows('SELECT username, data FROM payroll_lines WHERE run_id=$1 ORDER BY username', [run.id]);
+    res.json({ period, label: monthLabel(period), status: run.status, slips: lines.map(l => ({ username: l.username, line: l.data })).sort((a, b) => String(a.line.name).localeCompare(String(b.line.name))) });
   });
   app.get('/api/payroll/runs/:period/export', auth(ALL_ROLES), async (req, res) => {
     const m = await me(req.user);

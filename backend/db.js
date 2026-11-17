@@ -508,6 +508,9 @@ async function init() {
     status_override TEXT, override_reason TEXT, override_by TEXT, override_at TEXT, ot_minutes_override INTEGER, manual_in TEXT, manual_out TEXT,
     created_at TEXT NOT NULL, updated_at TEXT, PRIMARY KEY(username, day))`);
   await run('CREATE INDEX IF NOT EXISTS idx_attendance_day ON attendance_days(day)');
+  await ensureColumn('attendance_days', 'breaks', 'JSONB');
+  await ensureColumn('attendance_days', 'away_minutes', 'INTEGER');
+  await ensureColumn('users', 'att_anywhere', 'BOOLEAN DEFAULT FALSE');
   await run(`CREATE TABLE IF NOT EXISTS leave_requests(
     id SERIAL PRIMARY KEY, username TEXT NOT NULL, from_day TEXT NOT NULL, to_day TEXT NOT NULL, half_day BOOLEAN NOT NULL DEFAULT FALSE,
     kind TEXT NOT NULL, days NUMERIC NOT NULL, reason TEXT, status TEXT NOT NULL DEFAULT 'pending',

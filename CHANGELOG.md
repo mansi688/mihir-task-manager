@@ -4,6 +4,21 @@ All production changes, newest first. Each release lists database changes, envir
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [Unreleased] — Check in only at site, 1-hour break allowance, all payslips at once
+### Changed
+- **Check in / check out only inside a site** (Rules & holidays → "Check in / out: Only inside a site / office", on by
+  default): check-in, check-out and coming back from a break are accepted only inside the circle of a Place
+  (Locations page). Outside, the person is told how far they are from the nearest site and is not marked. People whose
+  work isn't at a site (drivers, purchase…) can be added to **Can check in from anywhere** (same tab). With no Places
+  added yet, check-in works anywhere. Attendance always takes a fresh GPS fix.
+### Added
+- **☕ Breaks**: Start break (anywhere) → Back from break (inside the site). Up to **60 minutes a day** (Rules →
+  "Break allowed outside the site") counts as work; break time beyond it — and time location tracking saw the person
+  outside every site outside a break — is taken off the hours worked, so a long absence turns a full day into a half
+  day or absent. HR's Today shows break / away minutes. New columns `attendance_days.breaks / away_minutes`,
+  `users.att_anywhere`.
+- **🖨 All payslips** on HR & Payroll → Payroll: every payslip of the month, one per page, to print or save as one PDF.
+
 ## [Unreleased] — Dropdowns keep their look
 ### Changed
 - Searchable dropdowns now look exactly like the original dropdowns (same size and arrow, same placeholder) — you

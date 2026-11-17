@@ -47,7 +47,7 @@ function attGeo() {
     let done = false; const fin = (v) => { if (!done) { done = true; resolve(v); } };
     setTimeout(() => fin({ error: 'location took too long' }), 15000);
     navigator.geolocation.getCurrentPosition(p => fin({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy || 0) }),
-      e => fin({ error: e && e.code === 1 ? 'location permission is off' : 'location not available' }), { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
+      e => fin({ error: e && e.code === 1 ? 'location permission is off' : 'location not available' }), { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
   });
 }
 function attSmallJpeg(file) {
@@ -103,17 +103,25 @@ function renderAttendanceView() {
   <div class="card att-today">
     <div class="flex-between" style="gap:10px;flex-wrap:wrap;">
       <div><div class="card-title" style="margin:0;">Today · ${attEsc(attDayLabel(d.today))}</div>
-        <div class="small muted">Shift ${attEsc(R.shiftStart)}–${attEsc(R.shiftEnd)} · late after ${attEsc(R.shiftStart)} + ${R.graceMin} min · full day ${R.fullDayHours} h</div></div>
+        <div class="small muted">Shift ${attEsc(R.shiftStart)}–${attEsc(R.shiftEnd)} · late after ${attEsc(R.shiftStart)} + ${R.graceMin} min · full day ${R.fullDayHours} h${R.breakAllowanceMin ? ` · break up to ${R.breakAllowanceMin} min` : ''}</div>
+        ${d.locationRule && d.locationRule.required ? `<div class="small" style="margin-top:2px;">📍 Check in, check out and come back from a break <b>inside a site</b>${d.locationRule.places.length ? ` (${attEsc(d.locationRule.places.slice(0, 4).join(', '))}${d.locationRule.places.length > 4 ? '…' : ''})` : ''}.</div>` : d.locationRule && d.locationRule.anywhere ? '<div class="small muted">You can check in from anywhere.</div>' : ''}</div>
       <div class="att-punch-state">
         ${t && t.in ? `<span class="att-chip st-P">In <b>${attEsc(t.in)}</b>${t.inPlace ? ` · ${attEsc(t.inPlace)}` : t.inAway ? ' · ⚠ not at a site' : ''}</span>` : ''}
         ${t && t.out ? `<span class="att-chip">Out <b>${attEsc(t.out)}</b>${t.outPlace ? ` · ${attEsc(t.outPlace)}` : t.outAway ? ' · ⚠ not at a site' : ''}</span>` : ''}
       </div>
     </div>
-    ${!(t && t.out) ? `<div class="att-punch">
+    ${t && t.in && !t.out ? `<div class="att-break ${t.onBreak ? 'on' : ''}">
+      ${t.onBreak ? `<div>☕ <b>On break since ${attEsc(t.breakSince)}</b> · <span id="att-break-used">${t.breakUsedMin}</span> of ${R.breakAllowanceMin} min used${t.breakUsedMin > R.breakAllowanceMin ? ' — <b class="dlv-warn-text">over the allowance</b>' : ''}</div>
+        <button type="button" class="btn btn-primary btn-sm" data-att-act="break-end" ${p && p.busy ? 'disabled' : ''}>↩ Back from break</button>
+        <div class="small muted">Tap when you are back${d.locationRule && d.locationRule.required ? ' — inside the site' : ''}.</div>`
+      : `<div class="small">Break today: <b>${t.breakUsedMin}</b> of ${R.breakAllowanceMin} min${t.breakUsedMin > R.breakAllowanceMin ? ' — over the allowance; the extra time is not counted as work' : ''}</div>
+        <button type="button" class="btn btn-sm" data-att-act="break-start" ${p && p.busy ? 'disabled' : ''}>☕ Start break</button>`}
+    </div>` : ''}
+    ${!(t && t.out) && !(t && t.onBreak) ? `<div class="att-punch">
       <label class="btn btn-primary att-punch-btn ${p && p.busy ? 'disabled' : ''}">${p && p.busy ? '⏳ ' + attEsc(p.msg || 'Working…') : t && t.in ? '📷 Check out' : '📷 Check in'}
         <input type="file" id="att-selfie" accept="image/*" capture="user" hidden ${p && p.busy ? 'disabled' : ''}></label>
       <div class="small muted">Takes a selfie and your location${R.selfieRequired ? '' : ' (selfie optional)'} — allow the camera and location when the phone asks.</div>
-    </div>` : '<div class="small" style="margin-top:8px;">✅ Done for today.</div>'}
+    </div>` : t && t.out ? '<div class="small" style="margin-top:8px;">✅ Done for today.</div>' : ''}
     ${p && p.err ? `<div class="err">${attEsc(p.err)}</div>` : ''}
     ${p && p.done ? `<div class="notice">${attEsc(p.done)}</div>` : ''}
   </div>
@@ -162,10 +170,12 @@ function payslipModalHTML() {
   const sl = (ui.att || {}).slip; if (!sl) return '';
   if (sl.loading) return '<div class="att-modal"><div class="att-modal-box">Loading…</div></div>';
   if (sl.error) return `<div class="att-modal" data-slip-close><div class="att-modal-box"><div class="err">${attEsc(sl.error)}</div><button class="btn btn-sm" data-slip-close>Close</button></div></div>`;
-  const l = sl.data.line, u = sl.data.username;
+  return `<div class="att-modal"><div class="att-modal-box payslip" id="payslip-box">${payslipBodyHTML(sl.data.line, sl.data.username, sl.data.label, true)}</div></div>`;
+}
+function payslipBodyHTML(l, u, label, buttons) {
   const row = (k, v) => v ? `<tr><td>${k}</td><td class="num">${inr(v)}</td></tr>` : '';
-  return `<div class="att-modal"><div class="att-modal-box payslip" id="payslip-box">
-    <div class="flex-between"><div><div class="payslip-co">MIHIR GROUP</div><div class="small muted">Payslip · ${attEsc(sl.data.label)}</div></div><div class="noprint" style="display:flex;gap:6px;"><button class="btn btn-sm" data-slip-print>🖨 Print / PDF</button><button class="btn btn-sm" data-slip-close>Close</button></div></div>
+  return `
+    <div class="flex-between"><div><div class="payslip-co">MIHIR GROUP</div><div class="small muted">Payslip · ${attEsc(label)}</div></div>${buttons ? '<div class="noprint" style="display:flex;gap:6px;"><button class="btn btn-sm" data-slip-print>🖨 Print / PDF</button><button class="btn btn-sm" data-slip-close>Close</button></div>' : ''}</div>
     <div class="payslip-grid">
       <div><span>Employee</span><b>${attEsc(l.name)}</b></div><div><span>Code</span><b>${attEsc(l.employee_code || u)}</b></div><div><span>Department</span><b>${attEsc(l.team || '—')}</b></div>
       <div><span>Days in month</span><b>${l.daysInMonth}</b></div><div><span>Paid days</span><b>${l.paidDays}</b></div><div><span>Loss of pay days</span><b>${l.lopDays}</b></div>
@@ -182,8 +192,16 @@ function payslipModalHTML() {
     </div>
     <div class="payslip-net">Net pay <b>${inr(l.net)}</b></div>
     ${l.employerPf != null && (l.employerPf || l.employerEsi) ? `<div class="small muted">Employer contribution (not deducted): PF ${inr(l.employerPf)}${l.employerEsi ? ` · ESI ${inr(l.employerEsi)}` : ''}</div>` : ''}
-    <div class="small muted" style="margin-top:6px;">Computer-generated payslip.</div>
-  </div></div>`;
+    <div class="small muted" style="margin-top:6px;">Computer-generated payslip.</div>`;
+}
+// Every payslip of the month, one per page, in a new window → Print / Save as PDF.
+function printAllPayslips(r) {
+  if (!r || !(r.slips || []).length) { setBanner('No payslips for this month.'); render(); return; }
+  const css = [...document.querySelectorAll('style')].map(x => x.outerHTML).join('') + [...document.querySelectorAll('link[rel="stylesheet"]')].map(l => `<link rel="stylesheet" href="${l.href}">`).join('');
+  const w = window.open('', '_blank'); if (!w) { setBanner('Allow pop-ups to print the payslips.'); render(); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Payslips ${attEsc(r.label)}</title>${css}<style>body{background:#fff;padding:0;margin:0}.slip-page{padding:24px;page-break-after:always;max-width:760px;margin:0 auto}.slip-page:last-child{page-break-after:auto}</style></head><body>
+    ${r.slips.map(x => `<div class="slip-page payslip">${payslipBodyHTML(x.line, x.username, r.label, false)}</div>`).join('')}</body></html>`);
+  w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (e) {} }, 500);
 }
 function openPayslip(period, username) {
   const s = attState(); s.slip = { loading: true }; render();
@@ -221,6 +239,17 @@ function bindAttendanceView() {
     } catch (e) { s.punch = { err: e.message }; render(); }
   };
   const act = (n, fn) => document.querySelectorAll(`[data-att-act="${n}"]`).forEach(b => b.onclick = fn);
+  const brk = async (which) => {
+    s.punch = { busy: true, msg: which === 'end' ? 'Checking you are back at the site…' : 'Starting break…' }; render();
+    const geo = which === 'end' ? await attGeo() : null;
+    try {
+      const r = await api(`/api/attendance/break-${which}`, { method: 'POST', body: JSON.stringify(geo && !geo.error ? geo : {}) });
+      s.punch = { done: which === 'start' ? `Break started at ${r.at}. Tap "Back from break" when you return${r.allowanceMin ? ` — ${Math.max(0, r.allowanceMin - r.usedMin)} min of break left today` : ''}.` : `Back at ${r.at}${r.place ? ` (${r.place})` : ''}. Break today: ${r.usedMin} of ${r.allowanceMin} min${r.overMin ? ` — ${r.overMin} min over, not counted as work` : ''}.` };
+      await attLoad(true);
+    } catch (e) { s.punch = { err: e.message + (geo && geo.error ? ` (${geo.error})` : '') }; render(); }
+  };
+  act('break-start', () => brk('start'));
+  act('break-end', () => brk('end'));
   act('leave-new', () => { s.leaveForm = { from: attToday(), to: '', kind: 'paid', half: false, reason: '' }; render(); });
   act('leave-cancel-form', () => { s.leaveForm = null; render(); });
   const lf = s.leaveForm;
@@ -278,10 +307,11 @@ function hrTodayHTML() {
     <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">${attEsc(attDayLabel(x.day))}</div><input type="date" id="hr-day" value="${attEsc(s.day)}" max="${attToday()}" style="width:auto;margin:0;"></div>
     <div class="att-chips"><span class="att-chip st-P">Checked in <b>${t.in}</b></span><span class="att-chip st-A">Not in <b>${t.notIn}</b></span><span class="att-chip">Late <b>${t.late}</b></span><span class="att-chip">Not at a site <b>${t.away}</b></span><span class="att-chip st-L">On leave <b>${t.onLeave}</b></span></div>
     ${hrSearchHTML()}
-    <div class="dpr-table-wrap"><table class="dpr-table"><thead><tr><th>Person</th><th>Status</th><th>In</th><th>Out</th><th>Hours</th><th>Where</th><th>Selfie</th></tr></thead><tbody>
+    <div class="dpr-table-wrap"><table class="dpr-table"><thead><tr><th>Person</th><th>Status</th><th>In</th><th>Out</th><th>Hours</th><th>Break / away</th><th>Where</th><th>Selfie</th></tr></thead><tbody>
     ${list.map(p => `<tr><td><b>${attEsc(p.name)}</b><div class="small muted">${attEsc(p.username)} · ${attEsc(p.team)}</div></td>
       <td><span class="att-chip st-${p.status}">${attEsc(ATT_LABEL[p.status] || p.status)}</span>${p.late ? ` <span class="small dlv-warn-text">late ${p.late} min</span>` : ''}</td>
       <td class="mono">${attEsc(p.in || '—')}</td><td class="mono">${attEsc(p.out || '—')}</td><td>${p.worked != null ? `${Math.floor(p.worked / 60)}h ${p.worked % 60}m` : ''}</td>
+      <td class="small">${p.breakMin ? `☕ ${p.breakMin} min` : ''}${p.awayMin ? ` · away ${p.awayMin} min` : ''}${p.overBreak ? ` <span class="dlv-warn-text">(${p.overBreak} over)</span>` : ''}</td>
       <td class="small">${attEsc(p.inPlace || '')}${p.flags.includes('not at a site') ? ' <span class="dlv-warn-text">⚠ not at a site</span>' : ''}${p.flags.includes('from tracking') ? ' <span class="muted">from tracking</span>' : ''}</td>
       <td>${p.hasInPhoto ? `<button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|in">In</button>` : ''}${p.hasOutPhoto ? ` <button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|out">Out</button>` : ''}</td></tr>`).join('')}
     </tbody></table></div></div>
@@ -378,7 +408,7 @@ function hrPayrollHTML() {
       ${m.canApprove && run && run.status === 'draft' ? '<button class="btn btn-sm btn-primary" data-pay-act="approve">✓ Approve</button>' : ''}
       ${m.canApprove && run && run.status === 'approved' ? '<button class="btn btn-sm" data-pay-act="reopen">↩ Reopen</button>' : ''}
       ${m.canPay && run && run.status === 'approved' ? '<input type="text" id="pay-note" placeholder="Payment ref (NEFT batch / cheque) — optional" style="width:auto;min-width:220px;margin:0;"><button class="btn btn-sm btn-primary" data-pay-act="paid">💸 Mark paid</button>' : ''}
-      ${run ? '<button class="btn btn-sm" data-pay-export="register">⬇ Salary register</button>' : ''}
+      ${run ? '<button class="btn btn-sm" data-pay-act="all-slips">🖨 All payslips</button><button class="btn btn-sm" data-pay-export="register">⬇ Salary register</button>' : ''}
       ${m.canPay && run && run.status !== 'draft' ? '<button class="btn btn-sm" data-pay-export="bank">⬇ Bank transfer sheet</button>' : ''}
     </div>
     ${s.payMonth === attMonthNow() && run ? '<div class="small dlv-warn-text">⚠ This month is not over — the remaining days are counted as present.</div>' : ''}
@@ -407,12 +437,22 @@ function hrRulesHTML() {
     <div class="row">${f('paidLeavePerYear', 'Paid leave per year')}
       <div class="col"><label>Weekly off</label><div class="att-week">${WEEKDAYS.map((w, i) => `<label><input type="checkbox" data-rule-off="${i}" ${(S.weeklyOff || []).includes(i) ? 'checked' : ''} ${ed ? '' : 'disabled'}> ${w}</label>`).join('')}</div></div>
       <div class="col"><label>Selfie</label><select data-rule="selfieRequired" ${ed ? '' : 'disabled'}><option value="true" ${S.selfieRequired ? 'selected' : ''}>Required</option><option value="false" ${!S.selfieRequired ? 'selected' : ''}>Optional</option></select></div></div>
+    <div class="row">
+      <div class="col"><label>Check in / out</label><select data-rule="locationRequired" ${ed ? '' : 'disabled'}><option value="true" ${S.locationRequired ? 'selected' : ''}>Only inside a site / office</option><option value="false" ${!S.locationRequired ? 'selected' : ''}>From anywhere (flag "not at a site")</option></select></div>
+      ${f('breakAllowanceMin', 'Break allowed outside the site (minutes a day)')}
+    </div>
+    <div class="small muted">Sites and the office are the Places on the Locations page (${x.placesCount} now)${x.placesCount ? '' : ' — <b>none yet, so check-in is allowed anywhere until Admin adds them</b>'}. Break time beyond the allowance — and time tracking sees someone outside every site outside a break — is not counted as work.</div>
     <div class="card-title" style="margin-top:12px;">PF / ESI</div>
     <div class="row">${f('pfPercent', 'PF employee %', 'number', 'step="0.01"')}${f('employerPfPercent', 'PF employer %', 'number', 'step="0.01"')}${f('pfWageCeiling', 'PF wage ceiling ₹')}
       <div class="col"><label>PF on</label><select data-rule="pfOnFullBasic" ${ed ? '' : 'disabled'}><option value="false" ${!S.pfOnFullBasic ? 'selected' : ''}>Basic up to the ceiling</option><option value="true" ${S.pfOnFullBasic ? 'selected' : ''}>Full basic</option></select></div></div>
     <div class="row">${f('esiEmployeePercent', 'ESI employee %', 'number', 'step="0.01"')}${f('esiEmployerPercent', 'ESI employer %', 'number', 'step="0.01"')}${f('esiGrossLimit', 'ESI applies up to gross ₹')}</div>
     <div class="small muted">Professional tax uses the Maharashtra slabs (standard: up to ₹7,500 nil, up to ₹10,000 ₹175, above ₹200 — ₹300 in February; women's slab: up to ₹25,000 nil). Check these rates with your CA when the law changes.</div>
     ${ed ? '<div style="margin-top:10px;"><button class="btn btn-primary btn-sm" data-hr-act="rules-save">Save rules</button></div>' : ''}
+  </div>
+  <div class="card"><div class="card-title">Can check in from anywhere</div>
+    <div class="small muted" style="margin-top:-4px;">For people who don't work at a site — drivers, purchase, people visiting suppliers. Everyone else checks in only inside a site.</div>
+    ${ed ? `<div class="row" style="align-items:flex-end;"><div class="col"><select id="any-user"><option value="">— pick a person —</option>${(userDirectory || []).filter(u => !(x.anywhere || []).some(a => a.username === u.username)).slice().sort((a, b) => a.name.localeCompare(b.name)).map(u => `<option value="${attEsc(u.username)}">${attEsc(u.name)} · ${attEsc(u.username)}${u.team ? ` (${attEsc(u.team)})` : ''}</option>`).join('')}</select></div><div class="col" style="flex:0;"><button class="btn btn-sm btn-primary" data-hr-act="any-add">+ Add</button></div></div>` : ''}
+    ${(x.anywhere || []).length ? `<div class="att-list">${x.anywhere.map(a => `<div class="att-list-row"><div><b>${attEsc(a.name)}</b> <span class="small muted">${attEsc(a.username)} · ${attEsc(a.team || '')}</span></div>${ed ? `<button class="btn btn-sm" data-any-del="${attEsc(a.username)}">✕</button>` : ''}</div>`).join('')}</div>` : '<div class="small muted">Nobody — everyone checks in inside a site.</div>'}
   </div>
   <div class="card"><div class="card-title">Holidays ${attEsc(x.year)}</div>
     ${ed ? `<div class="row" style="align-items:flex-end;"><div class="col"><label>Date</label><input type="date" id="hol-day" value="${attEsc(h.day || '')}"></div><div class="col" style="flex:2;"><label>Holiday</label><input type="text" id="hol-name" value="${attEsc(h.name || '')}" placeholder="e.g. Diwali (Laxmi Puja)"></div><div class="col" style="flex:0;"><button class="btn btn-sm btn-primary" data-hr-act="hol-add">+ Add</button></div></div>` : ''}
@@ -492,6 +532,7 @@ function bindHrPayrollView() {
     if (a === 'approve') return pay('approve', 'Payroll approved — Accounts has been told.');
     if (a === 'reopen') return pay('reopen', 'Reopened for changes.');
     if (a === 'paid') { const note = (document.getElementById('pay-note') || {}).value || ''; return pay('paid', 'Marked paid — everyone can now see their payslip.', { note }); }
+    if (a === 'all-slips') { try { const r = await api(`/api/payroll/runs/${s.payMonth}/payslips`); printAllPayslips(r); } catch (e) { setBanner(e.message); render(); } return; }
     if (a === 'line-cancel') { s.lineEdit = null; render(); return; }
     if (a === 'line-save') {
       const le = s.lineEdit; const v = (id) => (document.getElementById(id) || {}).value;
@@ -512,6 +553,8 @@ function bindHrPayrollView() {
   const hd = document.getElementById('hol-day'), hn = document.getElementById('hol-name');
   if (hd) hd.onchange = () => { s.holiday = { ...(s.holiday || {}), day: hd.value }; };
   if (hn) hn.oninput = () => { s.holiday = { ...(s.holiday || {}), name: hn.value }; };
+  act('any-add', async () => { const u = (document.getElementById('any-user') || {}).value; if (!u) return; try { await api(`/api/attendance/anywhere/${encodeURIComponent(u)}`, { method: 'POST', body: JSON.stringify({ anywhere: true }) }); reload('rules'); } catch (e) { setBanner(e.message); render(); } });
+  document.querySelectorAll('[data-any-del]').forEach(b => b.onclick = async () => { try { await api(`/api/attendance/anywhere/${encodeURIComponent(b.dataset.anyDel)}`, { method: 'POST', body: JSON.stringify({ anywhere: false }) }); reload('rules'); } catch (e) { setBanner(e.message); render(); } });
   act('hol-add', async () => { try { await api('/api/payroll/holidays', { method: 'POST', body: JSON.stringify(s.holiday || {}) }); s.holiday = null; reload('rules'); } catch (e) { setBanner(e.message); render(); } });
   document.querySelectorAll('[data-hol-del]').forEach(b => b.onclick = async () => { try { await api(`/api/payroll/holidays/${b.dataset.holDel}`, { method: 'DELETE' }); reload('rules'); } catch (e) { setBanner(e.message); render(); } });
 }
