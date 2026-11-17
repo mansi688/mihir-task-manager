@@ -1869,3 +1869,34 @@ input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !importan
 .att-shutter{font-size:16px;padding:10px 22px;}
 .payslip-att{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;padding:8px 10px;margin:0 0 12px;border-radius:8px;background:var(--panel-2,#f4f6fa);}
 .payslip-att > b{margin-right:4px;}
+
+/* ===== Updates page (version history) ===== */
+.upd-hero{border-left:4px solid var(--amber,#2563eb);}
+.upd-hero-row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;}
+.upd-hero-ver{font-size:28px;font-weight:800;line-height:1.1;margin:2px 0;}
+.upd-hero-new{background:rgba(22,163,74,.12);color:#15803d;border-radius:10px;padding:8px 12px;font-size:14px;}
+.upd-tools{margin-top:12px;display:flex;flex-direction:column;gap:8px;}
+.upd-tools input[type=search]{width:100%;}
+.upd-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.upd-month{font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--muted);margin:16px 2px 6px;}
+.upd-card{padding:0;overflow:hidden;margin-bottom:10px;}
+.upd-card.upd-current{box-shadow:0 0 0 2px var(--amber,#2563eb) inset;}
+.upd-head{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:10px;width:100%;padding:12px 14px;cursor:pointer;}
+.upd-head:hover{background:rgba(127,127,127,.06);}
+.upd-ver{flex:none;min-width:52px;text-align:center;font-weight:800;font-size:13px;padding:4px 8px;border-radius:8px;background:var(--amber-dim,rgba(37,99,235,.12));color:var(--amber-ink,#2563eb);}
+.upd-title{flex:1;display:flex;flex-direction:column;gap:2px;min-width:0;}
+.upd-chev{flex:none;color:var(--muted);}
+.upd-pill-cur{background:var(--amber,#2563eb);color:#fff;}
+.upd-pill-new{background:#16a34a;color:#fff;}
+.upd-body{padding:2px 14px 12px;border-top:1px solid var(--line);}
+.upd-sec{margin-top:10px;padding-left:10px;border-left:3px solid var(--line);}
+.upd-sec-name{font-weight:700;font-size:13px;margin-bottom:4px;}
+.upd-sec ul{margin:0;padding-left:18px;}
+.upd-sec li{margin:4px 0;font-size:13.5px;line-height:1.45;}
+.upd-sec code{font-size:12px;background:rgba(127,127,127,.12);padding:1px 4px;border-radius:4px;}
+.upd-added{border-left-color:#16a34a;}
+.upd-changed{border-left-color:#2563eb;}
+.upd-fixed{border-left-color:#d97706;}
+.upd-removed{border-left-color:#dc2626;}
+.upd-tech{border-left-color:#6b7280;opacity:.85;}
+.upd-pill-cur,.upd-pill-new{flex:none;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;}

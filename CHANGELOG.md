@@ -1,10 +1,25 @@
 # Changelog
 
-All production changes, newest first. Each release lists database changes, environment changes and
+All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD — Title` (a new entry may use
+`## [Unreleased] — Title`; the app's Updates page numbers it as the next version). The Updates page in the app reads this file. Each release lists database changes, environment changes and
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
-## [Unreleased] — Live selfie camera; attendance on the payslip
+## [v1.56] — 2026-11-17 — Updates page: every change, version by version
+### Added
+- **Updates** page (menu → Overview → ✨ Updates) for everyone: every change made to the app since the first release,
+  newest first, numbered **v1.0 → v1.56** and dated, grouped by month. Each version shows what was **Added**,
+  **Changed**, **Fixed** and **Removed**. The current version is highlighted; the newest three are open, tap any
+  version to open or close it, or **Expand all**.
+- Search across all updates (e.g. "payslip", "location", "DPR") and filter by Added / Changed / Fixed / Removed.
+- Menu badge = versions released since the person last opened Updates, with **New** tags and a **New only** filter.
+- New updates appear on their own: the page reads this file. An entry written as `## [Unreleased] — Title` is shown
+  as the next version, dated the day it was uploaded.
+### Changed
+- Every heading in this file now carries its version and date (`## [vX.Y] — YYYY-MM-DD — Title`).
+### Database: none. API: `GET /api/updates` (Database / API / Tests notes are shown to Admin only).
+
+## [v1.55] — 2026-11-17 — Live selfie camera; attendance on the payslip
 ### Changed
 - **Check in / out with the live camera only**: 📷 Check in opens the front camera inside the app (preview with a face
   guide → 📸 Take photo). No gallery or file picker, so an old photo can't be used. The date, time and name are written
@@ -13,7 +28,7 @@ previous deploy → Rollback (all migrations are additive).
   offs, holidays, late marks (and the day cut), overtime, break time over the allowance. Amounts always show paise
   with two digits.
 
-## [Unreleased] — Check in only at site, 1-hour break allowance, all payslips at once
+## [v1.54] — 2026-11-17 — Check in only at site, 1-hour break allowance, all payslips at once
 ### Changed
 - **Check in / check out only inside a site** (Rules & holidays → "Check in / out: Only inside a site / office", on by
   default): check-in, check-out and coming back from a break are accepted only inside the circle of a Place
@@ -28,12 +43,12 @@ previous deploy → Rollback (all migrations are additive).
   `users.att_anywhere`.
 - **🖨 All payslips** on HR & Payroll → Payroll: every payslip of the month, one per page, to print or save as one PDF.
 
-## [Unreleased] — Dropdowns keep their look
+## [v1.53] — 2026-11-16 — Dropdowns keep their look
 ### Changed
 - Searchable dropdowns now look exactly like the original dropdowns (same size and arrow, same placeholder) — you
   simply type in them to search. Search boxes on pages are styled like the other inputs.
 
-## [Unreleased] — Type-to-search dropdowns; forgot password with a recovery PIN
+## [v1.52] — 2026-11-16 — Type-to-search dropdowns; forgot password with a recovery PIN
 ### Changed
 - **Dropdowns search as you type in them** (no separate search bar): every list with 8+ choices — people, places,
   departments… — is a box you type into; the list under it shows only what matches (name, username or department);
@@ -45,7 +60,7 @@ previous deploy → Rollback (all migrations are additive).
   **Reset password** next to each member on **My Team** (their own team only, never Admin accounts). The old email-code
   reset is switched off. New columns `users.recovery_pin_hash / recovery_pin_set_at`.
 
-## [Unreleased] — Attendance, leave and payroll
+## [v1.51] — 2026-11-16 — Attendance, leave and payroll
 ### Added
 - **My Attendance** (everyone, menu → You): **📷 Check in / Check out** takes a selfie and the GPS location; the
   location is matched to the Places on the Locations page (site / office) and "not at a site" is flagged (never
@@ -73,7 +88,7 @@ previous deploy → Rollback (all migrations are additive).
 - Tables: `attendance_days`, `leave_requests`, `payroll_settings`, `payroll_holidays`, `salary_structures`,
   `salary_advances`, `salary_advance_recoveries`, `payroll_runs`, `payroll_lines`.
 
-## [Unreleased] — Geo-tagged delivery photos; Budget page removed
+## [v1.50] — 2026-11-16 — Geo-tagged delivery photos; Budget page removed
 ### Added
 - **Geo-tagged delivery photos**: every photo taken in Deliveries (delivery and unloading proof, documents, bill
   photos) gets a second stamp line with the GPS location where it was taken (📍 lat, lng ±accuracy), and the
@@ -84,7 +99,7 @@ previous deploy → Rollback (all migrations are additive).
 - **Budget page** taken out of the menu (and its notifications are no longer sent). Delivery payments with bills stay
   on each delivery's Money tab. The data is kept; `BUDGET_ENABLED=true` (server) brings the notifications back.
 
-## [Unreleased] — Daily Progress Report, department tagging, project heads optional, Follow up and quick search everywhere
+## [v1.49] — 2026-11-16 — Daily Progress Report, department tagging, project heads optional, Follow up and quick search everywhere
 ### Added
 - **Daily Progress Report** (menu → Departments → Daily Progress): one report per project per day with three parts —
   🏗 Work progress, 📥 Material inward (received from, challan / GRN) and 📤 Material outward (**issued to whom**,
@@ -109,7 +124,7 @@ previous deploy → Rollback (all migrations are additive).
 - Locations: people can be found by **username** (live map search and every person list shows name · username);
   task search also matches the creator, project and people kept informed.
 
-## [Unreleased] — New-account login fix, one approval count everywhere, estimation documents step by step
+## [v1.48] — 2026-10-31 — New-account login fix, one approval count everywhere, estimation documents step by step
 ### Fixed
 - **New accounts / reset passwords could not log in.** The temporary-password box was a hidden password field the
   browser filled with Admin's own saved password, so the account got a password nobody knew. It is now a plain
@@ -128,7 +143,7 @@ previous deploy → Rollback (all migrations are additive).
   other files) → each JMR → Final JMR → Reconciliation — as full-width document tiles (name, who attached it, date).
   The next step appears when the one before it is done.
 
-## [Unreleased] — Deadline extensions by request, approvals visibility, new Accounts compliance items
+## [v1.47] — 2026-10-30 — Deadline extensions by request, approvals visibility, new Accounts compliance items
 ### Changed
 - **Deadlines can no longer be changed freely.** "Change deadline" and "Set individual deadlines" on a task are now
   **Admin only**, and a reason is required. Everyone else goes through an extension request.
@@ -154,7 +169,7 @@ previous deploy → Rollback (all migrations are additive).
 - New table `deadline_requests`; `ALTER TABLE compliance_items ALTER COLUMN due_day DROP NOT NULL`; 4 compliance
   rows inserted if missing. All additive.
 
-## [Unreleased] — Estimation workflow: estimate → project-head approval → JMR → final JMR → reconciliation
+## [v1.46] — 2026-10-30 — Estimation workflow: estimate → project-head approval → JMR → final JMR → reconciliation
 ### Added
 - **Estimate (work package)** — new first step on the Estimation page (📁 Estimates tab): project, work item /
   package, contractor, scope, and **two required files attached separately: the HighRise document and the estimate
@@ -176,7 +191,7 @@ previous deploy → Rollback (all migrations are additive).
 - New tables `est_estimates`, `est_approvals`; columns `est_jmr.estimate_id / is_final / round`,
   `est_recon.estimate_id / round` — additive.
 
-## [Unreleased] — Pages update themselves after an upload; notifications ring in a background tab
+## [v1.45] — 2026-10-29 — Pages update themselves after an upload; notifications ring in a background tab
 ### Fixed
 - **Open pages kept running old code after an upload** (until someone pressed reload) — so a fix could be live on the
   server but not on a computer whose tab was already open. The server now fingerprints the app's files at start-up,
@@ -188,7 +203,7 @@ previous deploy → Rollback (all migrations are additive).
   count in the tab title ("(12) MIHIR Task Manager"). Sounds are unlocked on the first click, so the browser doesn't
   block them. With the tab closed, only phone-style notifications ("Turn on notifications for this device") ring.
 
-## [Unreleased] — Approvals don't vanish; faster task lists for people with thousands of tasks
+## [v1.44] — 2026-10-29 — Approvals don't vanish; faster task lists for people with thousands of tasks
 ### Fixed
 - **Approval notifications disappeared** after being opened: tapping a notification marked it seen, which moved a still-
   pending "Awaiting your approval" / closure / document request out of New. Now an approval that still needs your
@@ -200,7 +215,7 @@ previous deploy → Rollback (all migrations are additive).
   (`db.getTaskVersion`, task tables + users only) and are reused until task data actually changes; the "Kept
   informed" list is cached too.
 
-## [Unreleased] — Task updates: latest update + reply; assistant answers questions about one task
+## [v1.43] — 2026-10-29 — Task updates: latest update + reply; assistant answers questions about one task
 ### Added
 - **Task updates** (Notifications): each card shows the task's **latest comment** (who, when, text, number of files)
   and a **reply box** — type and press Reply (or Enter) to post on the task without opening it; the card then moves
@@ -212,7 +227,7 @@ previous deploy → Rollback (all migrations are additive).
 - The assistant no longer lists every open task (3,800+ for Admin) for a vague question: "all" with no date, project
   or person narrows to the person's own tasks.
 
-## [Unreleased] — Fix: AI calls failing with "model no longer available"
+## [v1.42] — 2026-10-28 — Fix: AI calls failing with "model no longer available"
 ### Fixed
 - Live logs showed every ✨ Fix call failing: Google answers `gemini-2.5-flash-lite is no longer available to new users`
   for newly created API keys. Default model is now **gemini-3.5-flash-lite**, and every AI call (Fix, assistant,
@@ -220,7 +235,7 @@ previous deploy → Rollback (all migrations are additive).
   (3.5-flash-lite → 3.5-flash → 2.5-flash-lite → 2.5-flash) when a model is missing or retired, and remembers the one
   that works. Other errors (bad key, quota) are reported, not retried. `AI_MODEL` still overrides.
 
-## [Unreleased] — 🎙 Voice assistant (Marathi, Hindi, English)
+## [v1.41] — 2026-10-28 — 🎙 Voice assistant (Marathi, Hindi, English)
 ### Added
 - **🎙 Assistant** button on every page (and "🎙 Ask the assistant" on My Tasks) — speak or type one command in
   Marathi, Hindi, English or a mix:
@@ -237,7 +252,7 @@ previous deploy → Rollback (all migrations are additive).
     Hindi voice where the phone has none).
   - `POST /api/assistant/command` (`backend/assistant.js`, `ai.parseCommand`), counted in the AI budget.
 
-## [Unreleased] — AI features on with one key
+## [v1.40] — 2026-10-28 — AI features on with one key
 ### Changed
 - With `AI_API_KEY` set, the AI features are **on by default** — no extra settings: 🎤 Create Task by Voice,
   📋 Tasks from a message, 📎 Tasks from a document or photo (My Tasks), the Suggestions page (review / accept AI
@@ -247,7 +262,7 @@ previous deploy → Rollback (all migrations are additive).
   `ANTHROPIC_API_KEY` is set (`ai.complete`), so one key runs every AI feature. All AI use counts in the monthly AI
   budget (`MONTHLY_AI_BUDGET_INR`, default ₹1,000) — Admin → System Health shows the spend.
 
-## [Unreleased] — Writing help: spell-check everywhere and ✨ Fix grammar
+## [v1.39] — 2026-10-28 — Writing help: spell-check everywhere and ✨ Fix grammar
 ### Added
 - **Spell-check / autocorrect / auto-capitalise** switched on for every text box (red underlines and right-click
   suggestions on a computer, keyboard autocorrect on phones). Usernames, passwords, codes, numbers, amounts and
@@ -259,7 +274,7 @@ previous deploy → Rollback (all migrations are additive).
   `AI_API_KEY`), logged in AI usage and counted in the monthly AI budget. The chip shows only when the key is set
   (`/api/features` → `aiWriting`).
 
-## [Unreleased] — Comment photos visible in task History
+## [v1.38] — 2026-10-28 — Comment photos visible in task History
 ### Fixed
 - **Photos / files added to a comment were saved but not shown.** The task's History table only looked at the old
   single attachment of a comment; files added the newer way (several per comment, `task_files`) never appeared, so a
@@ -268,20 +283,20 @@ previous deploy → Rollback (all migrations are additive).
   (looked up by the comment). New comments record "Attached <file names>" in History.
 - Who can open them is unchanged: the creator, people on the task, people kept informed, and Admin.
 
-## [Unreleased] — Person panel: flagged tasks, then their other open tasks
+## [v1.37] — 2026-10-28 — Person panel: flagged tasks, then their other open tasks
 ### Changed
 - Flagged / Warnings → tap a person: **🚩 Flagged tasks** first, then a dashed line and **📋 Other open tasks**
   (everything else they have not completed), each with Follow up per task and Follow up all.
   `GET /api/notifications/person/:username/open-tasks` — Admin / Directors see all; others only tasks they created,
   are on or follow.
 
-## [Unreleased] — Steady menu after login
+## [v1.36] — 2026-10-28 — Steady menu after login
 ### Fixed
 - The menu no longer jumps after login (Accounts Dept first, Estimation / Budget appearing a moment later): until
   their data arrives, Budget / Estimation / Accounts Dept use what the person had last time on this device, or their
   department (Estimation & Billing, Purchase, Accounts, Admin, Directors).
 
-## [Unreleased] — Notifications: person view shows only pending tasks; approvals never show Follow up
+## [v1.35] — 2026-10-28 — Notifications: person view shows only pending tasks; approvals never show Follow up
 ### Changed
 - Flagged / Warnings: tapping a person shows **only their pending tasks** (completed ones left out) with **Follow up**
   per task and **Follow up all**; the notification list is hidden until "✕ Show all notifications". The list stays
@@ -290,7 +305,7 @@ previous deploy → Rollback (all migrations are additive).
   nothing is waiting for your approval", "✓ This closure request has already been handled", "✓ Task is closed");
   pending ones show Approve / Send back (or Close task / Keep open) as before.
 
-## [Unreleased] — Compliance due dates, sounds, JMR quantity only, view-only estimation files
+## [v1.34] — 2026-10-27 — Compliance due dates, sounds, JMR quantity only, view-only estimation files
 ### Added
 - **Compliance due dates** (Accounts Dept → 📅 Compliance; Accounts Department and Admin): TDS deposit 7th, **GST deposit
   20th**, Sales invoices 5th, Electricity bill 10th (or the date on the bill — "Date this month"), PT 15th, PF 15th —
@@ -312,7 +327,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database
 - New tables `compliance_items`, `compliance_periods` — additive.
 
-## [Unreleased] — Department access, Estimation material + remarks, view-only files, follow-up clears notifications
+## [v1.33] — 2026-10-27 — Department access, Estimation material + remarks, view-only files, follow-up clears notifications
 ### Changed
 - **Who sees which department page:** Accounts Dept = Accounts Department people, Purchase Department and Admin
   (Directors / senior management removed). Estimation = Estimation & Billing people, Purchase Department, Admin and
@@ -333,7 +348,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database
 - `est_jmr.material` (TEXT), new table `est_comments` — additive.
 
-## [Unreleased] — Accounts Department: vendor bills, credit period, payment reminders
+## [v1.32] — 2026-10-27 — Accounts Department: vendor bills, credit period, payment reminders
 ### Added
 - **Vendor bills (accounts payable)** on the Accounts Dept page (Accounts, Purchase, Admin, Directors, Senior management).
   - **Purchase sends the bill** (Admin, Purchase Department, people with delivery access): vendor, bill no. and date,
@@ -368,7 +383,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database
 - New tables `ap_bills`, `ap_bill_events`, `ap_files`. Additive.
 
-## [Unreleased] — Estimation & Billing (JMR, reconciliation) and Accounts Department pages
+## [v1.31] — 2026-10-27 — Estimation & Billing (JMR, reconciliation) and Accounts Department pages
 ### Added
 - **Estimation** page (menu → Departments) for the Estimation & Billing Department:
   - **JMR (Joint Measurement Record)** — project, location, work item, BOQ item, contractor, unit, rate, RA bill no.,
@@ -405,7 +420,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database
 - New tables `est_jmr`, `est_jmr_lines`, `est_recon`, `est_files` (created on start). Additive.
 
-## [Unreleased] — Notifications: act from them, Flagged tab, who has seen; project required
+## [v1.30] — 2026-10-27 — Notifications: act from them, Flagged tab, who has seen; project required
 ### Added
 - **Approve right from a notification.** Any notification about a task where someone's part waits for your approval shows
   "✓ Approve / ↩ Send back" (with a reason); a pending closure request shows "✓ Close task / Keep open"; an approval
@@ -433,7 +448,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database
 - `notifications.ref_type`, `ref_id` (which approval request / payment a notification is about). Additive.
 
-## [Unreleased] — Bandwidth: push clean-up and lighter refreshing
+## [v1.29] — 2026-10-27 — Bandwidth: push clean-up and lighter refreshing
 ### Fixed
 - **Push notifications to dead devices were retried for ever.** Only 404/410 removed a registration; devices returning
   400/401/403/413 (expired, revoked, old keys) stayed and were retried on every notification. Those are now removed on
@@ -447,7 +462,7 @@ previous deploy → Rollback (all migrations are additive).
   announcements / suggestions / open titles every 5, and the full task list (Admin) every 3 minutes unless All Tasks or
   Today is open. Your own actions still refresh immediately.
 
-## [Unreleased] — Allotted money (per person, monthly + top-ups) with bill verification
+## [v1.28] — 2026-10-24 — Allotted money (per person, monthly + top-ups) with bill verification
 ### Changed
 - **Budget is now per person, not per delivery.** A Director (or Admin) allots money to someone on site — a monthly
   amount, top-ups any time, and money they return. That person pays porters / transport / unloading labour on the
@@ -480,7 +495,7 @@ previous deploy → Rollback (all migrations are additive).
   `verify_status` (default `pending`), `verify_note`, `verified_by`, `verified_at`, `reply_note`;
   `delivery_files.delivery_id` nullable (bills of payments without a delivery); `users.budget_topup_asked_at`. Additive.
 
-## [Unreleased] — Budget tab and delivery sounds
+## [v1.27] — 2026-10-24 — Budget tab and delivery sounds
 ### Added
 - **Budget** page in the menu (after Deliveries): every delivery's porter / transport budget against what was actually
   paid. Filters: period (this month, last month, last 30 days, this year, all time, custom dates), project / site,
@@ -499,7 +514,7 @@ previous deploy → Rollback (all migrations are additive).
   🔔 Sounds on / off button on the Deliveries page (remembered per device). Files: `frontend/sounds/`.
   Sounds play while the app is open; phone push notifications use the phone's own notification sound.
 
-## [Unreleased] — Delivery documents and budget
+## [v1.26] — 2026-10-24 — Delivery documents and budget
 ### Added
 - **Documents on every delivery**, in their own tab on the delivery card, split into **📤 Sent to site** (delivery
   challan, PO, vendor invoice, e-way bill, Porter booking, other — uploaded by the purchase side; the site team is
@@ -524,7 +539,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Rollback
 - Previous deploy; the new columns/table are simply unused.
 
-## [Unreleased] — Delivery reminders and follow-up
+## [v1.25] — 2026-10-24 — Delivery reminders and follow-up
 ### Added
 - **Delivery reminders** for the tagged site team at the same 9 AM / 3 PM / 6 PM slots, under Notifications →
   Deliveries: "Delivery due today", "Late delivery" (date passed, no proof yet) and "Unloading pending"
@@ -536,7 +551,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Changed
 - Vendor / supplier suggestion is only **Kratex Tradetech India** (any vendor can still be typed in).
 
-## [Unreleased] — Deliveries: task closes when added; delete; site team performance; full name list
+## [v1.24] — 2026-10-24 — Deliveries: task closes when added; delete; site team performance; full name list
 ### Changed
 - **Adding a task to Deliveries closes the task.** Its own work is done (vendor decided etc.), so the task is
   closed and only the delivery is tracked from then on — the site team tagged on it, not the people who did the
@@ -559,7 +574,7 @@ previous deploy → Rollback (all migrations are additive).
 - The "site team to receive it" list stopped at about 40 names (around "M"); it now lists everyone, in a
   scrolling box with search.
 
-## [Unreleased] — Deliveries tab; one reminder card per task; Follow up from notifications; mentions can open the task
+## [v1.23] — 2026-10-24 — Deliveries tab; one reminder card per task; Follow up from notifications; mentions can open the task
 ### Added
 - **Deliveries tab** (Tasks → Deliveries). For material whose task work is done (vendor decided etc.) and only
   delivery to site is pending: **🚚 Add to delivery** on the task copies only its title; tag the site team, set the
@@ -596,7 +611,7 @@ previous deploy → Rollback (all migrations are additive).
 - New endpoints: `GET /api/tasks/watching`; `/api/deliveries` (+ `/:id/update`, `/:id/status`, `/:id/proof`,
   `/:id/files/:fileId`). `GET /api/notifications` also returns `tasks` (status + your last follow-up per task).
 
-## [Unreleased] — Welcome guide (language → video → questions → login); stability fixes
+## [v1.22] — 2026-10-22 — Welcome guide (language → video → questions → login); stability fixes
 ### Added
 - **Welcome guide for first-time logins.** The first time a new account logs in, before anything else, the app
   shows "Welcome — choose your language" (English / हिंदी / मराठी), the explanatory video in that language, then 5
@@ -632,7 +647,7 @@ previous deploy → Rollback (all migrations are additive).
   Already added to the live database, with `needs_guide=1` for the 76 new employee accounts (audit log entry).
 - New endpoints: `POST /api/auth/guide-complete`, `POST /api/users/:username/guide-again` (Admin).
 
-## [Unreleased] — Keep open reaches everyone on the task; more colourful app
+## [v1.21] — 2026-10-22 — Keep open reaches everyone on the task; more colourful app
 ### Changed
 - **Keep open** on a closure request now notifies everyone on the task — every assignee at every level and
   everyone kept informed — not only the person who asked: "<name> asked to close <task>, but <creator> kept it
@@ -648,7 +663,7 @@ previous deploy → Rollback (all migrations are additive).
   badges; tinted summary boxes (red only when something needs attention); navy-to-blue active filter chip.
   CSS only, plus a `data-priority` attribute on task rows.
 
-## [Unreleased] — Task Closure: "Kept open" section
+## [v1.20] — 2026-10-22 — Task Closure: "Kept open" section
 ### Added
 - Task Closure page: a **Kept open** section, below "Requests waiting for your decision", listing every request
   you answered with **Keep open** — the task, who asked and why, when you kept it open and your note, whether the
@@ -657,7 +672,7 @@ previous deploy → Rollback (all migrations are additive).
   tasks" view shows every kept-open request. `GET /api/closure-requests` now also returns `keptOpen`.
   No database changes.
 
-## [Unreleased] — Notifications: counts match the badge; "moved to Seen" with Undo
+## [v1.19] — 2026-10-21 — Notifications: counts match the badge; "moved to Seen" with Undo
 ### Fixed
 - The New count on the Notifications page now matches the menu badge. The page used to load only the latest
   100 notifications, so with 338 unseen it showed "New 72" and older unseen ones never appeared. It now loads
@@ -668,7 +683,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Added
 - `POST /api/notifications/unread {ids}` — puts notifications back under New (used by Undo). No database changes.
 
-## [Unreleased] — Reminder times 9 AM / 3 PM / 6 PM; Follow up for everyone
+## [v1.18] — 2026-10-21 — Reminder times 9 AM / 3 PM / 6 PM; Follow up for everyone
 ### Changed
 - **All automatic reminders and warnings now go out only at 9:00 AM, 3:00 PM and 6:00 PM (IST)**: the daily
   "still open" nudge, 3-hourly nudges, due in X hours, due today, the 3-day countdown, overdue, the 48-hour
@@ -688,7 +703,7 @@ previous deploy → Rollback (all migrations are additive).
 - 21 Equinox, Bavdhan employees from the All Employees sheet added with their designations and temporary
   passwords (first name + 4 digits, must change on first login). New team: Quality Department. Audit log #1841.
 
-## [Unreleased] — Notifications: category tabs and clearer cards
+## [v1.17] — 2026-10-21 — Notifications: category tabs and clearer cards
 ### Added
 - Category tabs on the Notifications page, each with its count: **All**, **Reminders** (alerts to complete a task —
   still-open nudges, due in X hours, due today, 3-day countdown), **Warnings** (overdue tasks; people who have not
@@ -706,13 +721,13 @@ previous deploy → Rollback (all migrations are additive).
 - The page redraw could drop an untagged element (such as a day heading) when it lined up with a card that has an id
   (seen as the missing "Today" heading after switching tab). Front-end only; no database or environment changes.
 
-## [Unreleased] — Notifications: New and Seen tabs
+## [v1.16] — 2026-10-21 — Notifications: New and Seen tabs
 ### Changed
 - The Notifications page has two tabs: **New** (opens first; only notifications not yet seen) and **Seen**. The "All"
   tab is gone. Tapping the round Seen button slides the notification out of New; it then appears only under Seen,
   with the date and time it was seen. "Mark all as seen" empties New. Front-end only.
 
-## [Unreleased] — Task Closure page (closure requests)
+## [v1.15] — 2026-10-19 — Task Closure page (closure requests)
 ### Added
 - **Task Closure** page (Tasks → Task Closure, with a count of requests waiting for you). People tagged on a task can
   ask its creator to close it, with a reason — from inside the task (🔒 Ask to close) or from the page.
@@ -728,7 +743,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database / rollback
 - Adds table `task_closure_requests` automatically at start-up. Additive.
 
-## [Unreleased] — A task is never created twice by a double tap
+## [v1.14] — 2026-10-17 — A task is never created twice by a double tap
 ### Fixed
 - Tapping **Create Task** twice (or again while a slow server was still answering) could create the same task twice —
   10 such pairs were found in production, 8 of them under 3 seconds apart.
@@ -740,7 +755,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database / rollback
 - Adds column `tasks.client_request_id` (TEXT, nullable) and an index, automatically at start-up. Additive.
 
-## [Unreleased] — Round "Seen" button on notifications
+## [v1.13] — 2026-10-17 — Round "Seen" button on notifications
 ### Changed
 - Each notification has a round button on the right. Tap it to mark that notification as seen: it turns into a green
   ✓ and the notification shows "✓ Seen <date>, <time>". Just looking at the page no longer marks anything seen.
@@ -749,7 +764,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database / rollback
 - No database changes. Front-end only.
 
-## [Unreleased] — Notifications page, Approvals page, ✓ seen marks
+## [v1.12] — 2026-10-16 — Notifications page, Approvals page, ✓ seen marks
 ### Changed
 - **Notifications** is now its own page in the menu (Overview → Notifications, with the unread count) instead of
   the bell panel. Items are grouped by day; filters All / New / Seen; "Mark all as seen". On a phone the menu
@@ -766,7 +781,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database / rollback
 - Adds column `notifications.read_at` (TEXT, nullable) automatically at start-up. Additive; rollback = previous deploy.
 
-## [Unreleased] — Expanded tasks close when you're done with them
+## [v1.11] — 2026-10-13 — Expanded tasks close when you're done with them
 ### Changed
 - An expanded (opened) task card now closes when you go to another page (menu, back button or a
   notification), so coming back shows the list collapsed; the new page starts at the top.
@@ -776,7 +791,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database / rollback
 - Front-end only. Rollback = previous deploy.
 
-## [Unreleased] — Map search: robust (fallback services, projects, short links)
+## [v1.10] — 2026-10-13 — Map search: robust (fallback services, projects, short links)
 ### Changed
 - Street search is now a chain of services: Google Places (if `GOOGLE_MAPS_API_KEY`) → MapTiler (if `MAPTILER_KEY`)
   → Photon (free, search-as-you-type) → Nominatim (backup). A busy or failing service is rested and the next
@@ -789,7 +804,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database / rollback
 - No database changes. New optional env: `GOOGLE_MAPS_API_KEY`, `MAPTILER_KEY`. Rollback = previous deploy.
 
-## [Unreleased] — Search a place on the maps
+## [v1.9] — 2026-10-13 — Search a place on the maps
 ### Added
 - Search box above every location map (Live, History, Places, My Location): saved places first, then
   addresses via `GET /api/location/geocode`; typed coordinates (decimal or degrees-minutes-seconds) and
@@ -802,7 +817,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database / rollback
 - No database changes. Rollback = previous deploy.
 
-## [Unreleased] — Employee location & movement tracking (off by default)
+## [v1.8] — 2026-10-12 — Employee location & movement tracking (off by default)
 ### Added
 - Work-session location tracking behind `ENABLE_LOCATION_TRACKING` (default **off** — deploying changes
   nothing until it is set). Employees accept a versioned notice, then start/stop sessions themselves;
@@ -824,7 +839,7 @@ previous deploy → Rollback (all migrations are additive).
 ### Database: migration 007 — new tables only. Environment: `ENABLE_LOCATION_TRACKING` (off),
 `MAP_TILE_URL`, `MAP_TILE_ATTRIBUTION` (optional). Rollback: set the flag to false.
 
-## [2026-10-12] — Chat Room open to all departments + department tagging
+## [v1.7] — 2026-10-12 — Chat Room open to all departments + department tagging
 ### Restored
 - The Communicate menu group (Chat Room + Announcements), chat files, task multi-attachments, announcements
   calendar entries and the approvals history view from the Oct 10 build (a7de138). They were dropped when a
@@ -843,12 +858,12 @@ previous deploy → Rollback (all migrations are additive).
 ### Database: migration 006 (chat_private, chat_private_members — new tables, additive). The rest uses the
 existing chat tables; migration 005 only adds notifications.chat_room (already applied in production). Environment: none.
 
-## [Documents] / photos / video → tasks
+## [v1.6] — 2026-10-12 — Tasks from documents, photos and video
 ### Added
 - 📎 Tasks from a document or photo (PDF, Word, Excel, CSV, photos, short videos) in the app and via WhatsApp; files kept privately 90 days; per-type AI cost tracking.
 ### Database: none. Environment: `UPLOAD_RETENTION_DAYS` (optional).
 
-## [Phases 7A, 8, 5, voice, WhatsApp, email, meetings]
+## [v1.5] — 2026-10-12 — Job engine, voice, WhatsApp, email and meetings
 ### Added
 - Job engine on PostgreSQL (retries, backoff, dead-letter, crash recovery, Admin retry); all background work runs as jobs.
 - Migration 003 (foreign keys, safely validated) and 004 (ingestion items, AI suggestions, meeting sessions, AI cost in ₹).
@@ -863,7 +878,7 @@ existing chat tables; migration 005 only adds notifications.chat_room (already a
 - Microphone was blocked by the Permissions-Policy header; CORS open in production; restore order with foreign keys.
 ### Tests: 313/313. Database: migrations 003–004 (additive). Environment: see .env.example (all new features OFF by default).
 
-## [Phase 2] — reminder engine, Follow Up
+## [v1.4] — 2026-10-12 — Reminder engine and Follow Up
 ### Added
 - One database-backed reminder engine (every 5 min): kept all existing rules; new T-3/T-2/T-1 windows
   (10:00/14:00/18:00 IST), "due today", overdue 3/5/7/12 days; combining; anti-spam gap; idempotency keys;
@@ -878,7 +893,7 @@ existing chat tables; migration 005 only adds notifications.chat_room (already a
 - Date-only deadlines: "due in X hours" now counts to the end of the deadline day.
 ### Tests: 297/297 passing. Database: no migration. Environment: optional reminder variables (see .env.example).
 
-## [Phase 1] — task history
+## [v1.3] — 2026-10-12 — Task history
 ### Added
 - Stored, append-only task history (`task_activity_events`) written by every task action; history table
   with filters, search, ordering and paging; `GET /api/tasks/:id/events`.
@@ -888,7 +903,7 @@ existing chat tables; migration 005 only adds notifications.chat_room (already a
 - `GET /api/tasks/:id` now checks that the caller may see the task.
 ### Database: migration 002 (additive). Environment: none.
 
-## [Phase 0] — audit + foundation
+## [v1.2] — 2026-10-12 — Audit and foundation
 ### Added
 - Versioned migrations (`backend/migrations.js`, `schema_migrations`), migration 001 foundation tables:
   task_activity_events, notification_deliveries, automation_jobs, automation_job_runs,
@@ -907,10 +922,10 @@ existing chat tables; migration 005 only adds notifications.chat_room (already a
 - Unused root `db.js`, SQLite-only demo scripts, `better-sqlite3` dependency.
 ### Database: migration 001 (additive). Environment: none required (new optional variables in `.env.example`).
 
-## 2026-10-02 — Person filter, push notifications
+## [v1.1] — 2026-10-02 — Person filter, push notifications
 - All Tasks person filter + summary; web push prompt; Android background notifications (v1.3 APK);
   VAPID keys set on Render (Oct 1). Starter accounts no longer re-created on restart.
 
-## 2026-10-01 — Performance and reliability
+## [v1.0] — 2026-10-01 — Performance and reliability
 - Response cache + `/api/sync` live sync, batched queries, request/query timeouts, IndexedDB instant
   start, Open/Closed task tabs, sidebar collapse, Export & Archive, Equinox schedule import.

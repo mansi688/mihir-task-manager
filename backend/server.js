@@ -3976,6 +3976,8 @@ const payables = mountPayables(app, { db, auth, ALL_ROLES, auditFromReq, collect
 const { mountCompliance } = require('./compliance');
 const { mountPayroll } = require('./payroll');
 mountPayroll(app, { db, auth, ALL_ROLES, auditFromReq, str });
+const { mountUpdates } = require('./updates');
+mountUpdates(app, { auth, ALL_ROLES });
 const { mountDpr } = require('./dpr');
 mountDpr(app, { db, auth, ALL_ROLES, auditFromReq, str, PROJECT_OPTIONS });
 const compliance = mountCompliance(app, { db, auth, ALL_ROLES, auditFromReq, str, localDateStr, collectUploads, MAX_FILE_CHARS });
