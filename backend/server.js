@@ -3883,6 +3883,70 @@ jobs.register('INGEST_PROCESS', async ({ itemId, notifyLabel }) => {
   return { suggestions: n };
 }, { maxAttempts: 4 });
 
+/* ---------- Mihir CRM → task (customer complaints become tracked tasks) ----------
+   The customer-care CRM (mihir-crm-portal) sends complaints here so the work is allotted and tracked
+   in this app alongside everything else. Server-to-server only: every call carries the shared secret
+   in X-CRM-Secret (set CRM_INTEGRATION_SECRET here and in the CRM). Off when the secret is not set.
+   Tasks are created through the same code as the New Task form, by CRM_TASK_CREATOR (default admin),
+   and each complaint creates at most one task (the complaint id is the request key). */
+function crmLinkAuth(req, res, next) {
+  const secret = process.env.CRM_INTEGRATION_SECRET || '';
+  if (!secret) return res.status(503).json({ error: 'The CRM link is not set up on the task manager.' });
+  if (!safeEqual(str(req.headers['x-crm-secret']), secret)) return res.sendStatus(401);
+  next();
+}
+async function crmCreator() {
+  const username = process.env.CRM_TASK_CREATOR || 'admin';
+  const u = await db.getUser(username);
+  return u ? { username: u.username, role: u.role, name: u.name } : null;
+}
+const crmTaskUrl = (id) => `${(process.env.APP_BASE_URL || 'https://mihir-task-manager.onrender.com').replace(/\/$/, '')}/?task=${encodeURIComponent(id)}`;
+async function crmTaskSummary(id) {
+  const t = await db.getTask(id);
+  if (!t) return null;
+  const users = await db.listUsers();
+  const nameOf = (u) => (users.find(x => x.username === u) || {}).name || u;
+  const assignees = (await db.listAssignees(id)).map(a => ({ username: a.username, name: nameOf(a.username), done: !!a.completed_at, doneAt: a.completed_at || null }));
+  return { id: t.id, title: t.title, status: t.status, priority: t.priority, deadline: t.deadline, createdAt: t.created_at, closedAt: t.closed_at || null, closedBy: t.closed_by || null, assignees, url: crmTaskUrl(t.id) };
+}
+// Projects and people the CRM can choose from.
+app.get('/api/integrations/crm/options', crmLinkAuth, async (req, res) => {
+  const users = await db.listUsers();
+  res.json({
+    projects: PROJECT_OPTIONS,
+    people: users.map(u => ({ username: u.username, name: u.name, team: u.team || null, designation: u.designation || null, phone: u.phone || null })),
+  });
+});
+app.post('/api/integrations/crm/tasks', crmLinkAuth, async (req, res) => {
+  const b = req.body || {};
+  const complaintId = str(b.complaintId).trim();
+  if (!complaintId) return res.status(400).json({ error: 'complaintId is required.' });
+  const creator = await crmCreator();
+  if (!creator) return res.status(500).json({ error: `The task creator account "${process.env.CRM_TASK_CREATOR || 'admin'}" does not exist on the task manager.` });
+  const crid = `crm:${complaintId}`.slice(0, 120);
+  const existing = await db.findTaskByClientRequest(creator.username, crid);
+  if (existing) return res.json({ ok: true, duplicate: true, task: await crmTaskSummary(existing) });
+  const assignees = Array.from(new Set((Array.isArray(b.assignees) ? b.assignees : []).map(u => str(u).trim()).filter(Boolean)));
+  const requestedBy = str(b.requestedBy).trim().slice(0, 120);
+  const link = str(b.link).trim().slice(0, 500);
+  const description = [str(b.description).trim(), link ? `Open in CRM: ${link}` : '', requestedBy ? `Sent from Mihir CRM by ${requestedBy}.` : 'Sent from Mihir CRM.']
+    .filter(Boolean).join('\n\n').slice(0, 5000);
+  // Same validation and creation path as the New Task form.
+  const fakeReq = { body: { title: str(b.title).trim().slice(0, 200), description, priority: str(b.priority), deadline: str(b.deadline).trim(), project: str(b.project).trim(), assignedToList: assignees },
+    user: creator, headers: req.headers, ip: req.ip, id: req.id, socket: req.socket, connection: req.connection };
+  let out = { status: 200, body: null };
+  const fakeRes = { headersSent: false, status(c) { out.status = c; return this; }, json(body) { out.body = body; this.headersSent = true; return this; } };
+  try { await createTaskRoute(fakeReq, fakeRes, crid); }
+  catch (e) { log('ERROR', 'CRM task create failed', { error: e.message }); return res.status(500).json({ error: 'Could not create the task — please try again.' }); }
+  if (!out.body || !out.body.ok) return res.status(out.status || 400).json(out.body || { error: 'Could not create the task.' });
+  res.json({ ok: true, task: await crmTaskSummary(out.body.id) });
+});
+app.get('/api/integrations/crm/tasks/:id', crmLinkAuth, async (req, res) => {
+  const t = await crmTaskSummary(str(req.params.id));
+  if (!t) return res.status(404).json({ error: 'Task not found.' });
+  res.json({ task: t });
+});
+
 /* ---------- Meetings: record → transcript → action items → review ---------- */
 const MEETING_RETENTION_DAYS = Number(process.env.MEETING_RECORDING_RETENTION_DAYS) || 30;
 async function canSeeMeeting(user, m) { return user.role === 'admin' || m.created_by === user.username || (m.participants || []).includes(user.username); }

@@ -19,6 +19,20 @@ let token = safeStorage.getItem('ls_token') || null;
 // A corrupted saved session must not stop the app from starting either.
 let session = null;
 try { session = JSON.parse(safeStorage.getItem('ls_session') || 'null'); } catch (e) { session = null; token = null; }
+// Link from another Mihir app (e.g. the customer-care CRM): /?task=TASK-123 opens that task once
+// the data has loaded — also after signing in first. The id waits in storage across the login.
+let pendingOpenTask = '';
+try {
+  const linked = new URLSearchParams(location.search).get('task');
+  if (linked) { safeStorage.setItem('ls_open_task', linked); history.replaceState(null, '', location.pathname); }
+  pendingOpenTask = linked || safeStorage.getItem('ls_open_task') || '';
+} catch (e) { pendingOpenTask = ''; }
+function openPendingTask() {
+  if (!pendingOpenTask) return;
+  const id = pendingOpenTask; pendingOpenTask = '';
+  safeStorage.removeItem('ls_open_task');
+  openTaskOnMyTasks(id);
+}
 let myTasks = [];
 let watchTasks = []; // tasks I'm only "kept informed" on (My Tasks → Kept informed)
 let allTasks = [];       // Admin only
@@ -2011,7 +2025,7 @@ function bindSystemView() {
 
 
 /* ==================== DATA LOADING ==================== */
-async function afterLogin() { await refreshData(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); }
+async function afterLogin() { await refreshData(); openPendingTask(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); }
 
 // ---- Push notifications (PWA) ----
 // Registering the service worker is harmless and done unconditionally (needed for the app to be
@@ -7671,7 +7685,7 @@ render();
 if (session && token) {
   // Paint the last known data from this device instantly, then fetch fresh data.
   loadDataSnapshot().then(had => { if (had) render(); });
-  refreshData().then(() => { lastFullRefreshAt = Date.now(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); });
+  refreshData().then(() => { lastFullRefreshAt = Date.now(); openPendingTask(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); });
 }
 // Guard against interrupting active typing: a full-DOM rebuild every 30s (see refreshData)
 // causes a visible flash and can even make a cursor mid-sentence jump or feel like it "vanished"

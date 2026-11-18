@@ -157,3 +157,20 @@ from the server; the accounts it created remain unaffected.
   `taskmanager.db-shm` from the project root, then start it again.
 - Run `npm test` any time to confirm everything still works — every change to this project runs
   through the same test suite before being considered done.
+
+## Link with the Mihir CRM (customer complaints → tasks)
+
+Managers in the customer-care CRM (mihir-crm-portal.vercel.app) can press **"Add as task to Mihir
+Task Manager"** on a complaint. The CRM calls these server-to-server endpoints, authenticated with
+the shared secret in the `X-CRM-Secret` header:
+
+- `GET  /api/integrations/crm/options` — projects and people to choose from
+- `POST /api/integrations/crm/tasks` — creates the task through the normal New Task code (same
+  validation, notifications and audit), created by `CRM_TASK_CREATOR` (default `admin`); one task
+  per complaint (repeat calls return the same task)
+- `GET  /api/integrations/crm/tasks/:id` — live status and who has finished
+
+Set `CRM_INTEGRATION_SECRET` in Render → Environment (the CRM keeps the same value in its private
+`integration_settings` table). Without it the endpoints answer 503. `/?task=TASK-…` opens a task
+directly (after sign-in). Code: `backend/server.js` (search "Mihir CRM"); tests:
+`test/crm-integration.test.js`.
