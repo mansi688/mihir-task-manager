@@ -12,7 +12,7 @@ const DPR_REF = { work: 'Ref', inward: 'Challan / GRN no.', outward: 'Gate pass 
 function dprEsc(s) { return typeof esc === 'function' ? esc(s) : String(s == null ? '' : s); }
 function dprTabVisible() {
   if (!session) return false;
-  return session.role === 'admin' || /execution|site|store|purchase/i.test(String(session.team || ''));
+  return typeof pageAllowed === 'function' ? pageAllowed('dpr') : session.role === 'admin';
 }
 function dprToday() { return typeof istDayKey === 'function' ? istDayKey(new Date().toISOString()) : new Date().toISOString().slice(0, 10); }
 function dprAddDays(ymd, n) { const [y, m, d] = String(ymd).split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); }

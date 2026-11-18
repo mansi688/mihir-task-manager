@@ -27,16 +27,15 @@ test('the real CHANGELOG has a version and date on every entry', () => {
   assert.equal(v[v.length - 1].version, 'v1.0');
 });
 
-test('/api/updates: everyone reads it; technical notes for Admin only', async (t) => {
+test('/api/updates: Admin only, with technical notes', async (t) => {
   const { baseUrl, stop } = await startTestServer();
   t.after(stop);
   const admin = await login(baseUrl, 'admin', 'admin123');
   const m = await createMember(baseUrl, admin, 'upd.user', 'Upd User', 'Store Department');
   const a = await api(baseUrl, '/api/updates', { token: admin });
-  const u = await api(baseUrl, '/api/updates', { token: m });
-  assert.equal(a.status, 200); assert.equal(u.status, 200);
-  assert.equal(u.data.current, u.data.versions[0].version);
+  assert.equal(a.status, 200);
+  assert.equal(a.data.current, a.data.versions[0].version);
   assert.ok(a.data.versions.some(v => v.sections.some(s => s.tech)), 'admin sees Database notes');
-  assert.ok(!u.data.versions.some(v => v.sections.some(s => s.tech)), 'members do not');
+  assert.equal((await api(baseUrl, '/api/updates', { token: m })).status, 403);
   assert.equal((await api(baseUrl, '/api/updates', {})).status, 401);
 });

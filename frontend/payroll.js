@@ -1,8 +1,8 @@
 /* Attendance & payroll pages.
    - "My Attendance" (everyone): Check in / Check out with GPS and a selfie, the month at a glance, leave (balance,
      ask, withdraw) and payslips.
-   - "HR & Payroll" (Admin, HR, Accounts): Today, Register (correct a day), Leave requests, Salaries, Advances,
-     Payroll (prepare → send for approval → Admin approves → Accounts marks paid; register / bank sheet), Rules.
+   - "HR & Payroll" (Admin, HR): Today, Register (correct a day), Leave requests, Salaries, Advances,
+     Payroll (prepare → send for approval → Admin approves → HR marks paid; register / bank sheet), Rules.
    Data: /api/attendance/*, /api/leave*, /api/payroll/*, /api/payslips/* — loaded while a page is open; the small
    /api/attendance/summary comes with the core data (menu badges, "Waiting for your decision"). Loaded before app.js. */
 
@@ -576,7 +576,7 @@ function bindHrPayrollView() {
     const a = b.dataset.payAct;
     if (a === 'prepare') { b.disabled = true; b.textContent = 'Working…'; return pay('prepare', 'Payroll prepared — check the lines, then send it to Admin.'); }
     if (a === 'submit') return pay('submit', 'Sent to Admin for approval.');
-    if (a === 'approve') return pay('approve', 'Payroll approved — Accounts has been told.');
+    if (a === 'approve') return pay('approve', 'Payroll approved — HR has been told.');
     if (a === 'reopen') return pay('reopen', 'Reopened for changes.');
     if (a === 'paid') { const note = (document.getElementById('pay-note') || {}).value || ''; return pay('paid', 'Marked paid — everyone can now see their payslip.', { note }); }
     if (a === 'all-slips') { try { const r = await api(`/api/payroll/runs/${s.payMonth}/payslips`); printAllPayslips(r); } catch (e) { setBanner(e.message); render(); } return; }

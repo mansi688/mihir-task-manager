@@ -14,7 +14,7 @@ test('vendor bills: Purchase sends with credit days, Accounts responds and pays,
   const buyer = await createMember(baseUrl, admin, 'tanu.ap', 'Tanu Purchase', 'Purchase Department');
   const acc = await createMember(baseUrl, admin, 'niraj.ap', 'Niraj Accounts', 'Accounts Department');
   const acc2 = await createMember(baseUrl, admin, 'sneha.ap', 'Sneha Accounts', 'Accounts Department');
-  const site = await createMember(baseUrl, admin, 'site.ap', 'Site Person', 'Execution Department');
+  const site = await createMember(baseUrl, admin, 'site.ap', 'Site Person', 'Store Department');
   const nots = async (tok, type) => (await G(tok, '/api/notifications')).data.items.filter(n => n.type === type);
 
   // access

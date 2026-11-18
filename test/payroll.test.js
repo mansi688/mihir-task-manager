@@ -117,6 +117,7 @@ test('attendance, leave and a month of payroll', async (t) => {
 
   await t.test('salary, advance, prepare → approve → paid → payslip', async () => {
     assert.equal((await P(acc, '/api/payroll/salaries/pay.emp', { basic: 1 })).status, 403, 'Accounts does not set salaries');
+    assert.equal((await G(acc, '/api/payroll/runs')).status, 403, 'HR & Payroll is HR and Admin only');
     const sv = await P(hr, '/api/payroll/salaries/pay.emp', { basic: 20000, hra: 8000, conveyance: 2000, special: 5000, pt_slab: 'standard', bank_name: 'HDFC Bank', account_no: '50100012345678', ifsc: 'HDFC0001234', employee_code: 'M-101' });
     assert.equal(sv.status, 200, JSON.stringify(sv.data));
     assert.equal((await P(hr, '/api/payroll/salaries/pay.emp', { basic: 20000, ifsc: 'BAD' })).status, 400);
@@ -143,16 +144,16 @@ test('attendance, leave and a month of payroll', async (t) => {
     assert.equal(l2.otHours, 2); assert.equal(l2.otherEarn, 500); assert.equal(l2.net, r2(g + r2(2 * l.otRate) + 500 - 4000));
     // employee cannot see it before it is paid; bank sheet only after approval
     assert.equal((await G(emp, '/api/payslips/2026-10/pay.emp')).status, 404);
-    assert.equal((await G(acc, '/api/payroll/runs/2026-10/export?kind=bank')).status, 400);
+    assert.equal((await G(hr, '/api/payroll/runs/2026-10/export?kind=bank')).status, 400);
     assert.equal((await P(hr, '/api/payroll/runs/2026-10/approve')).status, 403);
     assert.equal((await P(hr, '/api/payroll/runs/2026-10/submit')).status, 200);
-    assert.equal((await P(acc, '/api/payroll/runs/2026-10/paid')).status, 400, 'not approved yet');
+    assert.equal((await P(hr, '/api/payroll/runs/2026-10/paid')).status, 400, 'not approved yet');
     assert.equal((await P(admin, '/api/payroll/runs/2026-10/approve')).status, 200);
     assert.equal((await P(hr, '/api/payroll/runs/2026-10/prepare')).status, 409, 'approved month is locked');
-    const bank = await G(acc, '/api/payroll/runs/2026-10/export?kind=bank');
+    const bank = await G(hr, '/api/payroll/runs/2026-10/export?kind=bank');
     assert.equal(bank.status, 200); assert.match(bank.data.name, /Bank-transfer-2026-10/);
-    assert.equal((await G(acc, '/api/payroll/runs/2026-10/export')).status, 200);
-    assert.equal((await P(acc, '/api/payroll/runs/2026-10/paid', { note: 'NEFT batch 44' })).status, 200);
+    assert.equal((await G(hr, '/api/payroll/runs/2026-10/export')).status, 200);
+    assert.equal((await P(hr, '/api/payroll/runs/2026-10/paid', { note: 'NEFT batch 44' })).status, 200);
     const slip = await G(emp, '/api/payslips/2026-10/pay.emp');
     assert.equal(slip.status, 200); assert.equal(slip.data.line.net, l2.net); assert.equal(slip.data.line.employerPf, undefined);
     assert.equal((await G(other, '/api/payslips/2026-10/pay.emp')).status, 403);
@@ -161,7 +162,7 @@ test('attendance, leave and a month of payroll', async (t) => {
     const me = (await G(emp, '/api/attendance/me?month=2026-10')).data;
     assert.equal(me.payslips[0].period, '2026-10');
     assert.ok((await G(emp, '/api/notifications')).data.items.some(n => n.type === 'payslip_ready'));
-    const all = await G(acc, '/api/payroll/runs/2026-10/payslips');
+    const all = await G(hr, '/api/payroll/runs/2026-10/payslips');
     assert.equal(all.status, 200); assert.equal(all.data.slips.length, 1); assert.equal(all.data.slips[0].line.net, l2.net);
     assert.equal((await G(emp, '/api/payroll/runs/2026-10/payslips')).status, 403);
   });

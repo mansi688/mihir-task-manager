@@ -9,8 +9,8 @@ test('deliveries: Purchase/Admin add them from a task; site team gets access, pr
   t.after(stop);
   const admin = await login(baseUrl, 'admin', 'admin123');
   const buyer = await createMember(baseUrl, admin, 'tanu.p', 'Tanu Purchase', 'Purchase Department');
-  const site = await createMember(baseUrl, admin, 'sachin.s', 'Sachin Site', 'Execution Department');
-  const eng = await createMember(baseUrl, admin, 'eng.d', 'Eng D', 'Execution Department');
+  const site = await createMember(baseUrl, admin, 'sachin.s', 'Sachin Site', 'Store Department');
+  const eng = await createMember(baseUrl, admin, 'eng.d', 'Eng D', 'Store Department');
   const outsider = await createMember(baseUrl, admin, 'out.d', 'Out Sider', 'Sales');
   const P = (tok, path, body) => api(baseUrl, path, { method: 'POST', token: tok, body });
   const G = (tok, path) => api(baseUrl, path, { token: tok });

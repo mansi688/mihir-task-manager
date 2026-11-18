@@ -29,6 +29,7 @@ const PAY_MODES = ['Cash', 'UPI', 'Bank transfer', 'Other'];
 const TEXT_FIELDS = { title: 200, quantity: 120, description: 2000, vendor: 160, project: 160, site_location: 200, transport: 60,
   porter_order_id: 80, delivery_ref: 80, driver_name: 120, driver_phone: 30, vehicle_no: 30 };
 
+const { pageAllowedFor } = require('../frontend/access');
 function mountDeliveries(app, deps) {
   const { db, auth, ALL_ROLES, auditFromReq, taskEvent, collectUploads, MAX_FILE_CHARS, displayName, str, releaseDependentsOf } = deps;
   const isPurchase = (team) => /purchase/i.test(String(team || ''));
@@ -45,16 +46,14 @@ function mountDeliveries(app, deps) {
     return !!(me && /account/i.test(me.team || ''));
   }
   const receiversOf = (d) => (Array.isArray(d.receivers) ? d.receivers : String(d.receivers || '').split(',')).filter(Boolean);
-  async function canSee(user, d) {
-    if (user.role === 'admin' || user.role === 'director' || d.created_by === user.username || receiversOf(d).includes(user.username)) return true;
-    if (await canManage(user)) return true;
-    if (await isAccounts(user)) return true;
-    if (d.task_id) {
-      const t = await db.getTask(d.task_id);
-      if (t && (t.created_by_username === user.username || (await db.listAssignees(t.id)).some(a => a.username === user.username))) return true;
-    }
-    return false;
+  // Deliveries page: Store, Purchase and Admin (frontend/access.js), plus anyone given "Can manage deliveries".
+  // They all see every delivery.
+  async function canSee(user) {
+    if (user.role === 'admin') return true;
+    const me = await db.getUserFresh(user.username);
+    return !!me && (pageAllowedFor('deliveries', user.role, me.team) || !!me.manage_deliveries);
   }
+  const canSeeAny = canSee;
   const canProve = async (user, d) => receiversOf(d).includes(user.username) || await canManage(user);
   // "2026-10-28" or "2026-10-28T15:30"
   const cleanWhen = (v) => { const s = str(v).trim(); return /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$/.test(s) ? s : null; };
@@ -87,7 +86,11 @@ function mountDeliveries(app, deps) {
   }
   async function readReceivers(list) {
     const names = Array.from(new Set((Array.isArray(list) ? list : []).map(u => str(u).trim()).filter(Boolean))).slice(0, 50);
-    for (const u of names) if (!(await db.getUser(u))) return { error: `Unknown user: ${u}` };
+    for (const u of names) {
+      const x = await db.getUser(u);
+      if (!x) return { error: `Unknown user: ${u}` };
+      if (!(x.role === 'admin' || pageAllowedFor('deliveries', x.role, x.team) || x.manage_deliveries)) return { error: `${x.name} can't be tagged — deliveries are for the Store and Purchase departments and Admin.` };
+    }
     return { names };
   }
   const label = (d) => `"${d.title}" (${d.ref})`;
@@ -105,9 +108,9 @@ function mountDeliveries(app, deps) {
 
   app.get('/api/deliveries', auth(ALL_ROLES), async (req, res) => {
     const manage = await canManage(req.user);
-    const accounts = !manage && await isAccounts(req.user);
-    const everything = manage || accounts || req.user.role === 'director';
-    res.json({ canManage: manage, seesAll: everything, docTypes: DOC_TYPES, defaultRequired: DEFAULT_REQUIRED, payPurposes: PAY_PURPOSES, payModes: PAY_MODES,
+    if (!(await canSeeAny(req.user))) return res.json({ canView: false, canManage: false, seesAll: false, items: [] });
+    const everything = true;
+    res.json({ canView: true, canManage: manage, seesAll: everything, docTypes: DOC_TYPES, defaultRequired: DEFAULT_REQUIRED, payPurposes: PAY_PURPOSES, payModes: PAY_MODES,
       items: await db.listDeliveriesFor(req.user.username, everything) });
   });
 

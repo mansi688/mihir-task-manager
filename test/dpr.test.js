@@ -9,7 +9,7 @@ test('daily progress report: import, typed entries, material totals, who can see
   const { baseUrl, stop } = await startTestServer();
   t.after(stop);
   const admin = await login(baseUrl, 'admin', 'admin123');
-  const site = await createMember(baseUrl, admin, 'dpr.site', 'Site Eng', 'Execution Department');
+  const site = await createMember(baseUrl, admin, 'dpr.site', 'Site Store', 'Store Department');
   const store = await createMember(baseUrl, admin, 'dpr.store', 'Store Keeper', 'Store Department');
   const purchase = await createMember(baseUrl, admin, 'dpr.buy', 'Buyer', 'Purchase Department');
   const hr = await createMember(baseUrl, admin, 'dpr.hr', 'HR Person', 'HR Department');
@@ -19,6 +19,8 @@ test('daily progress report: import, typed entries, material totals, who can see
 
   await t.test('who sees it', async () => {
     assert.equal((await G(hr, '/api/dpr')).status, 403);
+    const exec = await createMember(baseUrl, admin, 'dpr.exec', 'Site Engineer', 'Execution Department');
+    assert.equal((await G(exec, '/api/dpr')).status, 403, 'DPR is Store, Purchase and Admin');
     assert.equal((await G(hr, '/api/dpr/summary')).data.canView, false);
     for (const tok of [admin, site, store, purchase]) assert.equal((await G(tok, '/api/dpr')).status, 200);
     assert.equal((await G(purchase, '/api/dpr/summary')).data.canEdit, false);

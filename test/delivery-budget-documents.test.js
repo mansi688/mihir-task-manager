@@ -11,8 +11,8 @@ test('delivery documents (sent to site / from site, required vs optional) and bu
   t.after(stop);
   const admin = await login(baseUrl, 'admin', 'admin123');
   const buyer = await createMember(baseUrl, admin, 'tanu.b', 'Tanu Purchase', 'Purchase Department');
-  const site = await createMember(baseUrl, admin, 'sachin.b', 'Sachin Site', 'Execution Department');
-  const site2 = await createMember(baseUrl, admin, 'ravi.b', 'Ravi Site', 'Execution Department');
+  const site = await createMember(baseUrl, admin, 'sachin.b', 'Sachin Site', 'Store Department');
+  const site2 = await createMember(baseUrl, admin, 'ravi.b', 'Ravi Site', 'Store Department');
   const outsider = await createMember(baseUrl, admin, 'out.b', 'Out Sider', 'Sales');
   const accts = await createMember(baseUrl, admin, 'acc.b', 'Asha Accounts', 'Accounts Department');
   const P = (tok, path, body) => api(baseUrl, path, { method: 'POST', token: tok, body });
@@ -92,11 +92,10 @@ test('delivery documents (sent to site / from site, required vs optional) and bu
   const pay1 = d.payments.find(x => x.id === p1.data.id), pay2 = d.payments.find(x => x.id === p2.data.id);
   assert.equal(pay1.bills.length, 1); assert.equal(pay2.bills.length, 0); assert.equal(pay2.no_bill_reason, 'labourers paid cash, no receipt');
   assert.ok(!d.files.some(f => f.kind === 'bill'), 'bills are listed under their payment, not with the documents');
-  // Accounts: sees every delivery's payments and bills (read-only)
+  // Accounts: Deliveries is for Store, Purchase and Admin only
   const al = (await G(accts, '/api/deliveries')).data;
-  assert.equal(al.canManage, false); assert.equal(al.seesAll, true);
-  assert.ok(al.items.some(x => x.id === id && x.payments.length === 2));
-  assert.equal((await G(accts, `/api/deliveries/${id}/files/${pay1.bills[0].id}`)).status, 200);
+  assert.equal(al.canView, false); assert.equal(al.items.length, 0);
+  assert.equal((await G(accts, `/api/deliveries/${id}/files/${pay1.bills[0].id}`)).status, 403);
   assert.equal((await P(accts, `/api/deliveries/${id}/payments`, { amount: 5, purpose: 'Other', no_bill_reason: 'just testing' })).status, 403, 'accounts cannot record payments');
   assert.ok(!(await G(outsider, '/api/deliveries')).data.items.some(x => x.id === id));
     // bill opens for people on the delivery

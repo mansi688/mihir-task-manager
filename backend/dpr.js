@@ -11,6 +11,7 @@
    Who: Admin, the site team (Execution), the Store and Purchase departments see it; Admin, site and store add
    and import; Purchase reads. Data: GET /api/dpr (reports + entries + material totals for the filter). */
 const ExcelJS = require('exceljs');
+const { pageAllowedFor, inDept } = require('../frontend/access');
 const { decodeDataUrl, excelCellValue, stripXlsxComments, parseCSV } = require('./task-import');
 
 const KINDS = ['work', 'inward', 'outward'];
@@ -208,8 +209,9 @@ function mountDpr(app, deps) {
     const u = await db.getUserFresh(user.username);
     const team = String((u && u.team) || '');
     const admin = user.role === 'admin';
-    const site = /execution|site/i.test(team), store = /store/i.test(team), purchase = /purchase/i.test(team);
-    return { username: user.username, name: (u && u.name) || user.name, admin, team, canView: admin || site || store || purchase, canEdit: admin || site || store };
+    // See: Admin, Store, Purchase (frontend/access.js). Add / import: Admin and Store.
+    const store = /store/i.test(team);
+    return { username: user.username, name: (u && u.name) || user.name, admin, team, canView: pageAllowedFor('dpr', user.role, team), canEdit: admin || store };
   }
   const NOT_ALLOWED = 'The Daily Progress page is for Admin, the site team, Store and Purchase.';
   async function reportFor(project, date, m, sourceFile) {

@@ -7,7 +7,7 @@ test('delivery photos keep where they were taken', async (t) => {
   const { baseUrl, stop } = await startTestServer();
   t.after(stop);
   const admin = await login(baseUrl, 'admin', 'admin123');
-  const site = await createMember(baseUrl, admin, 'geo.site', 'Geo Site', 'Execution Department');
+  const site = await createMember(baseUrl, admin, 'geo.site', 'Geo Site', 'Store Department');
   const P = (tok, path, body) => api(baseUrl, path, { method: 'POST', token: tok, body });
   const c = await P(admin, '/api/deliveries', { title: 'Cement 50 bags', expected_at: futureDate(1), receivers: ['geo.site'] });
   assert.equal(c.status, 200, JSON.stringify(c.data));

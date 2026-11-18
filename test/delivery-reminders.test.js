@@ -8,7 +8,7 @@ test('delivery reminders at the slots (one card per delivery) and delivery follo
   t.after(stop);
   const admin = await login(baseUrl, 'admin', 'admin123');
   const buyer = await createMember(baseUrl, admin, 'tanu.r', 'Tanu Purchase', 'Purchase Department');
-  const site = await createMember(baseUrl, admin, 'sachin.r', 'Sachin Site', 'Execution Department');
+  const site = await createMember(baseUrl, admin, 'sachin.r', 'Sachin Site', 'Store Department');
   const P = (tok, path, body) => api(baseUrl, path, { method: 'POST', token: tok, body });
   const G = (tok, path) => api(baseUrl, path, { token: tok });
   const D = futureDate(1);

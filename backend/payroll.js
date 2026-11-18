@@ -87,13 +87,12 @@ function mountPayroll(app, deps) {
     const team = String((u && u.team) || '');
     const admin = user.role === 'admin';
     const hr = /(^|\b)hr\b|human resource/i.test(team);
-    const accounts = /account/i.test(team);
-    return { username: user.username, name: (u && u.name) || user.name, team, admin, hr, accounts,
-      canSeePayroll: admin || hr || accounts, canPrepare: admin || hr, canApprove: admin, canPay: admin || accounts,
-      canEditAttendance: admin || hr, canDecideLeave: admin || hr, canSeeAttendance: admin || hr || accounts };
+    // HR & Payroll is for the HR Department and Admin only: HR prepares and marks paid, Admin approves.
+    return { username: user.username, name: (u && u.name) || user.name, team, admin, hr, accounts: false,
+      canSeePayroll: admin || hr, canPrepare: admin || hr, canApprove: admin, canPay: admin || hr,
+      canEditAttendance: admin || hr, canDecideLeave: admin || hr, canSeeAttendance: admin || hr };
   }
   async function deciders() { return (await db.listUsers()).filter(u => u.role === 'admin' || /(^|\b)hr\b|human resource/i.test(u.team || '')).map(u => u.username); }
-  async function accountsPeople() { return (await db.listUsers()).filter(u => u.role === 'admin' || /account/i.test(u.team || '')).map(u => u.username); }
 
   // ---------- settings & holidays
   async function settings() {
@@ -710,7 +709,7 @@ function mountPayroll(app, deps) {
     const run = await one('SELECT * FROM payroll_runs WHERE period=$1', [validPeriod(req.params.period)]);
     if (!run || run.status !== 'draft') return res.status(400).json({ error: 'There is no prepared payroll to approve for this month.' });
     await q("UPDATE payroll_runs SET status='approved', approved_by=$2, approved_at=$3 WHERE id=$1", [run.id, m.username, now()]);
-    await notify(await accountsPeople(), m.username, 'payroll_approved', `${monthLabel(run.period)} payroll approved by ${m.name} — ready to pay (bank sheet on the HR & Payroll page).`);
+    await notify(await deciders(), m.username, 'payroll_approved', `${monthLabel(run.period)} payroll approved by ${m.name} — ready to pay (bank sheet on the HR & Payroll page).`);
     await auditFromReq(req, 'payroll_approved', `Approved the payroll for ${monthLabel(run.period)}.`);
     res.json({ ok: true });
   });
@@ -724,7 +723,7 @@ function mountPayroll(app, deps) {
   });
   app.post('/api/payroll/runs/:period/paid', auth(ALL_ROLES), async (req, res) => {
     const m = await me(req.user);
-    if (!m.canPay) return res.status(403).json({ error: 'Only Accounts and Admin mark payroll paid.' });
+    if (!m.canPay) return res.status(403).json({ error: 'Only HR and Admin mark payroll paid.' });
     const run = await one('SELECT * FROM payroll_runs WHERE period=$1', [validPeriod(req.params.period)]);
     if (!run || run.status !== 'approved') return res.status(400).json({ error: 'Admin must approve the payroll first.' });
     const lines = await rows('SELECT username, data FROM payroll_lines WHERE run_id=$1', [run.id]);
@@ -771,7 +770,7 @@ function mountPayroll(app, deps) {
     const wb = new ExcelJS.Workbook();
     const head = (ws, cols) => { const r = ws.addRow(cols); r.font = { bold: true }; r.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8EEF7' } }; }); };
     if (req.query.kind === 'bank') {
-      if (!m.canPay) return res.status(403).json({ error: 'Only Accounts and Admin download the bank sheet.' });
+      if (!m.canPay) return res.status(403).json({ error: 'Only HR and Admin download the bank sheet.' });
       if (v.run.status === 'draft') return res.status(400).json({ error: 'Admin must approve the payroll first.' });
       const ws = wb.addWorksheet('Bank transfer');
       head(ws, ['Sr', 'Employee', 'Code', 'Bank', 'Account no', 'IFSC', 'Amount', 'Narration']);

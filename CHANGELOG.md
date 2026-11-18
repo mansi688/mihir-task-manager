@@ -5,6 +5,53 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.59] — 2026-11-18 — User Activity: days since login and days inactive for everyone
+### Added
+- **User Activity → 👥 Everyone** (opens first): every person with **Logged in — N days ago** and **Inactive for —
+  N days** (days since their last work; with no work ever, since the account was made), longest inactive first.
+  Green under the chosen period, amber past it, red at twice the period or "Never".
+- Both columns are on every list on the page, in the Excel download and in the PDF; the PDF ends with the Everyone
+  list.
+
+## [v1.58] — 2026-11-18 — Who sees which page; activity report as PDF
+### Added
+- **User Activity → 📄 PDF of all lists**: one report to share — never logged in, **not logged in for 1 week**,
+  inactive, logged in but never created a task, not working on assigned tasks (with the tasks) — opens the print
+  window; choose **Save as PDF**. The department filter applies. The "not logged in" list is named "for 1 week" at
+  the 7-day period.
+### Changed
+- Department pages are now shown only to these departments (Admin always sees everything; "senior management" =
+  the Director role or the Senior management department). One list in `frontend/access.js`, used by the page and
+  enforced by the server:
+  - **Updates** — Admin only.
+  - **Accounts Dept** — Accounts, the people who send it bills (Purchase, delivery access), senior management
+    (read-only).
+  - **Estimation** — senior management, Estimation & Billing, Compliance (plus project heads, who approve
+    estimates). The site team and Purchase no longer see it.
+  - **Daily Progress** — Store (adds / imports) and Purchase (reads). The site team no longer sees it.
+  - **HR & Payroll** — HR and Admin. HR now also downloads the bank sheet and marks payroll paid (was Accounts);
+    the "payroll approved" message goes to HR.
+  - **Deliveries** — Store, Purchase (and people given "Can manage deliveries"). Only these people can be tagged
+    to receive a delivery.
+  - **Meetings** — senior management, Purchase, Compliance.
+  - **User Activity** — Admin and senior management.
+### Database: none.
+
+## [v1.57] — 2026-11-18 — User Activity: who isn't logging in or working
+### Added
+- **User Activity** page (Admin → User Activity; Director → Reporting) with five lists, for a period of 3, 7, 15 or
+  30 days:
+  - 🚫 **Never logged in** — account made, never logged in (with when the account was made).
+  - 💤 **Not logged in lately** — logged in before, but not in the period.
+  - 😴 **Inactive** — logs in, but did no work in the period: no task made, no update or file, nothing submitted or
+    completed, no other recorded action.
+  - ✏️ **Never created a task** — has logged in but never made a task (with their updates and completed counts).
+  - ⏳ **Not working on assigned tasks** — open tasks assigned to them with no update, file or submission from them
+    for the period; tap the count to see which tasks and for how many days.
+- Search, department filter, and **Download list** (opens in Excel) for the list on screen.
+- The app now remembers when each person last used it (every 5 minutes at most), shown as part of the activity.
+### Database: new column `users.last_active_at`. API: `GET /api/reports/user-activity?days=N` (Admin, Director).
+
 ## [v1.56] — 2026-11-17 — Updates page: every change, version by version
 ### Added
 - **Updates** page (menu → Overview → ✨ Updates) for everyone: every change made to the app since the first release,

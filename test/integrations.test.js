@@ -139,7 +139,7 @@ test('Phases 5–6 — AI ingestion, voice, WhatsApp, email, meetings', async (t
     assert.ok(m.decisions.some(d => /approved MCB/.test(d)));
     assert.equal((await api(baseUrl, `/api/meetings/${m.id}`, { token: outsider })).status, 403);
     const rohit = await login(baseUrl, 'rohit.k', 'MHR123456').catch(() => null);
-    if (rohit) assert.equal((await api(baseUrl, `/api/meetings/${m.id}`, { token: rohit })).status, 200, 'participants can see it');
+    if (rohit) assert.equal((await api(baseUrl, `/api/meetings/${m.id}`, { token: rohit })).status, 403, 'Meetings is for senior management, Purchase, Compliance and Admin only');
     assert.match((await api(baseUrl, `/api/meetings/${m.id}/recording`, { token: sonal })).data.url, /token=t/);
     await raw.query("UPDATE file_objects SET created_at = now() - interval '31 days' WHERE owner_type='meeting'");
     await jobs.enqueue('STORAGE_RETENTION', {}, { key: 'test-retention' }); await jobs.tick();

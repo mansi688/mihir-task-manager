@@ -12,6 +12,7 @@
    answers questions and can follow up (Accounts is reminded; at most once every 2 hours per bill).
    Bills can also be imported from Excel / CSV (outstanding bills already on record). */
 const ExcelJS = require('exceljs');
+const { pageAllowedFor, inDept } = require('../frontend/access');
 const { decodeDataUrl, excelCellValue, stripXlsxComments, parseCSV, parseDateValue } = require('./task-import');
 
 const PAY_MODES = ['NEFT / RTGS', 'UPI', 'Cheque', 'Cash', 'Other'];
@@ -46,8 +47,10 @@ function mountPayables(app, deps) {
     const admin = user.role === 'admin';
     const canAdd = admin || /purchase/i.test(team) || !!(u && u.manage_deliveries);
     const canPay = admin || /account/i.test(team);
+    // Senior management reads it too (no adding or paying).
+    const senior = inDept('senior', user.role, team);
     return { username: user.username, name: (u && u.name) || user.name, admin, canAdd, canPay,
-      canView: canAdd || canPay }; // Accounts Department, Purchase Department (and delivery access), Admin
+      canView: canAdd || canPay || senior }; // Accounts, Purchase (who send the bills, and delivery access), senior management, Admin
   }
   async function accountsTeam() {
     const users = await db.listUsers();

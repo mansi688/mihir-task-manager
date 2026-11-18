@@ -1900,3 +1900,28 @@ input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !importan
 .upd-removed{border-left-color:#dc2626;}
 .upd-tech{border-left-color:#6b7280;opacity:.85;}
 .upd-pill-cur,.upd-pill-new{flex:none;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;}
+
+/* ===== User Activity page ===== */
+.act-top{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;}
+.act-days{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:13px;color:var(--muted);}
+.act-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:8px;margin:12px 0;}
+.act-tile{all:unset;box-sizing:border-box;cursor:pointer;display:flex;flex-direction:column;gap:2px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);}
+.act-tile:hover{border-color:var(--amber);}
+.act-tile.active{border-color:var(--amber);box-shadow:0 0 0 2px var(--amber) inset;}
+.act-tile-n{font-size:24px;font-weight:800;line-height:1.1;}
+.act-tile-l{font-size:12.5px;color:var(--muted);}
+.act-filters{display:grid;grid-template-columns:minmax(200px,1fr) minmax(180px,240px) auto;gap:8px;align-items:center;}
+@media (max-width:700px){.act-filters{grid-template-columns:1fr;}}
+.act-filters input[type=search]{width:100%;}
+.act-filters select{width:100%;}
+.act-list-head{margin-bottom:8px;}
+.pill-count{display:inline-block;min-width:22px;text-align:center;font-size:12px;font-weight:700;padding:1px 7px;border-radius:999px;background:var(--amber);color:#fff;}
+.act-table td{white-space:normal;}
+.act-sub td{background:rgba(127,127,127,.05);}
+.act-idle{display:flex;flex-direction:column;gap:6px;}
+.act-idle-row{display:flex;flex-direction:column;gap:1px;padding-left:8px;border-left:3px solid #d97706;}
+.act-btns{display:flex;gap:6px;flex-wrap:wrap;}
+.act-d{display:inline-block;font-weight:800;font-size:13px;padding:2px 9px;border-radius:999px;white-space:nowrap;}
+.act-d-ok{background:rgba(22,163,74,.13);color:#15803d;}
+.act-d-warn{background:rgba(217,119,6,.15);color:#b45309;}
+.act-d-bad{background:rgba(220,38,38,.13);color:#b91c1c;}

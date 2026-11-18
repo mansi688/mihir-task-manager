@@ -14,8 +14,8 @@ test('allotted money: Director allots, site person pays with bills, Director ver
   // a Director
   assert.equal((await P(admin, '/api/users', { username: 'ved.d', name: 'Vedant Director', role: 'director', team: 'Management', password: 'Pass@1234' })).status, 200);
   const dir = await login(baseUrl, 'ved.d', 'Pass@1234');
-  const site = await createMember(baseUrl, admin, 'rahul.a', 'Rahul Site', 'Execution Department');
-  const other = await createMember(baseUrl, admin, 'neha.a', 'Neha Other', 'Execution Department');
+  const site = await createMember(baseUrl, admin, 'rahul.a', 'Rahul Site', 'Store Department');
+  const other = await createMember(baseUrl, admin, 'neha.a', 'Neha Other', 'Store Department');
   const accts = await createMember(baseUrl, admin, 'asha.a', 'Asha Accounts', 'Accounts');
   const buyer = await createMember(baseUrl, admin, 'tanu.a', 'Tanu Purchase', 'Purchase Department');
   const nots = async (tok, type) => (await G(tok, '/api/notifications')).data.items.filter(n => n.type === type);

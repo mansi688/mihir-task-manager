@@ -5,7 +5,7 @@
    A heading written as `## [Unreleased] — Title` (or with no version) is numbered automatically as the next
    version and dated the day this server copy started, so a new update shows up without editing anything else.
    Sections are the `### ` lines (Added / Changed / Fixed / Removed …); bullets under them are the items.
-   Technical sections (Database, Environment, API, Tests, Rollback) are shown to Admin only.
+   Admin only (the page and this API). Technical sections (Database, API, Tests…) included.
 
    GET /api/updates → { current, versions: [{ version, date, title, sections: [{ name, items }] }] } (newest first) */
 const fs = require('fs');
@@ -82,7 +82,7 @@ function mountUpdates(app, { auth, ALL_ROLES }) {
     } catch (e) { cache = cache || []; }
     return cache;
   };
-  app.get('/api/updates', auth(ALL_ROLES), (req, res) => {
+  app.get('/api/updates', auth(['admin']), (req, res) => {
     const admin = req.user.role === 'admin';
     const versions = load().map(v => ({
       version: v.version, date: v.date, title: v.title,

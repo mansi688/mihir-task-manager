@@ -23,7 +23,10 @@ test('Estimation workflow: estimate (HighRise + Excel) → both project heads ap
   // access
   assert.equal((await G(sales, '/api/estimation')).status, 403);
   assert.equal((await G(suraj, '/api/estimation')).status, 200, 'project heads can see Estimation');
-  assert.equal((await G(pur, '/api/estimation')).data.me.canEdit, false);
+  assert.equal((await G(pur, '/api/estimation')).status, 403, 'Purchase no longer sees Estimation');
+  const comp = await createMember(baseUrl, admin, 'comp.x', 'Compliance Person', 'Compliance Department');
+  const sen = await createMember(baseUrl, admin, 'sen.x', 'Senior Person', 'Senior management');
+  for (const tok of [comp, sen]) { const r = await G(tok, '/api/estimation'); assert.equal(r.status, 200); assert.equal(r.data.me.canEdit, false); }
 
   // 1. Estimate: HighRise and Excel are both required, separately
   const base = { project: 'Mihir Amara', title: 'Block work 150 mm — Tower B', contractor: 'Shree Builders', description: 'Floors 1–7' };

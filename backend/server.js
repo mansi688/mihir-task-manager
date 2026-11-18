@@ -268,6 +268,8 @@ app.use((req, res, next) => {
   if (process.env.NODE_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   next();
 });
+// Remember when each person last used the app (User Activity report).
+require('./activity').trackActivity(app, db);
 // "no-cache" = the browser may keep a copy but must check with the server (a cheap ETag check)
 // before using it. Without it, browsers guess how long to reuse app.js/styles.css, so after a
 // deploy one machine can keep running an old cached app.js against the new server and break
@@ -3905,7 +3907,14 @@ async function processMeeting(meetingId, audio) {
   }
 }
 jobs.register('MEETING_PROCESS', async ({ meetingId }) => processMeeting(meetingId), { maxAttempts: 3, baseDelayMs: 120000 });
-app.post('/api/meetings', auth(ALL_ROLES), aiCallLimiter, async (req, res) => {
+// Meetings page: senior management, Purchase, Compliance and Admin (frontend/access.js).
+const { pageAllowedFor } = require('../frontend/access');
+async function meetingsAllowed(req, res, next) {
+  const u = await db.getUserFresh(req.user.username);
+  if (!pageAllowedFor('meetings', req.user.role, u && u.team)) return res.status(403).json({ error: 'Meetings are for senior management, Purchase, Compliance and Admin.' });
+  next();
+}
+app.post('/api/meetings', auth(ALL_ROLES), meetingsAllowed, aiCallLimiter, async (req, res) => {
   if (!featureFlags().meetingAi) return res.status(403).json({ error: 'Meeting assistant is not enabled.' });
   const b = req.body || {};
   const title = str(b.title).trim().slice(0, 200) || `Meeting ${new Date().toLocaleDateString('en-GB')}`;
@@ -3930,13 +3939,13 @@ app.post('/api/meetings', auth(ALL_ROLES), aiCallLimiter, async (req, res) => {
   catch (e) { return res.status(aiErrorStatus(e)).json({ error: e.code ? e.message : 'Meeting processing failed. The meeting was saved — please try again later.', meetingId: m.id }); }
   res.json({ meeting: (await db.pool.query('SELECT * FROM meeting_sessions WHERE id=$1', [m.id])).rows[0], processing: 'done' });
 });
-app.get('/api/meetings', auth(ALL_ROLES), async (req, res) => {
+app.get('/api/meetings', auth(ALL_ROLES), meetingsAllowed, async (req, res) => {
   const r = await db.pool.query(`SELECT id, title, created_by, participants, started_at, ended_at, duration_sec, status, created_at,
       (file_id IS NOT NULL) AS has_recording FROM meeting_sessions
     WHERE $1::boolean OR created_by=$2 OR participants ? $2 ORDER BY created_at DESC LIMIT 100`, [req.user.role === 'admin', req.user.username]);
   res.json(r.rows);
 });
-app.get('/api/meetings/:id', auth(ALL_ROLES), async (req, res) => {
+app.get('/api/meetings/:id', auth(ALL_ROLES), meetingsAllowed, async (req, res) => {
   const m = (await db.pool.query('SELECT * FROM meeting_sessions WHERE id=$1', [parseInt(req.params.id, 10) || 0])).rows[0];
   if (!m) return res.status(404).json({ error: 'Meeting not found.' });
   if (!(await canSeeMeeting(req.user, m))) return res.status(403).json({ error: "You weren't part of this meeting." });
@@ -3944,14 +3953,14 @@ app.get('/api/meetings/:id', auth(ALL_ROLES), async (req, res) => {
   const file = m.file_id ? await storage.get(m.file_id) : null;
   res.json({ ...m, recordingAvailable: !!file, retentionDays: MEETING_RETENTION_DAYS, suggestions });
 });
-app.get('/api/meetings/:id/recording', auth(ALL_ROLES), async (req, res) => {
+app.get('/api/meetings/:id/recording', auth(ALL_ROLES), meetingsAllowed, async (req, res) => {
   const m = (await db.pool.query('SELECT * FROM meeting_sessions WHERE id=$1', [parseInt(req.params.id, 10) || 0])).rows[0];
   if (!m) return res.status(404).json({ error: 'Meeting not found.' });
   if (!(req.user.role === 'admin' || m.created_by === req.user.username)) return res.status(403).json({ error: 'Only the organiser or Admin can play the recording.' });
   if (!m.file_id || !(await storage.get(m.file_id))) return res.status(404).json({ error: 'The recording is no longer kept (deleted after the retention period, or never stored).' });
   res.json({ url: await storage.signedUrl(m.file_id, 300) });
 });
-app.post('/api/meetings/:id/retry', auth(ALL_ROLES), async (req, res) => {
+app.post('/api/meetings/:id/retry', auth(ALL_ROLES), meetingsAllowed, async (req, res) => {
   const m = (await db.pool.query('SELECT * FROM meeting_sessions WHERE id=$1', [parseInt(req.params.id, 10) || 0])).rows[0];
   if (!m) return res.status(404).json({ error: 'Meeting not found.' });
   if (!(req.user.role === 'admin' || m.created_by === req.user.username)) return res.status(403).json({ error: 'Not allowed.' });
@@ -3976,6 +3985,8 @@ const payables = mountPayables(app, { db, auth, ALL_ROLES, auditFromReq, collect
 const { mountCompliance } = require('./compliance');
 const { mountPayroll } = require('./payroll');
 mountPayroll(app, { db, auth, ALL_ROLES, auditFromReq, str });
+const { mountActivity } = require('./activity');
+mountActivity(app, { db, auth, ALL_ROLES });
 const { mountUpdates } = require('./updates');
 mountUpdates(app, { auth, ALL_ROLES });
 const { mountDpr } = require('./dpr');

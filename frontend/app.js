@@ -641,10 +641,12 @@ const BUDGET_PAGE_ON = false;
 // the menu jump. Until it arrives, use what this person had last time (saved on this device), or else their department.
 let menuLoaded = {};
 function menuMemory() { try { return JSON.parse(safeStorage.getItem('ls_menu:' + session.username) || '{}') || {}; } catch (e) { return {}; } }
+// Department pages by department — the same list the server uses (frontend/access.js).
+function pageAllowed(key) { return !!session && !!window.MihirAccess && MihirAccess.pageAllowedFor(key, session.role, session.team); }
 function menuGuess(key) {
   const team = String(session.team || ''), admin = session.role === 'admin';
-  if (key === 'estimation') return admin || /estimat|billing|purchase|execution|site/i.test(team) || ['dnyaneshwar.k', 'pooja.r'].includes(session.username);
-  if (key === 'accountsdept') return admin || /account|purchase/i.test(team);
+  if (key === 'estimation') return pageAllowed('estimation') || ['pooja.r'].includes(session.username);
+  if (key === 'accountsdept') return pageAllowed('accountsdept') || /purchase/i.test(team);
   if (key === 'budget') return admin || session.role === 'director' || /account|purchase/i.test(team);
   return false;
 }
@@ -658,7 +660,7 @@ function menuShows(key, liveFn) {
   const mem = menuMemory();
   return key in mem ? !!mem[key] : menuGuess(key);
 }
-const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries', budget: 'Budget', estimation: 'Estimation & Billing', accountsdept: 'Accounts Department', dpr: 'Daily Progress Report', attendance: 'My Attendance', payroll: 'HR & Payroll', updates: 'Updates' };
+const PAGE_TITLES = { today: 'Today', tasks: 'My Tasks', alltasks: 'All Tasks', accounts: 'Accounts', profile: 'My Profile', myteam: 'My Team', chat: 'Chat Room', announcements: 'Announcements', performance: 'Performance', auditlog: 'Audit Log', calendar: 'Calendar', peakhours: 'Peak Hours', mydashboard: 'My Dashboard', reports: 'Reports', hrdashboard: 'HR Dashboard', exports: 'Export & Archive', suggestions: 'Suggestions', meetings: 'Meetings', system: 'System Health', locations: 'Locations', mytracking: 'My Location', notifications: 'Notifications', approvals: 'Approvals', closure: 'Task Closure', deliveries: 'Deliveries', budget: 'Budget', estimation: 'Estimation & Billing', accountsdept: 'Accounts Department', dpr: 'Daily Progress Report', attendance: 'My Attendance', payroll: 'HR & Payroll', updates: 'Updates', activity: 'User Activity' };
 function currentTabKey() { return ui.adminTab || 'today'; }
 function myOpenTaskBadgeCount() {
   // Only counts tasks that actually still need YOUR action — a task where your part is already
@@ -688,6 +690,7 @@ const NAV_CONFIG = {
       { key: 'accounts', label: 'Accounts', icon: 'users' },
       { key: 'performance', label: 'Performance', icon: 'checkCircle' },
       { key: 'auditlog', label: 'Audit Log', icon: 'clipboard' },
+      { key: 'activity', label: 'User Activity', icon: 'users' },
       { key: 'peakhours', label: 'Peak Hours', icon: 'clock' },
       { key: 'reports', label: 'Reports', icon: 'clipboard' },
       { key: 'exports', label: 'Export & Archive', icon: 'upload' },
@@ -735,6 +738,7 @@ const NAV_CONFIG = {
     { group: 'Reporting', items: [
       { key: 'performance', label: 'Performance', icon: 'checkCircle' },
       { key: 'peakhours', label: 'Peak Hours', icon: 'clock' },
+      { key: 'activity', label: 'User Activity', icon: 'users' },
     ]},
     { group: 'You', items: [
       { key: 'mydashboard', label: 'My Dashboard', icon: 'checkCircle' },
@@ -760,7 +764,7 @@ function renderSidebar() {
   // Assistant pages appear when switched on (or when something is still waiting for review).
   const assistantItems = [];
   if (appFeatures.voiceTasks || appFeatures.aiTaskExtraction || appFeatures.meetingAi || pendingSuggestions.length) assistantItems.push({ key: 'suggestions', label: 'Suggestions', icon: 'checkCircle', badge: () => pendingSuggestions.length });
-  if (appFeatures.meetingAi) assistantItems.push({ key: 'meetings', label: 'Meetings', icon: 'clock' });
+  if (appFeatures.meetingAi && pageAllowed('meetings')) assistantItems.push({ key: 'meetings', label: 'Meetings', icon: 'clock' });
   if (assistantItems.length) { const ci = groups.findIndex(g => g.group === 'Communicate'); groups.splice(ci >= 0 ? ci + 1 : 2, 0, { group: 'Assistant', items: assistantItems }); }
   if (session.role === 'admin') { const g = groups.find(x => x.group === 'Admin'); if (g && !g.items.some(i => i.key === 'system')) g.items = g.items.concat({ key: 'system', label: 'System Health', icon: 'clipboard' }); }
   // Notifications and Approvals are their own pages for every role.
@@ -769,8 +773,10 @@ function renderSidebar() {
     if (g.group === 'Tasks' && !g.items.some(i => i.key === 'approvals')) {
       const items = g.items.slice(); const at = items.findIndex(i => i.key === 'tasks');
       items.splice(at >= 0 ? at + 1 : items.length, 0, { key: 'approvals', label: 'Approvals', icon: 'clipboard', badge: () => approvalsNeedingMeCount() },
-        { key: 'closure', label: 'Task Closure', icon: 'checkCircle', badge: () => myPendingDecisions().filter(x => x.kind === 'closure').length },
-        { key: 'deliveries', label: 'Deliveries', icon: 'truck', badge: () => (typeof deliveriesNeedingMeCount === 'function' ? deliveriesNeedingMeCount() : 0) });
+        { key: 'closure', label: 'Task Closure', icon: 'checkCircle', badge: () => myPendingDecisions().filter(x => x.kind === 'closure').length });
+      // Deliveries: Store, Purchase, Admin (and people given "Can manage deliveries").
+      if (pageAllowed('deliveries') || (typeof deliveriesData !== 'undefined' && (deliveriesData.canManage || deliveriesData.canView)))
+        items.push({ key: 'deliveries', label: 'Deliveries', icon: 'truck', badge: () => (typeof deliveriesNeedingMeCount === 'function' ? deliveriesNeedingMeCount() : 0) });
       if (BUDGET_PAGE_ON && typeof budgetTabVisible === 'function' && menuShows('budget', budgetTabVisible)) {
         const di = items.findIndex(i => i.key === 'deliveries');
         items.splice(di + 1, 0, { key: 'budget', label: 'Budget', icon: 'wallet', badge: () => budgetAttentionCount() });
@@ -788,9 +794,15 @@ function renderSidebar() {
   if (typeof renderAttendanceView === 'function') { const you = groups.find(g => g.group === 'You'); const item = { key: 'attendance', label: 'My Attendance', icon: 'clock', badge: () => 0 };
     if (you) you.items = [item, ...you.items.filter(i => i.key !== 'attendance')]; else groups.push({ group: 'You', items: [item] }); }
   // Everyone: Updates — what changed in the app, version by version (badge = versions since the last visit).
-  if (typeof renderUpdatesView === 'function') { const item = { key: 'updates', label: 'Updates', icon: 'sparkle', badge: () => updNewCount() };
+  if (typeof renderUpdatesView === 'function' && pageAllowed('updates')) { const item = { key: 'updates', label: 'Updates', icon: 'sparkle', badge: () => updNewCount() };
     const ov = groups.find(g => g.group === 'Overview') || groups[0];
     if (ov && !ov.items.some(i => i.key === 'updates')) ov.items = ov.items.concat(item); }
+  // User Activity: Admin and senior management (members of Senior management get it too).
+  if (pageAllowed('activity') && !groups.some(g => g.items.some(i => i.key === 'activity'))) {
+    const rg = groups.find(g => g.group === 'Reporting' || g.group === 'Admin');
+    const item = { key: 'activity', label: 'User Activity', icon: 'users' };
+    if (rg) rg.items = rg.items.concat(item); else groups.push({ group: 'Reporting', items: [item] });
+  }
   if (deptItems.length) { const ti = groups.findIndex(g => g.group === 'Tasks'); groups.splice(ti >= 0 ? ti + 1 : groups.length, 0, { group: 'Departments', items: deptItems }); }
   if (window.LocationUI) window.LocationUI.navGroups(groups); // frontend/location.js (only when switched on)
   const active = currentTabKey();
@@ -6992,13 +7004,14 @@ function renderInner() {
   else if (ui.adminTab === 'notifications') body = renderNotificationsView();
   else if (ui.adminTab === 'approvals') body = renderApprovalsView();
   else if (ui.adminTab === 'closure') body = renderClosureView();
-  else if (ui.adminTab === 'deliveries' && typeof renderDeliveriesView === 'function') body = renderDeliveriesView();
+  else if (ui.adminTab === 'deliveries' && typeof renderDeliveriesView === 'function' && (pageAllowed('deliveries') || deliveriesData.canManage || deliveriesData.canView)) body = renderDeliveriesView();
   else if (ui.adminTab === 'budget' && BUDGET_PAGE_ON && typeof renderBudgetView === 'function') body = renderBudgetView();
   else if (ui.adminTab === 'estimation' && typeof renderEstimationView === 'function') body = renderEstimationView();
   else if (ui.adminTab === 'accountsdept' && typeof renderAccountsDeptView === 'function') body = renderAccountsDeptView();
   else if (ui.adminTab === 'dpr' && typeof renderDprView === 'function' && dprTabVisible()) body = renderDprView();
   else if (ui.adminTab === 'attendance' && typeof renderAttendanceView === 'function') body = renderAttendanceView();
-  else if (ui.adminTab === 'updates' && typeof renderUpdatesView === 'function') body = renderUpdatesView();
+  else if (ui.adminTab === 'updates' && typeof renderUpdatesView === 'function' && pageAllowed('updates')) body = renderUpdatesView();
+  else if (ui.adminTab === 'activity' && typeof renderActivityView === 'function' && actTabVisible()) body = renderActivityView();
   else if (ui.adminTab === 'payroll' && typeof renderHrPayrollView === 'function' && hrTabVisible()) body = renderHrPayrollView();
   else if (ui.adminTab === 'alltasks' && session.role === 'admin') body = renderAllTasksCard();
   else if (ui.adminTab === 'accounts' && session.role === 'admin') body = renderAccountsView();
@@ -7047,6 +7060,7 @@ function renderInner() {
   if (ui.adminTab === 'dpr' && typeof bindDprView === 'function') bindDprView();
   if (ui.adminTab === 'attendance' && typeof bindAttendanceView === 'function') bindAttendanceView();
   if (ui.adminTab === 'updates' && typeof bindUpdatesView === 'function') bindUpdatesView();
+  if (ui.adminTab === 'activity' && typeof bindActivityView === 'function') bindActivityView();
   if (ui.adminTab === 'payroll' && typeof bindHrPayrollView === 'function') bindHrPayrollView();
   bindClosureForms();
   if (ui.adminTab === 'tasks') bindApprovalsHint();

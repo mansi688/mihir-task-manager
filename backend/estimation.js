@@ -26,6 +26,7 @@
 const STATUS = ['draft', 'submitted', 'approved', 'returned'];
 
 const ExcelJS = require('exceljs');
+const { pageAllowedFor, inDept } = require('../frontend/access');
 const { decodeDataUrl, excelCellValue, stripXlsxComments, parseCSV } = require('./task-import');
 // First sheets of an Excel / CSV file as rows of text, for showing on screen.
 async function sheetPreview(dataUrl, name, maxRows = 300, maxCols = 30) {
@@ -75,8 +76,9 @@ function mountEstimation(app, deps) {
       canEdit: admin || isEst,
       approveAll: admin, headOf,
       isAccounts: /account/i.test(team),
-      // View also for the site team (Execution) and named people (EST_VIEW_USERS, default Pooja Raut).
-      canView: admin || isEst || headOf.length > 0 || /purchase|execution|site/i.test(team) || EST_VIEW_USERS.includes(String(user.username).toLowerCase()),
+      // View: Admin, senior management, Estimation & Billing, Compliance (frontend/access.js) — plus the project heads
+      // (they approve estimates) and named people (EST_VIEW_USERS, default Pooja Raut).
+      canView: pageAllowedFor('estimation', user.role, team) || headOf.length > 0 || EST_VIEW_USERS.includes(String(user.username).toLowerCase()),
     };
   }
   // The heads who must approve for a project (existing accounts); a project without heads is approved by Admin.
