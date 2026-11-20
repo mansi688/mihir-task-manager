@@ -510,6 +510,8 @@ async function init() {
   await run('CREATE INDEX IF NOT EXISTS idx_attendance_day ON attendance_days(day)');
   await ensureColumn('attendance_days', 'breaks', 'JSONB');
   await ensureColumn('attendance_days', 'away_minutes', 'INTEGER');
+  await ensureColumn('attendance_days', 'in_source', 'TEXT');
+  await ensureColumn('attendance_days', 'out_source', 'TEXT');
   await ensureColumn('users', 'att_anywhere', 'BOOLEAN DEFAULT FALSE');
   await ensureColumn('users', 'last_active_at', 'TEXT');
   await run(`CREATE TABLE IF NOT EXISTS leave_requests(
@@ -1212,22 +1214,32 @@ module.exports = {
     if (tasks.length === 0) return [];
     const ids = tasks.map(t => t.id);
     const group = (rows) => { const m = new Map(); for (const r of rows) { if (!m.has(r.task_id)) m.set(r.task_id, []); m.get(r.task_id).push(r); } return m; };
-    const assignees = group(await all('SELECT * FROM task_assignees WHERE task_id = ANY(?::text[])', [ids]));
-    const followups = group(await all('SELECT * FROM task_followups WHERE task_id = ANY(?::text[])', [ids]));
-    const checklist = group(await all('SELECT * FROM task_checklist_items WHERE task_id = ANY(?::text[]) ORDER BY sort_order, id', [ids]));
-    const replies = group(await all(`SELECT id, task_id, by_username, by_name, message, attachment_name, created_at, (attachment IS NOT NULL) AS has_attachment
-      FROM task_replies WHERE task_id = ANY(?::text[]) ORDER BY created_at`, [ids]));
-    const fileMeta = await module.exports.listTaskFileMeta(ids);
-    const subs = await all('SELECT id, title, status, priority, deadline, parent_task_id FROM tasks WHERE parent_task_id = ANY(?::text[]) ORDER BY created_at ASC', [ids]);
+    // All the details in parallel (one database round trip instead of seven in a row).
+    const depIdsAll = Array.from(new Set(tasks.map(t => t.depends_on_task_id).filter(Boolean)));
+    const [assigneeRows, followupRows, checklistRows, replyRows, fileMeta, subs, depRows, keptOpen] = await Promise.all([
+      all('SELECT * FROM task_assignees WHERE task_id = ANY(?::text[])', [ids]),
+      all('SELECT * FROM task_followups WHERE task_id = ANY(?::text[])', [ids]),
+      all('SELECT * FROM task_checklist_items WHERE task_id = ANY(?::text[]) ORDER BY sort_order, id', [ids]),
+      all(`SELECT id, task_id, by_username, by_name, message, attachment_name, created_at, (attachment IS NOT NULL) AS has_attachment
+        FROM task_replies WHERE task_id = ANY(?::text[]) ORDER BY created_at`, [ids]),
+      module.exports.listTaskFileMeta(ids),
+      all('SELECT id, title, status, priority, deadline, parent_task_id FROM tasks WHERE parent_task_id = ANY(?::text[]) ORDER BY created_at ASC', [ids]),
+      depIdsAll.length ? all('SELECT id, status FROM tasks WHERE id = ANY(?::text[])', [depIdsAll]) : [],
+      module.exports.closureKeptOpenMap(ids),
+    ]);
+    const assignees = group(assigneeRows), followups = group(followupRows), checklist = group(checklistRows), replies = group(replyRows);
+    const filesByReply = new Map(), filesByTask = new Map();
+    for (const f of fileMeta) {
+      if (f.reply_id) { if (!filesByReply.has(f.reply_id)) filesByReply.set(f.reply_id, []); filesByReply.get(f.reply_id).push({ id: f.id, name: f.name }); }
+      else { if (!filesByTask.has(f.task_id)) filesByTask.set(f.task_id, []); filesByTask.get(f.task_id).push({ id: f.id, name: f.name }); }
+    }
     const subsByParent = new Map();
     for (const sub of subs) {
       const { parent_task_id, ...rest } = sub;
       if (!subsByParent.has(parent_task_id)) subsByParent.set(parent_task_id, []);
       subsByParent.get(parent_task_id).push(rest);
     }
-    const depIds = Array.from(new Set(tasks.map(t => t.depends_on_task_id).filter(Boolean)));
-    const depStatus = new Map((depIds.length ? await all('SELECT id, status FROM tasks WHERE id = ANY(?::text[])', [depIds]) : []).map(d => [d.id, d.status]));
-    const keptOpen = await module.exports.closureKeptOpenMap(ids);
+    const depStatus = new Map(depRows.map(d => [d.id, d.status]));
     return tasks.map(t => {
       const subtasks = subsByParent.get(t.id) || [];
       return {
@@ -1236,8 +1248,8 @@ module.exports = {
         assignees: assignees.get(t.id) || [],
         followups: followups.get(t.id) || [],
         checklist: checklist.get(t.id) || [],
-        replies: (replies.get(t.id) || []).map(r => ({ ...r, attachments: fileMeta.filter(f => f.reply_id === r.id).map(f => ({ id: f.id, name: f.name })) })),
-        files: fileMeta.filter(f => f.task_id === t.id && !f.reply_id).map(f => ({ id: f.id, name: f.name })),
+        replies: (replies.get(t.id) || []).map(r => ({ ...r, attachments: filesByReply.get(r.id) || [] })),
+        files: filesByTask.get(t.id) || [],
         subtasks,
         subtaskCount: subtasks.length,
         openSubtaskCount: subtasks.filter(x => x.status === 'open').length,

@@ -66,7 +66,7 @@ function mountEstimation(app, deps) {
   const HEADS = PROJECT_HEADS || {};
   const EST_VIEW_USERS = String(process.env.EST_VIEW_USERS || 'pooja.r').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
   async function me(user) {
-    const u = await db.getUserFresh(user.username);
+    const u = await db.getUser(user.username);
     const team = String((u && u.team) || '');
     const isEst = /estimat|billing/i.test(team);
     const admin = user.role === 'admin';

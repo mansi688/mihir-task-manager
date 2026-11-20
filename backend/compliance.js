@@ -27,7 +27,7 @@ function mountCompliance(app, deps) {
   const validPeriod = (v) => /^\d{4}-\d{2}$/.test(String(v || '')) ? String(v) : null;
 
   async function me(user) {
-    const u = await db.getUserFresh(user.username);
+    const u = await db.getUser(user.username);
     const admin = user.role === 'admin';
     const canEdit = admin || /account/i.test(String((u && u.team) || ''));
     return { username: user.username, name: (u && u.name) || user.name, admin, canEdit, canView: canEdit };

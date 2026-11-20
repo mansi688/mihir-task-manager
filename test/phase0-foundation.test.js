@@ -51,11 +51,11 @@ test('Phase 0 foundation: migrations, health, limits, timezone, audit log', asyn
 
   await t.test('audit log: one entry per login, real client IP, paging, filters, admin only', async () => {
     const before = (await api(baseUrl, '/api/audit-log?format=page&action=login&actor=admin', { token: admin })).data.entries.length;
-    const hdrs = { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.7', 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) Chrome/141' };
+    const hdrs = { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.9', 'X-Forwarded-For': '10.9.9.9, 203.0.113.7', 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) Chrome/141' };
     for (let i = 0; i < 4; i++) await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: hdrs, body: JSON.stringify({ username: 'admin', password: 'admin123' }) });
     const logins = (await api(baseUrl, '/api/audit-log?format=page&action=login&actor=admin', { token: admin })).data.entries;
     assert.equal(logins.length, before + 1, 'four logins within seconds from one device = one audit entry');
-    assert.equal(logins[0].ip_address, '203.0.113.7', 'the real client IP, not the proxy');
+    assert.equal(logins[0].ip_address, '203.0.113.7', 'the address the proxy added (last), not one the client made up or a CF header without Cloudflare');
     for (let i = 0; i < 5; i++) await createMember(baseUrl, admin, `audit.u${i}`, `Audit U${i}`, 'Site');
     const p1 = (await api(baseUrl, '/api/audit-log?format=page&limit=3', { token: admin })).data;
     assert.equal(p1.entries.length, 3); assert.equal(p1.hasMore, true);

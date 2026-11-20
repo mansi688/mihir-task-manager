@@ -44,6 +44,12 @@
     stale: { label: 'No recent fix', color: '#d68c14' }, lost: { label: 'Signal lost', color: '#d64545' }, waiting: { label: 'Waiting for GPS', color: '#888' },
   };
   const RULE_LABEL = { arrive: 'Arrives at a place', depart: 'Leaves a place', restricted_entry: 'Enters a restricted place / zone', signal_lost: 'Signal lost (no location for N min)', speeding: 'Speeding (km/h)', overtime: 'Session longer than N hours' };
+  // Why a phone stopped sending positions (red = nothing for 20+ minutes, orange = 10+).
+  function lostReason(p) {
+    if (p.platform === 'web') return 'Sharing from the website — it stops when the page is closed or the screen locks. Use the MIHIR phone app.';
+    if (p.battery != null && p.battery <= 0.1) return 'Battery was almost empty — the phone may have switched off.';
+    return 'The phone stopped sending: app closed by battery saver, location turned off, phone off, or no internet.';
+  }
   async function load(fn) { try { return await fn(); } catch (e) { setBanner(e.message); render(); return null; } }
 
   // ---------- server status for this person ----------
@@ -390,7 +396,8 @@
             <i class="loc-dot" style="background:${STATUS[p.status].color}"></i>
             <span style="flex:1;min-width:0;text-align:left;"><b>${esc(p.name)}</b> <span class="muted small">${esc(p.team || '')}</span>
               <span class="small" style="display:block;">${p.place ? `${p.status === 'at_place' ? '' : `${STATUS[p.status].label} · last at `}${esc(p.place.name)}` : STATUS[p.status].label}${p.indoor ? ` · ${esc(p.indoor.floor)}${p.indoor.zone ? ` / ${esc(p.indoor.zone)}` : ''}` : ''}${p.speedKmh && p.status === 'moving' ? ` · ${Math.round(p.speedKmh)} km/h` : ''}</span>
-              <span class="small muted" style="display:block;">${esc(ago(p.lastPointAt))}${p.accuracyM ? ` · ±${Math.round(p.accuracyM)} m` : ''}${p.battery != null ? ` · 🔋${Math.round(p.battery * 100)}%` : ''} · ${p.distanceKm} km</span></span>
+              <span class="small muted" style="display:block;">${esc(ago(p.lastPointAt))}${p.accuracyM ? ` · ±${Math.round(p.accuracyM)} m` : ''}${p.battery != null ? ` · 🔋${Math.round(p.battery * 100)}%` : ''} · ${p.distanceKm} km</span>
+              ${p.status === 'lost' || p.status === 'stale' ? `<span class="small dlv-warn-text" style="display:block;">${esc(lostReason(p))}</span>` : ''}</span>
           </button>`).join('')}
         </div>
       </div>
@@ -1186,5 +1193,13 @@
   try { S.tab = safeStorage.getItem('loc_tab') || 'live'; } catch (e) { /* ignore */ }
   setTimeout(() => { refreshMe(true).then(resumeNativeIfNeeded); }, 1500);
 
-  window.LocationUI = { navGroups, statusPill, renderMine, renderManager, afterRender, taskBlock, isOn, canManage, _state: S, _web: Web };
+  // For My Attendance (automatic check-in needs a running work session).
+  function attendanceStatus() {
+    if (typeof appFeatures === 'undefined' || !appFeatures.locationTracking) return { available: false };
+    if (!S.me) { refreshMe(); return { available: true, loading: true }; }
+    if (!S.me.enabled) return { available: false };
+    return { available: true, consent: !!(S.me.consent && S.me.consent.accepted), eligible: !S.me.eligible || S.me.eligible.ok !== false,
+      active: !!S.me.activeSession, lastFix: S.me.activeSession && S.me.activeSession.last_point_at, busy: S.myBusy };
+  }
+  window.LocationUI = { navGroups, statusPill, renderMine, renderManager, afterRender, taskBlock, isOn, canManage, startWork, attendanceStatus, refreshMe, _state: S, _web: Web };
 })();

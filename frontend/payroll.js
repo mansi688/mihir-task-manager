@@ -1,5 +1,5 @@
 /* Attendance & payroll pages.
-   - "My Attendance" (everyone): Check in / Check out with GPS and a selfie, the month at a glance, leave (balance,
+   - "My Attendance" (everyone): Checked in / out automatically from location tracking (or by GPS on the phone), the month at a glance, leave (balance,
      ask, withdraw) and payslips.
    - "HR & Payroll" (Admin, HR): Today, Register (correct a day), Leave requests, Salaries, Advances,
      Payroll (prepare → send for approval → Admin approves → HR marks paid; register / bank sheet), Rules.
@@ -106,8 +106,8 @@ function renderAttendanceView() {
         <div class="small muted">Shift ${attEsc(R.shiftStart)}–${attEsc(R.shiftEnd)} · late after ${attEsc(R.shiftStart)} + ${R.graceMin} min · full day ${R.fullDayHours} h${R.breakAllowanceMin ? ` · break up to ${R.breakAllowanceMin} min` : ''}</div>
         ${d.locationRule && d.locationRule.required ? `<div class="small" style="margin-top:2px;">📍 Check in, check out and come back from a break <b>inside a site</b>${d.locationRule.places.length ? ` (${attEsc(d.locationRule.places.slice(0, 4).join(', '))}${d.locationRule.places.length > 4 ? '…' : ''})` : ''}.</div>` : d.locationRule && d.locationRule.anywhere ? '<div class="small muted">You can check in from anywhere.</div>' : ''}</div>
       <div class="att-punch-state">
-        ${t && t.in ? `<span class="att-chip st-P">In <b>${attEsc(t.in)}</b>${t.inPlace ? ` · ${attEsc(t.inPlace)}` : t.inAway ? ' · ⚠ not at a site' : ''}</span>` : ''}
-        ${t && t.out ? `<span class="att-chip">Out <b>${attEsc(t.out)}</b>${t.outPlace ? ` · ${attEsc(t.outPlace)}` : t.outAway ? ' · ⚠ not at a site' : ''}</span>` : ''}
+        ${t && t.in ? `<span class="att-chip st-P">In <b>${attEsc(t.in)}</b>${t.inPlace ? ` · ${attEsc(t.inPlace)}` : t.inAway ? ' · ⚠ not at a site' : ''}${t.inAuto ? ' · 🛰 auto' : ''}</span>` : ''}
+        ${t && t.out ? `<span class="att-chip">Out <b>${attEsc(t.out)}</b>${t.outPlace ? ` · ${attEsc(t.outPlace)}` : t.outAway ? ' · ⚠ not at a site' : ''}${t.outAuto ? ' · 🛰 auto' : ''}</span>` : ''}
       </div>
     </div>
     ${t && t.in && !t.out ? `<div class="att-break ${t.onBreak ? 'on' : ''}">
@@ -117,9 +117,10 @@ function renderAttendanceView() {
       : `<div class="small">Break today: <b>${t.breakUsedMin}</b> of ${R.breakAllowanceMin} min${t.breakUsedMin > R.breakAllowanceMin ? ' — over the allowance; the extra time is not counted as work' : ''}</div>
         <button type="button" class="btn btn-sm" data-att-act="break-start" ${p && p.busy ? 'disabled' : ''}>☕ Start break</button>`}
     </div>` : ''}
+    ${R.autoAttendance ? attAutoHTML(t, R) : ''}
     ${!(t && t.out) && !(t && t.onBreak) ? `<div class="att-punch">
-      <button type="button" class="btn btn-primary att-punch-btn ${p && p.busy ? 'disabled' : ''}" data-att-act="punch" ${p && p.busy ? 'disabled' : ''}>${p && p.busy ? '⏳ ' + attEsc(p.msg || 'Working…') : t && t.in ? '📷 Check out' : '📷 Check in'}</button>
-      <div class="small muted">Opens the camera for a live selfie and takes your location — allow the camera and location when the phone asks. Photos from the gallery can't be used.</div>
+      <button type="button" class="btn ${R.autoAttendance ? '' : 'btn-primary'} att-punch-btn ${p && p.busy ? 'disabled' : ''}" data-att-act="punch" ${p && p.busy ? 'disabled' : ''}>${p && p.busy ? '⏳ ' + attEsc(p.msg || 'Working…') : t && t.in ? '📍 Check out now' : '📍 Check in now'}</button>
+      <div class="small muted">${R.autoAttendance ? 'Only if the automatic check-in / out could not run (location tracking off). ' : ''}Uses your GPS right now — it must be accurate to ${R.gpsMaxAccM || 100} m and inside a site.</div>
     </div>` : t && t.out ? '<div class="small" style="margin-top:8px;">✅ Done for today.</div>' : ''}
     ${p && p.err ? `<div class="err">${attEsc(p.err)}</div>` : ''}
     ${p && p.done ? `<div class="notice">${attEsc(p.done)}</div>` : ''}
@@ -163,45 +164,19 @@ function renderAttendanceView() {
     <div class="card-title">Payslips</div>
     ${(d.payslips || []).length ? `<div class="att-list">${d.payslips.map(p => `<div class="att-list-row"><div><b>${attEsc(p.label)}</b> <span class="small muted">net ${inr(p.net)}</span></div><button class="btn btn-sm" data-slip="${attEsc(p.period)}:${attEsc(d.me.username)}">View payslip</button></div>`).join('')}</div>` : '<div class="small muted">Your payslips appear here once the month is paid.</div>'}
   </div>
-  ${payslipModalHTML()}${attCameraHTML()}`;
+  ${payslipModalHTML()}`;
 }
-// ---------- live selfie camera (no gallery / file picker)
-let attCamStream = null;
-function attCameraHTML() {
-  const c = (ui.att || {}).cam; if (!c) return '';
-  return `<div class="att-modal att-cam-modal"><div class="att-modal-box att-cam-box">
-    <div class="card-title" style="margin:0 0 8px;">${c.which === 'out' ? 'Check out' : 'Check in'} — live selfie</div>
-    ${c.err ? `<div class="err">${attEsc(c.err)}</div>` : '<div class="att-cam-wrap"><video id="att-video" autoplay playsinline muted></video><div class="att-cam-ring"></div></div>'}
-    <div class="att-cam-btns">${c.err ? '' : '<button type="button" class="btn btn-primary att-shutter" data-att-cam="shoot" disabled>📸 Take photo</button>'}<button type="button" class="btn" data-att-cam="cancel">Cancel</button></div>
-    <div class="small muted" style="margin-top:6px;">Face the camera in good light. The photo is taken now — not from the gallery.</div>
-  </div></div>`;
-}
-function attStopCamera() { try { (attCamStream && attCamStream.getTracks() || []).forEach(t => t.stop()); } catch (e) {} attCamStream = null; }
-async function attStartCamera() {
-  const c = (ui.att || {}).cam; const v = document.getElementById('att-video'); if (!c || !v) return;
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { c.err = 'This phone / browser cannot open the camera here. Open the app in Chrome (https) and try again.'; render(); return; }
-  try {
-    attCamStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 720 }, height: { ideal: 960 } }, audio: false });
-    if (!(ui.att || {}).cam) { attStopCamera(); return; }
-    const vv = document.getElementById('att-video'); if (!vv) { attStopCamera(); return; }
-    vv.srcObject = attCamStream; await vv.play().catch(() => {});
-    const sh = document.querySelector('[data-att-cam="shoot"]'); if (sh) sh.disabled = false;
-  } catch (e) {
-    c.err = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError') ? 'Camera permission is off. Allow the camera for this app (Chrome → ⋮ → Settings → Site settings → Camera) and try again.' : 'The camera could not be opened — close other apps using it and try again.';
-    render();
-  }
-}
-// Frame from the live video → small JPEG with the time and name written on it.
-function attGrabFrame() {
-  const v = document.getElementById('att-video'); if (!v || !v.videoWidth) return null;
-  const w = Math.min(540, v.videoWidth), h = Math.round(v.videoHeight * w / v.videoWidth);
-  const c = document.createElement('canvas'); c.width = w; c.height = h; const g = c.getContext('2d');
-  g.translate(w, 0); g.scale(-1, 1); g.drawImage(v, 0, 0, w, h); g.setTransform(1, 0, 0, 1, 0, 0);
-  const fs = Math.max(12, Math.round(w / 30)), pad = Math.round(fs * 0.6), bandH = fs + pad * 2;
-  g.fillStyle = 'rgba(0,0,0,0.55)'; g.fillRect(0, h - bandH, w, bandH);
-  g.fillStyle = '#fff'; g.font = `600 ${fs}px sans-serif`; g.textBaseline = 'middle';
-  g.fillText(`${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${session.name}`, pad, h - bandH / 2, w - pad * 2);
-  return c.toDataURL('image/jpeg', 0.65);
+// Automatic attendance: needs location tracking (a running work session) on the phone.
+function attAutoHTML(t, R) {
+  const L = window.LocationUI && LocationUI.attendanceStatus ? LocationUI.attendanceStatus() : { available: false };
+  const how = `You are <b>checked in automatically</b> when location tracking sees you inside a site, and <b>checked out automatically</b> when you leave after ${attEsc(R.shiftEnd)}. Leaving before ${attEsc(R.shiftEnd)} counts as a break until you are back inside — going to another of our sites (e.g. for material) does not.`;
+  let state;
+  if (!L.available) state = '<div class="small dlv-warn-text">Location tracking is switched off for the company, so automatic check-in cannot run — use the button below.</div>';
+  else if (L.loading) state = '<div class="small muted">Checking location tracking…</div>';
+  else if (L.active) state = `<div class="att-auto-on">🛰 <b>Location is on</b>${L.lastFix ? ` · last position ${attEsc(new Date(L.lastFix).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}` : ''} — keep it on until you leave the site.</div>`;
+  else state = `<div class="att-auto-off"><span>⚠ <b>Location is off</b> — you will not be checked in or out automatically.</span>
+      <button type="button" class="btn btn-primary btn-sm" data-att-act="loc-on" ${L.busy ? 'disabled' : ''}>${L.consent ? '▶ Turn on location' : 'Turn on location…'}</button></div>`;
+  return `<div class="att-auto"><div class="small">${how}</div>${state}</div>`;
 }
 function payslipModalHTML() {
   const sl = (ui.att || {}).slip; if (!sl) return '';
@@ -274,16 +249,11 @@ function bindAttendanceView() {
       await attLoad(true);
     } catch (e) { s.punch = { err: e.message + (geo && geo.error ? ` (${geo.error})` : '') }; render(); }
   };
-  document.querySelectorAll('[data-att-act="punch"]').forEach(b => b.onclick = () => {
-    const which = attMe && attMe.todayRec && attMe.todayRec.in ? 'out' : 'in';
-    if (attMe && attMe.rules && attMe.rules.selfieRequired === false && !navigator.mediaDevices) { doPunch(null); return; }
-    s.punch = null; s.cam = { which }; render(); setTimeout(attStartCamera, 30);
-  });
-  document.querySelectorAll('[data-att-cam]').forEach(b => b.onclick = () => {
-    if (b.dataset.attCam === 'cancel') { attStopCamera(); s.cam = null; render(); return; }
-    const photo = attGrabFrame();
-    if (!photo) { s.cam.err = 'The camera is not ready yet — wait a second and tap Take photo again.'; render(); return; }
-    attStopCamera(); s.cam = null; doPunch(photo);
+  document.querySelectorAll('[data-att-act="punch"]').forEach(b => b.onclick = () => doPunch(null));
+  document.querySelectorAll('[data-att-act="loc-on"]').forEach(b => b.onclick = async () => {
+    const L = window.LocationUI && LocationUI.attendanceStatus ? LocationUI.attendanceStatus() : {};
+    if (!L.consent) { ui.adminTab = 'mytracking'; window.scrollTo(0, 0); render(); return; } // consent first, on My Location
+    await LocationUI.startWork(); render();
   });
   const act = (n, fn) => document.querySelectorAll(`[data-att-act="${n}"]`).forEach(b => b.onclick = fn);
   const brk = async (which) => {
@@ -354,13 +324,13 @@ function hrTodayHTML() {
     <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">${attEsc(attDayLabel(x.day))}</div><input type="date" id="hr-day" value="${attEsc(s.day)}" max="${attToday()}" style="width:auto;margin:0;"></div>
     <div class="att-chips"><span class="att-chip st-P">Checked in <b>${t.in}</b></span><span class="att-chip st-A">Not in <b>${t.notIn}</b></span><span class="att-chip">Late <b>${t.late}</b></span><span class="att-chip">Not at a site <b>${t.away}</b></span><span class="att-chip st-L">On leave <b>${t.onLeave}</b></span></div>
     ${hrSearchHTML()}
-    <div class="dpr-table-wrap"><table class="dpr-table"><thead><tr><th>Person</th><th>Status</th><th>In</th><th>Out</th><th>Hours</th><th>Break / away</th><th>Where</th><th>Selfie</th></tr></thead><tbody>
+    <div class="dpr-table-wrap"><table class="dpr-table"><thead><tr><th>Person</th><th>Status</th><th>In</th><th>Out</th><th>Hours</th><th>Break / away</th><th>Where</th><th>How</th></tr></thead><tbody>
     ${list.map(p => `<tr><td><b>${attEsc(p.name)}</b><div class="small muted">${attEsc(p.username)} · ${attEsc(p.team)}</div></td>
       <td><span class="att-chip st-${p.status}">${attEsc(ATT_LABEL[p.status] || p.status)}</span>${p.late ? ` <span class="small dlv-warn-text">late ${p.late} min</span>` : ''}</td>
       <td class="mono">${attEsc(p.in || '—')}</td><td class="mono">${attEsc(p.out || '—')}</td><td>${p.worked != null ? `${Math.floor(p.worked / 60)}h ${p.worked % 60}m` : ''}</td>
       <td class="small">${p.breakMin ? `☕ ${p.breakMin} min` : ''}${p.awayMin ? ` · away ${p.awayMin} min` : ''}${p.overBreak ? ` <span class="dlv-warn-text">(${p.overBreak} over)</span>` : ''}</td>
       <td class="small">${attEsc(p.inPlace || '')}${p.flags.includes('not at a site') ? ' <span class="dlv-warn-text">⚠ not at a site</span>' : ''}${p.flags.includes('from tracking') ? ' <span class="muted">from tracking</span>' : ''}</td>
-      <td>${p.hasInPhoto ? `<button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|in">In</button>` : ''}${p.hasOutPhoto ? ` <button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|out">Out</button>` : ''}</td></tr>`).join('')}
+      <td class="small">${p.inHow ? `In: ${p.inHow === 'auto' ? '🛰 auto' : p.inHow === 'phone' ? '📍 GPS' : '✏️ HR'}` : ''}${p.outHow ? `<br>Out: ${p.outHow === 'auto' ? '🛰 auto' : p.outHow === 'phone' ? '📍 GPS' : '✏️ HR'}` : ''}${p.hasInPhoto || p.hasOutPhoto ? `<br>${p.hasInPhoto ? `<button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|in">old selfie</button>` : ''}` : ''}</td></tr>`).join('')}
     </tbody></table></div></div>
     ${ui.hrPhoto ? `<div class="att-modal" data-hr-photo-close><div class="att-modal-box" style="max-width:420px;text-align:center;"><img src="${ui.hrPhoto}" alt="Selfie" style="max-width:100%;border-radius:10px;"><div style="margin-top:8px;"><button class="btn btn-sm" data-hr-photo-close>Close</button></div></div></div>` : ''}`;
 }
@@ -483,11 +453,12 @@ function hrRulesHTML() {
     <div class="row">${f('fullDayHours', 'Full day (hours)', 'number', 'step="0.5"')}${f('halfDayHours', 'Half day (hours)', 'number', 'step="0.5"')}${f('otAfterMin', 'OT counts after (minutes beyond the shift end)')}${f('otMultiplier', 'OT rate × (of hourly pay)', 'number', 'step="0.25"')}</div>
     <div class="row">${f('paidLeavePerYear', 'Paid leave per year')}
       <div class="col"><label>Weekly off</label><div class="att-week">${WEEKDAYS.map((w, i) => `<label><input type="checkbox" data-rule-off="${i}" ${(S.weeklyOff || []).includes(i) ? 'checked' : ''} ${ed ? '' : 'disabled'}> ${w}</label>`).join('')}</div></div>
-      <div class="col"><label>Selfie</label><select data-rule="selfieRequired" ${ed ? '' : 'disabled'}><option value="true" ${S.selfieRequired ? 'selected' : ''}>Required</option><option value="false" ${!S.selfieRequired ? 'selected' : ''}>Optional</option></select></div></div>
+      <div class="col"><label>Automatic check-in / out (location)</label><select data-rule="autoAttendance" ${ed ? '' : 'disabled'}><option value="true" ${S.autoAttendance !== false ? 'selected' : ''}>On</option><option value="false" ${S.autoAttendance === false ? 'selected' : ''}>Off</option></select></div></div>
     <div class="row">
       <div class="col"><label>Check in / out</label><select data-rule="locationRequired" ${ed ? '' : 'disabled'}><option value="true" ${S.locationRequired ? 'selected' : ''}>Only inside a site / office</option><option value="false" ${!S.locationRequired ? 'selected' : ''}>From anywhere (flag "not at a site")</option></select></div>
       ${f('breakAllowanceMin', 'Break allowed outside the site (minutes a day)')}
     </div>
+    <div class="row">${f('checkoutAfterShiftMin', 'Auto check-out: wait after shift end (minutes) if the phone stops sending location')}${f('gpsMaxAccM', 'GPS must be accurate to (metres)')}${f('siteTransferMin', 'Walking to another of our sites is not a break if there within (minutes)')}</div>
     <div class="small muted">Sites and the office are the Places on the Locations page (${x.placesCount} now)${x.placesCount ? '' : ' — <b>none yet, so check-in is allowed anywhere until Admin adds them</b>'}. Break time beyond the allowance — and time tracking sees someone outside every site outside a break — is not counted as work.</div>
     <div class="card-title" style="margin-top:12px;">PF / ESI</div>
     <div class="row">${f('pfPercent', 'PF employee %', 'number', 'step="0.01"')}${f('employerPfPercent', 'PF employer %', 'number', 'step="0.01"')}${f('pfWageCeiling', 'PF wage ceiling ₹')}
@@ -606,4 +577,3 @@ function bindHrPayrollView() {
   document.querySelectorAll('[data-hol-del]').forEach(b => b.onclick = async () => { try { await api(`/api/payroll/holidays/${b.dataset.holDel}`, { method: 'DELETE' }); reload('rules'); } catch (e) { setBanner(e.message); render(); } });
 }
 // Never leave the camera on when the person moves to another page.
-setInterval(() => { if (attCamStream && (typeof ui === 'undefined' || ui.adminTab !== 'attendance' || !ui.att || !ui.att.cam)) attStopCamera(); }, 1500);

@@ -5,6 +5,58 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.61] — 2026-11-20 — Automatic check-in / out, better Meetings, faster pages, security fixes
+### Added
+- **Automatic check-in and check-out from location tracking** (no selfie any more). With location on:
+  - checked in automatically at the time of the first position inside a site, once the person has stayed for the
+    site's minimum stay (2 min by default) — a car driving past never checks anyone in;
+  - leaving a site before shift end starts a break at the last position inside; coming back ends it (the 1-hour
+    break allowance still applies);
+  - leaving after shift end checks out at the last position inside (once they haven't turned up at another of our
+    sites within 20 minutes); left early and never came back, or location switched off after the shift → checked
+    out at the last position inside, 30 minutes after shift end;
+  - walking to another of our sites (e.g. Amara → WBB across the road for material) is work: if they reach the
+    other site within 20 minutes (HR → Rules can change it) no break is counted and nobody is checked out;
+  - a single stray GPS fix never ends a stay (two clear fixes outside are needed); every change is written once
+    only, so repeated or late uploads can't move a time or check someone in twice;
+  - My Attendance shows whether location is on, with a button to turn it on; HR sees 🛰 auto / 📍 GPS / ✏️ HR for
+    every check-in and check-out; HR → Rules: automatic on/off, wait after shift end, GPS accuracy needed.
+- **Meetings**: the recording is saved on the phone first and kept until the server has it (Upload again / Save to
+  phone / Discard) — a weak network or a sleeping server never loses a meeting; uploading again replaces the
+  failed one. Screen stays awake while recording; ⏸ Pause / ▶ Resume; participants picked with a search box and
+  tick boxes; search in the list; the page refreshes itself while a meeting is processed; 🖨 Minutes (PDF) with
+  summary, decisions, risks and action items; 🗑 Delete (organiser / Admin). Long meetings (over ~14 MB of audio)
+  go to the AI as a file, so meetings up to 3 hours are processed; recordings are smaller (32 kbit/s speech).
+- **Locations → Live map**: a person shown red / orange now says why — e.g. "Sharing from the website — it stops
+  when the page is closed" or "app closed by battery saver, location off, phone off, or no internet".
+- **System health**: database reply time, slowest 5% of requests and server errors in the last hour, slowest pages
+  table, memory; failed jobs of the last 7 days only, with Dismiss / Dismiss all; failed notifications of the last
+  24 hours only; a note when the free server has just woken up.
+### Changed
+- Check in / out by GPS on the phone is strict: the position must be accurate to 100 m (HR can change it) and
+  inside the site circle with at most 15 m of GPS error allowed for. A day is never filled in from "where the phone
+  was" any more — only from a real check-in / check-out.
+- Faster pages: My Attendance, My Tasks, All Tasks, Notifications, My Dashboard and the attendance summary now
+  ask the database for everything at once instead of one question after another (My Attendance about 10× faster);
+  page access checks use the cached user; attendance rules are cached for 30 seconds; the Budget data is no longer
+  loaded (the page is off); HR → Today works out one day instead of the whole month.
+- Phone notifications are paced: at most one every 8 seconds per person — a burst is sent as one ("5 new
+  notifications — …"). The push service had started refusing a person's notifications after ~100 in two minutes.
+### Fixed
+- A refused push is no longer retried for every notification: the device waits as long as the push service asks,
+  and the log gets one line per person every 10 minutes instead of one per notification.
+- Rate limits (login, PIN reset, AI) can no longer be dodged with a made-up X-Forwarded-For header; the PIN reset
+  now has the same per-address limit as login; the limiter forgets old addresses (no slow memory growth).
+- Security updates: nodemailer 10.6, express / body-parser / qs / proxy-addr — `npm audit`: 0 vulnerabilities.
+- Static files (icons, sounds) are no longer written to the log; requests slower than 2 s are logged as warnings.
+### Database: new columns `attendance_days.in_source`, `attendance_days.out_source`. API: `POST /api/attendance/auto-run`
+(HR / Admin), `DELETE /api/meetings/:id`, `POST /api/admin/jobs/:id/dismiss`, `POST /api/admin/jobs/dismiss-all`.
+
+## [v1.60] — 2026-11-18 — Link with Mihir CRM
+### Added
+- Complaints from the Mihir CRM can be added as tasks (one task per complaint), through the normal New Task path;
+  `/?task=TASK-…` opens a task directly. Off unless `CRM_INTEGRATION_SECRET` is set.
+
 ## [v1.59] — 2026-11-18 — User Activity: days since login and days inactive for everyone
 ### Added
 - **User Activity → 👥 Everyone** (opens first): every person with **Logged in — N days ago** and **Inactive for —

@@ -26,9 +26,8 @@ test('attendance, leave and a month of payroll', async (t) => {
   const P = (tok, path, body) => api(baseUrl, path, { method: 'POST', token: tok, body });
   const G = (tok, path) => api(baseUrl, path, { token: tok });
 
-  await t.test('check in / out on the phone (selfie required)', async () => {
-    assert.equal((await P(emp, '/api/attendance/check-in', { lat: 18.5, lng: 73.8, acc: 10 })).status, 400, 'selfie needed');
-    const a = await P(emp, '/api/attendance/check-in', { lat: 18.5, lng: 73.8, acc: 10, photo: SELFIE });
+  await t.test('check in / out on the phone (no selfie)', async () => {
+    const a = await P(emp, '/api/attendance/check-in', { lat: 18.5, lng: 73.8, acc: 10 });
     assert.equal(a.status, 200, JSON.stringify(a.data));
     assert.equal((await P(emp, '/api/attendance/check-in', { photo: SELFIE })).status, 400, 'only once a day');
     assert.equal((await P(emp, '/api/attendance/check-out', { lat: 18.5, lng: 73.8, photo: SELFIE })).status, 200);
@@ -38,8 +37,8 @@ test('attendance, leave and a month of payroll', async (t) => {
     const today = (await G(hr, '/api/attendance/today')).data;
     assert.ok(today.list.find(x => x.username === 'pay.emp').in);
     const day = me.today;
-    assert.equal((await G(hr, `/api/attendance/photo/pay.emp/${day}/in`)).status, 200);
-    assert.equal((await G(other, `/api/attendance/photo/pay.emp/${day}/in`)).status, 403);
+    assert.equal((await G(hr, `/api/attendance/photo/pay.emp/${day}/in`)).status, 404, 'no photo is kept any more');
+    assert.equal(today.list.find(x => x.username === 'pay.emp').inHow, 'phone');
   });
 
   await t.test('only inside a site; breaks of up to an hour; exempt people check in anywhere', async () => {

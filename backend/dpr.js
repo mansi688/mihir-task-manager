@@ -206,7 +206,7 @@ function mountDpr(app, deps) {
   const validDay = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null;
 
   async function me(user) {
-    const u = await db.getUserFresh(user.username);
+    const u = await db.getUser(user.username);
     const team = String((u && u.team) || '');
     const admin = user.role === 'admin';
     // See: Admin, Store, Purchase (frontend/access.js). Add / import: Admin and Store.

@@ -15,6 +15,7 @@ const taskImport = require('./task-import');
 const taskExport = require('./task-export');
 
 const app = express();
+app.disable('x-powered-by');
 const PORT = process.env.PORT || 4000;
 
 // ---- Structured logging with request correlation IDs ----
@@ -30,6 +31,24 @@ function log(level, message, meta) {
   const line = { timestamp: new Date().toISOString(), level, message, ...meta };
   (level === 'ERROR' ? console.error : console.log)(JSON.stringify(line));
 }
+// Request timings kept in memory for System health: the last 2,000 API calls, and 5xx errors since start.
+const reqStats = {
+  ring: [], errors5xx: 0, total: 0, startedAt: new Date().toISOString(),
+  add(method, path, status, ms) {
+    this.total++; if (status >= 500) this.errors5xx++;
+    this.ring.push({ t: Date.now(), k: `${method} ${String(path).replace(/\/\d+(?=\/|$)/g, '/:id').replace(/TASK-[A-Z0-9]+/g, ':task')}`, s: status, ms });
+    if (this.ring.length > 2000) this.ring.splice(0, this.ring.length - 2000);
+  },
+  summary(sinceMs = 3600000) {
+    const now = Date.now(), recent = this.ring.filter(r => now - r.t <= sinceMs);
+    const ms = recent.map(r => r.ms).sort((a, b) => a - b);
+    const pct = (p) => ms.length ? ms[Math.min(ms.length - 1, Math.floor(p * ms.length))] : null;
+    const by = new Map();
+    for (const r of recent) { const x = by.get(r.k) || { path: r.k, n: 0, total: 0, max: 0 }; x.n++; x.total += r.ms; x.max = Math.max(x.max, r.ms); by.set(r.k, x); }
+    const slowest = [...by.values()].map(x => ({ path: x.path, calls: x.n, avgMs: Math.round(x.total / x.n), maxMs: x.max })).sort((a, b) => b.avgMs - a.avgMs).slice(0, 8);
+    return { calls: recent.length, p50: pct(0.5), p95: pct(0.95), errors5xxRecent: recent.filter(r => r.s >= 500).length, slowest };
+  },
+};
 let requestCounter = 0;
 function genRequestId() { return `req_${Date.now().toString(36)}_${(++requestCounter).toString(36)}`; }
 app.use((req, res, next) => {
@@ -37,9 +56,14 @@ app.use((req, res, next) => {
   res.setHeader('X-Request-Id', req.id); // quote this when reporting a problem — it finds the exact log lines
   const start = Date.now();
   res.on('finish', () => {
-    log(res.statusCode >= 500 ? 'ERROR' : (res.statusCode >= 400 ? 'WARN' : 'INFO'), 'request', {
+    const ms = Date.now() - start;
+    const isApi = req.path.startsWith('/api/');
+    if (isApi) reqStats.add(req.method, req.route && req.route.path ? req.route.path : req.path, res.statusCode, ms);
+    // Static files (icons, sounds, scripts) are not logged unless something went wrong — they drowned the real lines.
+    if (!isApi && res.statusCode < 400) return;
+    log(res.statusCode >= 500 ? 'ERROR' : (res.statusCode >= 400 ? 'WARN' : (ms > 2000 ? 'WARN' : 'INFO')), ms > 2000 ? 'slow request' : 'request', {
       requestId: req.id, method: req.method, path: req.path, status: res.statusCode,
-      durationMs: Date.now() - start, username: req.user ? req.user.username : undefined,
+      durationMs: ms, username: req.user ? req.user.username : undefined,
     });
   });
   next();
@@ -83,12 +107,16 @@ const pushConfigured = !!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
 if (pushConfigured) {
   webpush.setVapidDetails(process.env.VAPID_SUBJECT || process.env.APP_BASE_URL || 'https://mihir-task-manager.onrender.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 }
+const pushBackoff = new Map();   // endpoint → time until which the push service asked us to wait
+const pushErrLogged = new Map(); // one log line per person + error every 10 minutes, not one per push
 async function sendPushToUser(username, title, body, taskId) {
   const result = { devices: 0, sent: 0, errors: [] };
   if (!pushConfigured) return result;
   const subs = await db.listPushSubscriptionsForUser(username);
   result.devices = subs.length;
   for (const sub of subs) {
+    const until = pushBackoff.get(sub.endpoint) || 0;
+    if (until > Date.now()) { result.errors.push('device rate-limited by the push service — skipped'); continue; }
     try {
       await webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
@@ -104,7 +132,14 @@ async function sendPushToUser(username, title, body, taskId) {
       // 400/401/403/404/410 are permanent (expired, revoked, or registered with old keys) — remove the device at once
       // so it is never retried. Only temporary errors (429, 5xx, network) keep it.
       if ([400, 401, 403, 404, 410, 413].includes(e.statusCode)) { await db.removePushSubscription(sub.endpoint); result.errors.push(`device removed (${e.statusCode})`); }
-      else { console.error(`Push to ${username} failed:`, e.message); result.errors.push(String(e.statusCode || '') + ' ' + e.message); }
+      else {
+        // 429 (too many) / 5xx: the push service asks us to slow down — pause this device (Retry-After, else 2 min).
+        const ra = Number((e.headers && (e.headers['retry-after'] || e.headers['Retry-After'])) || 0);
+        pushBackoff.set(sub.endpoint, Date.now() + (ra > 0 ? Math.min(ra, 3600) * 1000 : 120000));
+        const key = `${username}:${e.statusCode || 'net'}`;
+        if (!pushErrLogged.has(key) || Date.now() - pushErrLogged.get(key) > 600000) { pushErrLogged.set(key, Date.now()); log('WARN', 'push failed', { username, status: e.statusCode || null, error: e.message }); }
+        result.errors.push(String(e.statusCode || '') + ' ' + e.message);
+      }
     }
   }
   return result;
@@ -146,6 +181,36 @@ function summarizeNotification(message, maxLen) {
   return clean.slice(0, (maxLen || 120) - 1).trim() + '…';
 }
 
+// Phone pushes are paced per person: at most one every PUSH_GAP_MS. Anything that arrives in between is sent
+// as ONE push ("5 new notifications — …") — a burst (bulk import, many tasks at once) no longer floods the phone
+// or gets the server rate-limited by the push service.
+const PUSH_GAP_MS = Number(process.env.PUSH_GAP_MS || 8000);
+const pushQueues = new Map();
+function queuePush(username, item) {
+  if (!pushConfigured) return;
+  let q = pushQueues.get(username);
+  if (!q) { q = { last: 0, items: [], timer: null }; pushQueues.set(username, q); }
+  q.items.push(item);
+  if (q.timer) return;
+  q.timer = setTimeout(() => flushPush(username).catch(e => log('WARN', 'push dispatch error', { error: e.message })), Math.max(0, q.last + PUSH_GAP_MS - Date.now()));
+}
+async function flushPush(username) {
+  const q = pushQueues.get(username); if (!q) return;
+  q.timer = null;
+  const items = q.items.splice(0);
+  if (!items.length) { pushQueues.delete(username); return; }
+  q.last = Date.now();
+  const last = items[items.length - 1];
+  const body = items.length === 1 ? last.summary : summarizeNotification(`${items.length} new notifications — ${last.summary}`, 120);
+  const r = await sendPushToUser(username, 'MIHIR Task Manager', body, items.length === 1 ? last.task_id : null);
+  if (r && r.devices > 0) {
+    for (const it of items) await db.recordChannelDelivery({ notificationId: it.notificationId, recipient: username, taskId: it.task_id, channel: 'web_push', type: it.type,
+      status: r.sent > 0 ? 'sent' : 'failed', reason: r.errors.length ? r.errors.join('; ').slice(0, 300) : (items.length > 1 ? `sent together with ${items.length - 1} more` : null) }).catch(() => {});
+  }
+  if (q.items.length && !q.timer) q.timer = setTimeout(() => flushPush(username).catch(() => {}), PUSH_GAP_MS);
+  else if (!q.items.length) setTimeout(() => { const x = pushQueues.get(username); if (x && !x.items.length && !x.timer) pushQueues.delete(username); }, PUSH_GAP_MS);
+}
+
 // The one place every notification's push/WhatsApp dispatch happens — registered once here,
 // so no individual call site anywhere else in this file needs to know push/WhatsApp exist.
 // WhatsApp only for IMPORTANT notifications (each business message costs ≈ ₹0.12–0.15 in India
@@ -159,12 +224,7 @@ const WHATSAPP_NOTIFY_TYPES = new Set(String(process.env.WHATSAPP_NOTIFY_TYPES |
 db.setNotificationHook(async ({ username, type, message, task_id, notificationId }) => {
   const user = await db.getUser(username);
   if (!user) return;
-  const summary = summarizeNotification(message, 120);
-  sendPushToUser(username, 'MIHIR Task Manager', summary, task_id).then(r => {
-    if (!r || r.devices === 0) return; // no device subscribed — nothing was attempted
-    return db.recordChannelDelivery({ notificationId, recipient: username, taskId: task_id, channel: 'web_push', type,
-      status: r.sent > 0 ? 'sent' : 'failed', reason: r.errors.length ? r.errors.join('; ').slice(0, 300) : null });
-  }).catch(e => console.error('Push dispatch error:', e.message));
+  queuePush(username, { summary: summarizeNotification(message, 120), task_id, notificationId, type });
   if (whatsappConfigured && user.phone && WHATSAPP_NOTIFY_TYPES.has(type)) {
     sendWhatsAppMessage(user.phone, summarizeNotification(message, 300))
       .then(() => db.recordChannelDelivery({ notificationId, recipient: username, taskId: task_id, channel: 'whatsapp', type, status: 'sent' }))
@@ -311,6 +371,8 @@ app.use(express.static(path.join(__dirname, '..', 'frontend'), {
 // scale, but documented here rather than silently assumed to scale.
 function makeRateLimiter(maxRequests, windowMs) {
   const log = new Map();
+  // Forget addresses that have been quiet for a whole window, so the map can't grow without end.
+  setInterval(() => { const now = Date.now(); for (const [k, v] of log) if (!v.length || now - v[v.length - 1] > windowMs) log.delete(k); }, Math.max(60000, windowMs)).unref();
   return function rateLimiter(req, res, next) {
     const key = clientIp(req);
     const now = Date.now();
@@ -432,11 +494,15 @@ function tooLong(text, max) { return str(text).length > max; }
 // the audit log and to the per-IP rate limiter (a busy morning could rate-limit the whole office).
 // Cloudflare sets CF-Connecting-IP itself (clients can't forge it through Cloudflare); otherwise
 // the left-most X-Forwarded-For entry; locally, the socket address.
+// The visitor's IP for rate limits and logs. Render's proxy APPENDS the address it saw to X-Forwarded-For, so the
+// LAST entry is the real one — the first entries are whatever the client sent (taking the first one let anyone
+// dodge the login / AI limits by sending a made-up header). CF-Connecting-IP only counts behind Cloudflare.
 function clientIp(req) {
-  const cf = str(req.headers['cf-connecting-ip']).trim();
-  if (cf) return cf.slice(0, 64);
-  const xff = str(req.headers['x-forwarded-for']).split(',')[0].trim();
-  if (xff && process.env.TRUST_FORWARDED_FOR !== 'false') return xff.slice(0, 64);
+  if (process.env.TRUST_CLOUDFLARE === 'true') { const cf = str(req.headers['cf-connecting-ip']).trim(); if (cf) return cf.slice(0, 64); }
+  if (process.env.TRUST_FORWARDED_FOR !== 'false') {
+    const parts = str(req.headers['x-forwarded-for']).split(',').map(x => x.trim()).filter(Boolean);
+    if (parts.length) return parts[parts.length - 1].slice(0, 64);
+  }
   return (req.ip || '').replace(/^::ffff:/, '');
 }
 // Centralizes audit logging so every entry automatically captures IP address, device/browser,
@@ -976,7 +1042,7 @@ app.post('/api/auth/recovery-pin', auth(ALL_ROLES), async (req, res) => {
   await auditFromReq(req, 'recovery_pin_set', 'Set their password recovery PIN.');
   res.json({ ok: true });
 });
-app.post('/api/auth/forgot-password', async (req, res) => {
+app.post('/api/auth/forgot-password', loginRateLimiter, async (req, res) => {
   const username = str((req.body || {}).username).trim();
   const pin = str((req.body || {}).pin).trim();
   const newPassword = str((req.body || {}).newPassword).trim();
@@ -1667,20 +1733,25 @@ app.get('/api/reports/my-dashboard', auth(ALL_ROLES), async (req, res) => {
   // look up (which would incorrectly 404, since no account is actually named "all").
   const username = (canViewOthers && requestedUsername && requestedUsername !== 'all') ? requestedUsername : req.user.username;
   if (username !== req.user.username && !await db.getUser(username)) return res.status(404).json({ error: 'User not found.' });
-  const completionAll = await computeUserCounts(await db.getApprovedCompletions(), 'submitted_at');
-  const approvalAll = await computeUserCounts(await db.getApprovalDecisionStats(), 'decided_at');
+  // Independent numbers — fetched together.
+  const [completionAll, approvalAll, responseDurations, openState, data] = await Promise.all([
+    db.getApprovedCompletions().then(r => computeUserCounts(r, 'submitted_at')),
+    db.getApprovalDecisionStats().then(r => computeUserCounts(r, 'decided_at')),
+    db.getMyResponseDurations(username),
+    db.getMyOpenTaskStateCounts(username),
+    db.getAllActivityTimestamps(),
+  ]);
   const completion = completionAll.find(s => s.username === username) || { week: 0, month: 0, year: 0, allTime: 0 };
   const approval = approvalAll.find(s => s.username === username) || { week: 0, month: 0, year: 0, allTime: 0 };
 
   // Average response time: from being released to actually submitting — a fair "how quickly do
   // I typically act once I'm free to" metric, since it starts counting from release, not from
   // task creation (which could include time this person was on hold and unable to act at all).
-  const responseDurations = await db.getMyResponseDurations(username);
   const avgResponseDays = responseDurations.length > 0
     ? responseDurations.reduce((a, b) => a + b, 0) / responseDurations.length
     : null;
 
-  const { openCount: myOpenCount, rows: myRows } = await db.getMyOpenTaskStateCounts(username);
+  const { openCount: myOpenCount, rows: myRows } = openState;
   let onHoldCount = 0, waitingOnOthersCount = 0;
   for (const row of myRows) {
     if (!row.is_released) onHoldCount++;
@@ -1688,7 +1759,6 @@ app.get('/api/reports/my-dashboard', auth(ALL_ROLES), async (req, res) => {
   }
   const needsActionCount = myOpenCount - onHoldCount - waitingOnOthersCount;
 
-  const data = await db.getAllActivityTimestamps();
   const hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, total: 0 }));
   // Same reasoning as the company-wide Peak Hours page: a login isn't work, so it's excluded
   // from this person's own "activity" total — only things they actually did count here.
@@ -3197,9 +3267,9 @@ app.delete('/api/tasks/:id/checklist/:itemId', auth(['admin']), async (req, res)
 
 /* ============ NOTIFICATIONS ============ */
 app.get('/api/notifications', auth(ALL_ROLES), async (req, res) => {
-  const items = await db.listNotifications(req.user.username);
-  res.json({ items, unread: await db.countUnreadNotifications(req.user.username), tasks: await db.notificationTaskInfo(req.user.username, items.map(n => n.task_id)),
-    refs: await db.notificationRefInfo(req.user.username, items) });
+  const [items, unread] = await Promise.all([db.listNotifications(req.user.username), db.countUnreadNotifications(req.user.username)]);
+  const [tasks, refs] = await Promise.all([db.notificationTaskInfo(req.user.username, items.map(n => n.task_id)), db.notificationRefInfo(req.user.username, items)]);
+  res.json({ items, unread, tasks, refs });
 });
 // Flagged / Warnings → a person: their other open tasks (part not completed), for the second section of the panel.
 // Admin / Directors see all of them; others only tasks they created, are on, or follow.
@@ -3520,6 +3590,16 @@ app.post('/api/admin/jobs/:id/retry', auth(['admin']), async (req, res) => {
   res.json({ ok: true });
 });
 // Runs due jobs now (Admin) — used to verify the worker without waiting for the timer.
+// Dismiss a job that failed for a reason that is gone (e.g. while the server was asleep) — it leaves System health.
+app.post('/api/admin/jobs/:id/dismiss', auth(['admin']), async (req, res) => {
+  const r = await db.pool.query("UPDATE automation_jobs SET status='cancelled', last_error=COALESCE(last_error,'') || ' [dismissed by Admin]', updated_at=now() WHERE id=$1 AND status IN ('failed','dead_letter') RETURNING id", [parseInt(req.params.id, 10) || 0]);
+  res.json({ ok: r.rowCount > 0 });
+});
+app.post('/api/admin/jobs/dismiss-all', auth(['admin']), async (req, res) => {
+  const r = await db.pool.query("UPDATE automation_jobs SET status='cancelled', last_error=COALESCE(last_error,'') || ' [dismissed by Admin]', updated_at=now() WHERE status IN ('failed','dead_letter')");
+  await auditFromReq(req, 'jobs_dismissed', `Dismissed ${r.rowCount} failed background job(s).`);
+  res.json({ ok: true, dismissed: r.rowCount });
+});
 app.post('/api/admin/jobs/run-now', auth(['admin']), async (req, res) => { await jobs.tick(); res.json({ ok: true, counts: await jobs.counts() }); });
 // Admin visibility: recent notification deliveries (failed / cancelled / sent).
 app.get('/api/notifications/deliveries', auth(['admin']), async (req, res) => {
@@ -3717,11 +3797,19 @@ app.post('/api/suggestions/:id/ignore', auth(ALL_ROLES), async (req, res) => {
 });
 // Admin: one place to see whether everything is healthy.
 app.get('/api/admin/system', auth(['admin']), async (req, res) => {
-  let database = 'ok'; try { await db.ping(); } catch (e) { database = 'unavailable'; }
-  const failedDeliveries = (await db.listDeliveries({ status: 'failed', limit: 20 }));
+  let database = 'ok', dbMs = null, schemaVersion = null;
+  try { const t0 = Date.now(); schemaVersion = (await db.ping()).schemaVersion; dbMs = Date.now() - t0; } catch (e) { database = 'unavailable'; }
+  // Only what still needs attention: job problems of the last 7 days (dismissed ones hidden), failed deliveries of the last 24 h.
+  const problems = (await db.pool.query(`SELECT id, job_type, status, attempt_count, max_attempts, last_error, created_at, updated_at FROM automation_jobs
+    WHERE status IN ('failed','dead_letter','retrying') AND updated_at > now() - interval '7 days' ORDER BY id DESC LIMIT 30`)).rows;
+  const failedDeliveries = (await db.pool.query(`SELECT id, recipient_username, task_id, channel, notification_type, status, failure_reason, attempt_count, sent_at, created_at
+    FROM notification_deliveries WHERE status = 'failed' AND created_at > now() - interval '24 hours' ORDER BY id DESC LIMIT 30`).catch(() => ({ rows: [] }))).rows;
+  const mem = process.memoryUsage();
   res.json({
-    database, schemaVersion: (await db.ping().catch(() => ({}))).schemaVersion || null, timezone: process.env.TZ, uptimeSec: Math.round(process.uptime()),
-    jobs: { counts: await jobs.counts(), problems: (await jobs.list({ limit: 200 })).filter(j => ['failed', 'dead_letter', 'retrying'].includes(j.status)).slice(0, 20) },
+    database, dbMs, schemaVersion, timezone: process.env.TZ, uptimeSec: Math.round(process.uptime()), startedAt: reqStats.startedAt,
+    memoryMb: Math.round(mem.rss / 1048576), node: process.version,
+    requests: { ...reqStats.summary(3600000), total: reqStats.total, errors5xx: reqStats.errors5xx },
+    jobs: { counts: await jobs.counts(), problems, deadRecent: problems.filter(j => j.status === 'dead_letter').length },
     deliveries: { failed: failedDeliveries },
     integrations: { webPush: !!pushConfigured, whatsappSending: !!whatsappConfigured, email: !!process.env.SMTP_HOST, ai: ai.configured ? `${ai.provider} (${ai.model})` : null, storage: storage.configured },
     features: featureFlags(),
@@ -3883,6 +3971,70 @@ jobs.register('INGEST_PROCESS', async ({ itemId, notifyLabel }) => {
   return { suggestions: n };
 }, { maxAttempts: 4 });
 
+/* ---------- Mihir CRM → task (customer complaints become tracked tasks) ----------
+   The customer-care CRM (mihir-crm-portal) sends complaints here so the work is allotted and tracked
+   in this app alongside everything else. Server-to-server only: every call carries the shared secret
+   in X-CRM-Secret (set CRM_INTEGRATION_SECRET here and in the CRM). Off when the secret is not set.
+   Tasks are created through the same code as the New Task form, by CRM_TASK_CREATOR (default admin),
+   and each complaint creates at most one task (the complaint id is the request key). */
+function crmLinkAuth(req, res, next) {
+  const secret = process.env.CRM_INTEGRATION_SECRET || '';
+  if (!secret) return res.status(503).json({ error: 'The CRM link is not set up on the task manager.' });
+  if (!safeEqual(str(req.headers['x-crm-secret']), secret)) return res.sendStatus(401);
+  next();
+}
+async function crmCreator() {
+  const username = process.env.CRM_TASK_CREATOR || 'admin';
+  const u = await db.getUser(username);
+  return u ? { username: u.username, role: u.role, name: u.name } : null;
+}
+const crmTaskUrl = (id) => `${(process.env.APP_BASE_URL || 'https://mihir-task-manager.onrender.com').replace(/\/$/, '')}/?task=${encodeURIComponent(id)}`;
+async function crmTaskSummary(id) {
+  const t = await db.getTask(id);
+  if (!t) return null;
+  const users = await db.listUsers();
+  const nameOf = (u) => (users.find(x => x.username === u) || {}).name || u;
+  const assignees = (await db.listAssignees(id)).map(a => ({ username: a.username, name: nameOf(a.username), done: !!a.completed_at, doneAt: a.completed_at || null }));
+  return { id: t.id, title: t.title, status: t.status, priority: t.priority, deadline: t.deadline, createdAt: t.created_at, closedAt: t.closed_at || null, closedBy: t.closed_by || null, assignees, url: crmTaskUrl(t.id) };
+}
+// Projects and people the CRM can choose from.
+app.get('/api/integrations/crm/options', crmLinkAuth, async (req, res) => {
+  const users = await db.listUsers();
+  res.json({
+    projects: PROJECT_OPTIONS,
+    people: users.map(u => ({ username: u.username, name: u.name, team: u.team || null, designation: u.designation || null, phone: u.phone || null })),
+  });
+});
+app.post('/api/integrations/crm/tasks', crmLinkAuth, async (req, res) => {
+  const b = req.body || {};
+  const complaintId = str(b.complaintId).trim();
+  if (!complaintId) return res.status(400).json({ error: 'complaintId is required.' });
+  const creator = await crmCreator();
+  if (!creator) return res.status(500).json({ error: `The task creator account "${process.env.CRM_TASK_CREATOR || 'admin'}" does not exist on the task manager.` });
+  const crid = `crm:${complaintId}`.slice(0, 120);
+  const existing = await db.findTaskByClientRequest(creator.username, crid);
+  if (existing) return res.json({ ok: true, duplicate: true, task: await crmTaskSummary(existing) });
+  const assignees = Array.from(new Set((Array.isArray(b.assignees) ? b.assignees : []).map(u => str(u).trim()).filter(Boolean)));
+  const requestedBy = str(b.requestedBy).trim().slice(0, 120);
+  const link = str(b.link).trim().slice(0, 500);
+  const description = [str(b.description).trim(), link ? `Open in CRM: ${link}` : '', requestedBy ? `Sent from Mihir CRM by ${requestedBy}.` : 'Sent from Mihir CRM.']
+    .filter(Boolean).join('\n\n').slice(0, 5000);
+  // Same validation and creation path as the New Task form.
+  const fakeReq = { body: { title: str(b.title).trim().slice(0, 200), description, priority: str(b.priority), deadline: str(b.deadline).trim(), project: str(b.project).trim(), assignedToList: assignees },
+    user: creator, headers: req.headers, ip: req.ip, id: req.id, socket: req.socket, connection: req.connection };
+  let out = { status: 200, body: null };
+  const fakeRes = { headersSent: false, status(c) { out.status = c; return this; }, json(body) { out.body = body; this.headersSent = true; return this; } };
+  try { await createTaskRoute(fakeReq, fakeRes, crid); }
+  catch (e) { log('ERROR', 'CRM task create failed', { error: e.message }); return res.status(500).json({ error: 'Could not create the task — please try again.' }); }
+  if (!out.body || !out.body.ok) return res.status(out.status || 400).json(out.body || { error: 'Could not create the task.' });
+  res.json({ ok: true, task: await crmTaskSummary(out.body.id) });
+});
+app.get('/api/integrations/crm/tasks/:id', crmLinkAuth, async (req, res) => {
+  const t = await crmTaskSummary(str(req.params.id));
+  if (!t) return res.status(404).json({ error: 'Task not found.' });
+  res.json({ task: t });
+});
+
 /* ---------- Meetings: record → transcript → action items → review ---------- */
 const MEETING_RETENTION_DAYS = Number(process.env.MEETING_RECORDING_RETENTION_DAYS) || 30;
 async function canSeeMeeting(user, m) { return user.role === 'admin' || m.created_by === user.username || (m.participants || []).includes(user.username); }
@@ -3910,7 +4062,7 @@ jobs.register('MEETING_PROCESS', async ({ meetingId }) => processMeeting(meeting
 // Meetings page: senior management, Purchase, Compliance and Admin (frontend/access.js).
 const { pageAllowedFor } = require('../frontend/access');
 async function meetingsAllowed(req, res, next) {
-  const u = await db.getUserFresh(req.user.username);
+  const u = await db.getUser(req.user.username);
   if (!pageAllowedFor('meetings', req.user.role, u && u.team)) return res.status(403).json({ error: 'Meetings are for senior management, Purchase, Compliance and Admin.' });
   next();
 }
@@ -3928,6 +4080,9 @@ app.post('/api/meetings', auth(ALL_ROLES), meetingsAllowed, aiCallLimiter, async
   const endedAt = b.endedAt && !isNaN(new Date(b.endedAt)) ? new Date(b.endedAt) : new Date();
   const m = (await db.pool.query(`INSERT INTO meeting_sessions (title, created_by, participants, started_at, ended_at, duration_sec, file_id)
     VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7) RETURNING *`, [title, req.user.username, JSON.stringify(participants), startedAt, endedAt, startedAt ? Math.round((endedAt - startedAt) / 1000) : null, fileId])).rows[0];
+  // Uploading the same recording again (after a failed try) replaces the failed meeting instead of leaving it behind.
+  const replaceId = parseInt(b.replaceId, 10) || 0;
+  if (replaceId) await db.pool.query("DELETE FROM meeting_sessions WHERE id=$1 AND created_by=$2 AND status='failed'", [replaceId, req.user.username]);
   if (fileId) {
     if (m.file_id) await db.pool.query("UPDATE file_objects SET owner_id=$2 WHERE id=$1", [fileId, String(m.id)]);
     await jobs.enqueue('MEETING_PROCESS', { meetingId: m.id }, { key: `meeting:${m.id}`, relatedUsername: req.user.username });
@@ -3960,6 +4115,18 @@ app.get('/api/meetings/:id/recording', auth(ALL_ROLES), meetingsAllowed, async (
   if (!m.file_id || !(await storage.get(m.file_id))) return res.status(404).json({ error: 'The recording is no longer kept (deleted after the retention period, or never stored).' });
   res.json({ url: await storage.signedUrl(m.file_id, 300) });
 });
+// Delete a meeting (organiser or Admin): its recording, its waiting action items and the meeting itself.
+app.delete('/api/meetings/:id', auth(ALL_ROLES), meetingsAllowed, async (req, res) => {
+  const m = (await db.pool.query('SELECT * FROM meeting_sessions WHERE id=$1', [parseInt(req.params.id, 10) || 0])).rows[0];
+  if (!m) return res.status(404).json({ error: 'Meeting not found.' });
+  if (!(req.user.role === 'admin' || m.created_by === req.user.username)) return res.status(403).json({ error: 'Only the organiser or Admin can delete a meeting.' });
+  if (m.status === 'processing') return res.status(409).json({ error: 'The meeting is being processed — try again in a minute.' });
+  if (m.file_id) { try { await storage.remove(m.file_id); } catch (e) { log('WARN', 'meeting recording not removed', { error: e.message }); } }
+  await db.pool.query("DELETE FROM ai_suggestions WHERE meeting_id=$1 AND status='pending'", [m.id]);
+  await db.pool.query('DELETE FROM meeting_sessions WHERE id=$1', [m.id]);
+  await auditFromReq(req, 'meeting_deleted', `Deleted meeting "${m.title}".`);
+  res.json({ ok: true });
+});
 app.post('/api/meetings/:id/retry', auth(ALL_ROLES), meetingsAllowed, async (req, res) => {
   const m = (await db.pool.query('SELECT * FROM meeting_sessions WHERE id=$1', [parseInt(req.params.id, 10) || 0])).rows[0];
   if (!m) return res.status(404).json({ error: 'Meeting not found.' });
@@ -3984,7 +4151,7 @@ const payables = mountPayables(app, { db, auth, ALL_ROLES, auditFromReq, collect
 /* backend/compliance.js — monthly compliance due dates (TDS, GST, PT, PF …): reminders 10 and 2 days before to Accounts + Admin. */
 const { mountCompliance } = require('./compliance');
 const { mountPayroll } = require('./payroll');
-mountPayroll(app, { db, auth, ALL_ROLES, auditFromReq, str });
+const payroll = mountPayroll(app, { db, auth, ALL_ROLES, auditFromReq, str });
 const { mountActivity } = require('./activity');
 mountActivity(app, { db, auth, ALL_ROLES });
 const { mountUpdates } = require('./updates');
@@ -3996,10 +4163,13 @@ const compliance = mountCompliance(app, { db, auth, ALL_ROLES, auditFromReq, str
 /* ============ EMPLOYEE LOCATION TRACKING ============
    backend/location/* — off unless ENABLE_LOCATION_TRACKING=true (docs/LOCATION_TRACKING.md). */
 const { mountLocation } = require('./location/routes');
-mountLocation(app, {
+const location = mountLocation(app, {
   db, auth, ALL_ROLES, auditFromReq, clientIp, log, jobs, jwt, JWT_SECRET, directorAllowedTeams, canViewTask,
   featureEnabled: () => featureFlags().locationTracking,
+
 });
+// Automatic check-in / check-out from location tracking (backend/payroll.js).
+payroll.attachLocation(location.service, jobs);
 // Leaflet (map library) served from our own origin — no third-party script CDN.
 app.use('/vendor/leaflet', express.static(path.join(__dirname, '..', 'node_modules', 'leaflet', 'dist'), { maxAge: '7d' }));
 

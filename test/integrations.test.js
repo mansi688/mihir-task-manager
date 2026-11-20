@@ -145,6 +145,18 @@ test('Phases 5–6 — AI ingestion, voice, WhatsApp, email, meetings', async (t
     await jobs.enqueue('STORAGE_RETENTION', {}, { key: 'test-retention' }); await jobs.tick();
     assert.equal((await api(baseUrl, `/api/meetings/${m.id}/recording`, { token: sonal })).status, 404, 'recording deleted after 30 days');
     assert.equal((await api(baseUrl, `/api/meetings/${m.id}`, { token: sonal })).data.transcript, speech, 'transcript kept');
+    // Delete: organiser or Admin only
+    assert.equal((await api(baseUrl, `/api/meetings/${m.id}`, { method: 'DELETE', token: outsider })).status, 403);
+    assert.equal((await api(baseUrl, `/api/meetings/${m.id}`, { method: 'DELETE', token: sonal })).status, 200);
+    assert.equal((await api(baseUrl, `/api/meetings/${m.id}`, { token: sonal })).status, 404);
+  });
+
+  await t.test('meeting: uploading again replaces the failed one', async () => {
+    const ins = await raw.query("INSERT INTO meeting_sessions (title, created_by, status, error) VALUES ('Site review', 'sonal.p', 'failed', 'network') RETURNING id");
+    const failedId = ins.rows[0].id;
+    const r = await api(baseUrl, '/api/meetings', { method: 'POST', token: sonal, body: { title: 'Site review', audio: 'data:audio/webm;base64,' + Buffer.from('Sonal, check the shuttering today.').toString('base64'), replaceId: failedId } });
+    assert.equal(r.status, 202);
+    assert.equal((await raw.query('SELECT 1 FROM meeting_sessions WHERE id=$1', [failedId])).rowCount, 0);
   });
 
   await t.test('System page data: health, jobs, integrations, features, AI usage — Admin only', async () => {

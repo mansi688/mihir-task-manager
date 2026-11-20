@@ -32,7 +32,7 @@ function trackActivity(app, db) {
 
 function mountActivity(app, { db, auth, ALL_ROLES }) {
   app.get('/api/reports/user-activity', auth(ALL_ROLES), async (req, res) => {
-    const me = await db.getUserFresh(req.user.username);
+    const me = await db.getUser(req.user.username);
     if (!pageAllowedFor('activity', req.user.role, me && me.team)) return res.status(403).json({ error: 'Only Admin and senior management see user activity.' });
     const days = Math.min(365, Math.max(1, parseInt(req.query.days, 10) || 7));
     const now = Date.now();

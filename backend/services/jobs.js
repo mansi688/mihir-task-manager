@@ -116,7 +116,9 @@ function createJobEngine({ pool, log }) {
   async function cleanup(days = 30) {
     // Completed jobs older than N days are removed (their runs cascade). Failed/dead-letter jobs are KEPT.
     const r = await pool.query(`DELETE FROM automation_jobs WHERE status = 'completed' AND completed_at < now() - ($1 || ' days')::interval`, [String(days)]);
-    return r.rowCount;
+    // Dismissed (cancelled) and long-dead jobs are history too after 90 days.
+    const old = await pool.query(`DELETE FROM automation_jobs WHERE status IN ('cancelled','dead_letter') AND updated_at < now() - interval '90 days'`);
+    return r.rowCount + old.rowCount;
   }
   return { register, enqueue, every, dailyAt, weeklyOn, enqueueDue, tick, runJob, claim, reclaimStale, retry, list, counts, cleanup, workerId };
 }

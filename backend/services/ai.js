@@ -110,7 +110,42 @@ function createAI({ pool, env = process.env, fetchImpl = fetch, log = () => {}, 
     throw lastErr;
   }
 
+  // Large audio / video (a long meeting): the request body can't carry more than ~20 MB, so the file goes through
+  // Gemini's Files API first and the request points at it. The file is deleted again right after.
+  const INLINE_MAX_BYTES = 14 * 1024 * 1024;
+  async function uploadToGemini(buffer, mime) {
+    const base = 'https://generativelanguage.googleapis.com';
+    const start = await fetchImpl(`${base}/upload/v1beta/files`, { method: 'POST', headers: { 'x-goog-api-key': env.AI_API_KEY, 'X-Goog-Upload-Protocol': 'resumable',
+      'X-Goog-Upload-Command': 'start', 'X-Goog-Upload-Header-Content-Length': String(buffer.length), 'X-Goog-Upload-Header-Content-Type': mime, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: { display_name: `mihir-${Date.now()}` } }) });
+    const url = start.headers.get('x-goog-upload-url');
+    if (!start.ok || !url) throw new Error(`AI file upload could not start (${start.status})`);
+    const up = await fetchImpl(url, { method: 'POST', headers: { 'Content-Length': String(buffer.length), 'X-Goog-Upload-Offset': '0', 'X-Goog-Upload-Command': 'upload, finalize' }, body: buffer });
+    if (!up.ok) throw new Error(`AI file upload failed (${up.status})`);
+    let file = (await up.json()).file || {};
+    for (let i = 0; i < 60 && file.state === 'PROCESSING'; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const g = await fetchImpl(`${base}/v1beta/${file.name}`, { headers: { 'x-goog-api-key': env.AI_API_KEY } });
+      if (g.ok) file = await g.json();
+    }
+    if (file.state && file.state !== 'ACTIVE') throw new Error(`AI could not read the uploaded file (${file.state})`);
+    return { uri: file.uri, name: file.name };
+  }
   async function gemini(parts, systemText) {
+    const uploaded = [];
+    try {
+      parts = await Promise.all(parts.map(async (p) => {
+        if (!p.inline_data || !p.inline_data.data || Buffer.byteLength(p.inline_data.data, 'base64') <= INLINE_MAX_BYTES) return p;
+        const f = await uploadToGemini(Buffer.from(p.inline_data.data, 'base64'), p.inline_data.mime_type);
+        uploaded.push(f.name);
+        return { file_data: { mime_type: p.inline_data.mime_type, file_uri: f.uri } };
+      }));
+      return await geminiExtract(parts, systemText);
+    } finally {
+      for (const name of uploaded) fetchImpl(`https://generativelanguage.googleapis.com/v1beta/${name}`, { method: 'DELETE', headers: { 'x-goog-api-key': env.AI_API_KEY } }).catch(() => {});
+    }
+  }
+  async function geminiExtract(parts, systemText) {
     const j = await geminiPost({ systemInstruction: { parts: [{ text: systemText }] }, contents: [{ role: 'user', parts }],
         generationConfig: { temperature: 0.1, responseMimeType: 'application/json', responseSchema: EXTRACT_SCHEMA } });
     const text = (((j.candidates || [])[0] || {}).content || {}).parts?.map(x => x.text || '').join('') || '';

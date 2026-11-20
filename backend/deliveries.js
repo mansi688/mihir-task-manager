@@ -37,12 +37,12 @@ function mountDeliveries(app, deps) {
   // deliveries" — e.g. the purchase head's assistant who sits in another department).
   async function canManage(user) {
     if (user.role === 'admin') return true;
-    const me = await db.getUserFresh(user.username);
+    const me = await db.getUser(user.username);
     return !!(me && (isPurchase(me.team) || me.manage_deliveries));
   }
   // Accounts Department: sees every delivery's budget, payments and bills (read-only) to match receipts.
   async function isAccounts(user) {
-    const me = await db.getUserFresh(user.username);
+    const me = await db.getUser(user.username);
     return !!(me && /account/i.test(me.team || ''));
   }
   const receiversOf = (d) => (Array.isArray(d.receivers) ? d.receivers : String(d.receivers || '').split(',')).filter(Boolean);
@@ -50,7 +50,7 @@ function mountDeliveries(app, deps) {
   // They all see every delivery.
   async function canSee(user) {
     if (user.role === 'admin') return true;
-    const me = await db.getUserFresh(user.username);
+    const me = await db.getUser(user.username);
     return !!me && (pageAllowedFor('deliveries', user.role, me.team) || !!me.manage_deliveries);
   }
   const canSeeAny = canSee;

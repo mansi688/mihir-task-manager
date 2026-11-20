@@ -19,6 +19,20 @@ let token = safeStorage.getItem('ls_token') || null;
 // A corrupted saved session must not stop the app from starting either.
 let session = null;
 try { session = JSON.parse(safeStorage.getItem('ls_session') || 'null'); } catch (e) { session = null; token = null; }
+// Link from another Mihir app (e.g. the customer-care CRM): /?task=TASK-123 opens that task once
+// the data has loaded — also after signing in first. The id waits in storage across the login.
+let pendingOpenTask = '';
+try {
+  const linked = new URLSearchParams(location.search).get('task');
+  if (linked) { safeStorage.setItem('ls_open_task', linked); history.replaceState(null, '', location.pathname); }
+  pendingOpenTask = linked || safeStorage.getItem('ls_open_task') || '';
+} catch (e) { pendingOpenTask = ''; }
+function openPendingTask() {
+  if (!pendingOpenTask) return;
+  const id = pendingOpenTask; pendingOpenTask = '';
+  safeStorage.removeItem('ls_open_task');
+  openTaskOnMyTasks(id);
+}
 let myTasks = [];
 let watchTasks = []; // tasks I'm only "kept informed" on (My Tasks → Kept informed)
 let allTasks = [];       // Admin only
@@ -349,7 +363,7 @@ async function api(path, opts = {}) {
     setTimeout(() => { setBanner(msg, 'err'); render(); }, 0);
     throw new Error(msg);
   }
-  if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.');
+  if (!res.ok) { const err = new Error(data.error || 'Something went wrong. Please try again.'); err.status = res.status; err.data = data; throw err; }
   return data;
 }
 let bannerTimer = null;
@@ -1711,11 +1725,14 @@ async function startRecording(kind, maxMs) {
   try { rec.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
   catch (e) { setBanner('Microphone permission was not given. Allow the microphone for this site and try again.'); return false; }
   rec.mime = pickAudioMime();
-  rec.recorder = new MediaRecorder(rec.stream, rec.mime ? { mimeType: rec.mime } : undefined);
+  // Speech only: 32 kbit/s mono keeps a 3-hour meeting around 40 MB (default rates are 4× larger).
+  const recOpts = { audioBitsPerSecond: 32000 }; if (rec.mime) recOpts.mimeType = rec.mime;
+  try { rec.recorder = new MediaRecorder(rec.stream, recOpts); } catch (e) { rec.recorder = new MediaRecorder(rec.stream, rec.mime ? { mimeType: rec.mime } : undefined); }
   rec.chunks = []; rec.kind = kind; rec.startedAt = Date.now(); rec.maxMs = maxMs;
   rec.recorder.ondataavailable = e => { if (e.data && e.data.size) rec.chunks.push(e.data); };
   rec.recorder.start(1000);
-  rec.timer = setInterval(() => { const el = document.getElementById('rec-timer'); if (el) el.textContent = fmtDuration(Date.now() - rec.startedAt); if (Date.now() - rec.startedAt >= rec.maxMs) stopRecording(); }, 500);
+  rec.pausedMs = 0; rec.pausedAt = null;
+  rec.timer = setInterval(() => { if (rec.recorder && rec.recorder.state === 'paused') return; const ran = Date.now() - rec.startedAt - (rec.pausedMs || 0); const el = document.getElementById('rec-timer'); if (el) el.textContent = fmtDuration(ran); if (ran >= rec.maxMs) stopRecording(); }, 500);
   render(); return true;
 }
 function stopRecording() {
@@ -1882,47 +1899,110 @@ function bindAssistantPanel() {
   bindSuggestionCards();
 }
 // Meetings
+// A finished recording is kept on this device (IndexedDB) until the server has it, so a failed upload, a sleeping
+// server or a closed tab never loses a meeting. The screen is kept awake while recording (phones stop the
+// microphone when the screen locks).
+const MEET_DB = 'mihir-meetings', MEET_STORE = 'pending';
+function meetDb() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) return reject(new Error('no IndexedDB'));
+    const r = indexedDB.open(MEET_DB, 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore(MEET_STORE, { keyPath: 'id' }); };
+    r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error);
+  });
+}
+async function meetSavePending(rec) { try { const d = await meetDb(); await new Promise((ok, bad) => { const t = d.transaction(MEET_STORE, 'readwrite'); t.objectStore(MEET_STORE).put(rec); t.oncomplete = ok; t.onerror = () => bad(t.error); }); } catch (e) { /* private mode: memory only */ } }
+async function meetListPending() { try { const d = await meetDb(); return await new Promise((ok) => { const t = d.transaction(MEET_STORE, 'readonly'); const r = t.objectStore(MEET_STORE).getAll(); r.onsuccess = () => ok(r.result || []); r.onerror = () => ok([]); }); } catch (e) { return []; } }
+async function meetDeletePending(id) { try { const d = await meetDb(); await new Promise((ok) => { const t = d.transaction(MEET_STORE, 'readwrite'); t.objectStore(MEET_STORE).delete(id); t.oncomplete = ok; t.onerror = ok; }); } catch (e) { /* ignore */ } }
+let meetPending = null; // recordings on this device not yet on the server
+function meetRefreshPending() { meetListPending().then(list => { meetPending = list.filter(x => x.username === session.username); if (ui.adminTab === 'meetings') render(); }); }
+let meetWakeLock = null;
+async function meetKeepAwake(on) {
+  try {
+    if (on && 'wakeLock' in navigator && !meetWakeLock) { meetWakeLock = await navigator.wakeLock.request('screen'); meetWakeLock.addEventListener('release', () => { meetWakeLock = null; }); }
+    if (!on && meetWakeLock) { await meetWakeLock.release(); meetWakeLock = null; }
+  } catch (e) { /* not supported / denied */ }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && rec.recorder && rec.kind === 'meeting') meetKeepAwake(true); });
+window.addEventListener('beforeunload', (e) => { if (rec.recorder && rec.kind === 'meeting') { e.preventDefault(); e.returnValue = ''; } });
+async function meetUpload(p) {
+  ui.meetingUploading = p.id; render();
+  try {
+    const r = await api('/api/meetings', { method: 'POST', body: JSON.stringify({ title: p.title || '', participants: p.participants || [], audio: await blobToDataUrl(p.blob),
+      startedAt: new Date(p.startedAt).toISOString(), endedAt: new Date(p.endedAt).toISOString(), replaceId: p.failedMeetingId || undefined }), timeoutMs: 15 * 60000 });
+    await meetDeletePending(p.id);
+    meetPending = (meetPending || []).filter(x => x.id !== p.id);
+    await openMeeting(r.meeting.id); loadTabExtras();
+  } catch (e) {
+    if (e && e.data && e.data.meetingId) { p.failedMeetingId = e.data.meetingId; await meetSavePending(p); }
+    setBanner(`${e.message} The recording is kept on this phone — tap "Upload again".`);
+    meetRefreshPending();
+  }
+  ui.meetingUploading = null; render();
+}
+function meetDownload(p) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(p.blob);
+  a.download = `${(p.title || 'meeting').replace(/[^\w\- ]+/g, '').trim() || 'meeting'}-${new Date(p.startedAt).toISOString().slice(0, 10)}.${/mp4/.test(p.blob.type) ? 'm4a' : /ogg/.test(p.blob.type) ? 'ogg' : 'webm'}`;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
 function renderMeetingsView() {
+  if (meetPending == null) { meetPending = []; meetRefreshPending(); }
   if (ui.meetingDetail) return renderMeetingDetail(ui.meetingDetail);
   const recording = rec.recorder && rec.kind === 'meeting';
+  const paused = recording && rec.recorder.state === 'paused';
+  const q = String(ui.meetingPeopleQ || '').toLowerCase();
+  const chosen = new Set(ui.meetingParticipants || []);
   const people = (userDirectory || []).filter(u => u.username !== session.username).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const shown = people.filter(u => chosen.has(u.username) || !q || `${u.name} ${u.username} ${u.team || ''}`.toLowerCase().includes(q)).slice(0, 60);
+  const listQ = String(ui.meetingListQ || '').toLowerCase();
+  const list = meetingsList.filter(m => !listQ || `${m.title} ${personName(m.created_by)}`.toLowerCase().includes(listQ));
   return `
+  ${(meetPending || []).length ? `<div class="card meet-pending"><div class="card-title">⚠ Not uploaded yet (kept on this phone)</div>
+    ${meetPending.map(p => `<div class="meet-pending-row"><div><b>${esc(p.title || 'Meeting')}</b><div class="small muted">${fmtTime(new Date(p.startedAt).toISOString())} · ${fmtDuration(p.endedAt - p.startedAt)} · ${Math.round(p.blob.size / 1048576 * 10) / 10} MB</div></div>
+      <div class="meet-pending-btns"><button class="btn btn-primary btn-sm" data-meet-up="${esc(p.id)}" ${ui.meetingUploading ? 'disabled' : ''}>${ui.meetingUploading === p.id ? '⏳ Uploading…' : '⬆ Upload again'}</button>
+      <button class="btn btn-sm" data-meet-save="${esc(p.id)}">⬇ Save to phone</button><button class="btn btn-sm" data-meet-discard="${esc(p.id)}">Discard</button></div></div>`).join('')}</div>` : ''}
   <div class="card">
     <div class="card-title">Record a meeting</div>
     ${recording ? `
-      <div class="consent-note">🔴 This meeting is being recorded for generating meeting notes and action items.</div>
-      <div class="rec-live"><span class="rec-dot"></span> <b>${esc(ui.meetingTitle || 'Meeting')}</b> — <b id="rec-timer">0:00</b>
-        <button class="btn btn-primary btn-sm" data-act="stop-meeting">Stop & process</button></div>`
-    : ui.meetingUploading ? '<div class="small muted">Uploading and processing the recording — this can take a minute for long meetings…</div>' : `
+      <div class="consent-note">🔴 This meeting is being recorded for generating meeting notes and action items. Keep this screen open — the phone stays awake.</div>
+      <div class="rec-live"><span class="rec-dot ${paused ? 'paused' : ''}"></span> <b>${esc(ui.meetingTitle || 'Meeting')}</b> — <b id="rec-timer">${fmtDuration(Date.now() - rec.startedAt - (rec.pausedMs || 0))}</b>${paused ? ' <span class="small muted">(paused)</span>' : ''}
+        <button class="btn btn-sm" data-act="pause-meeting">${paused ? '▶ Resume' : '⏸ Pause'}</button>
+        <button class="btn btn-primary btn-sm" data-act="stop-meeting">■ Stop & process</button></div>`
+    : ui.meetingUploading ? '<div class="small muted">⏳ Uploading the recording — the summary and action items follow in a minute or two (longer for long meetings)…</div>' : `
       <input type="text" id="meeting-title" placeholder="Meeting title, e.g. Electrical coordination — Wing 2A" value="${esc(ui.meetingTitle || '')}">
-      <label class="small muted">Participants (they can see the summary)</label>
-      <select id="meeting-participants" multiple size="4">${people.map(u => `<option value="${esc(u.username)}" ${(ui.meetingParticipants || []).includes(u.username) ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>
-      <p class="small muted">Tell everyone the meeting will be recorded. Speech in Marathi, Hindi, English or mixed is fine. ${appFeatures.storage ? `The recording is deleted automatically after ${appFeatures.meetingRetentionDays || 30} days; the transcript and tasks stay.` : 'The recording itself is not kept — only the transcript and tasks.'}</p>
+      <label class="small muted" style="margin-top:8px;display:block;">Participants — they get the summary and minutes (${chosen.size} chosen)</label>
+      <input type="search" id="meeting-people-q" placeholder="Type a name to find people…" value="${esc(ui.meetingPeopleQ || '')}" autocomplete="off">
+      <div class="meet-people">${shown.map(u => `<label class="meet-person ${chosen.has(u.username) ? 'on' : ''}"><input type="checkbox" data-meet-person="${esc(u.username)}" ${chosen.has(u.username) ? 'checked' : ''}> ${esc(u.name)} <span class="small muted">${esc(u.team || '')}</span></label>`).join('') || '<div class="small muted">Nobody matches.</div>'}</div>
+      <p class="small muted">Tell everyone the meeting will be recorded. Speech in Marathi, Hindi, English or mixed is fine. Up to 3 hours. ${appFeatures.storage ? `The recording is deleted automatically after ${appFeatures.meetingRetentionDays || 30} days; the transcript and tasks stay.` : 'The recording itself is not kept on the server — only the transcript and tasks.'}</p>
       <button class="btn btn-primary" data-act="start-meeting">● Start meeting recording</button>`}
   </div>
   <div class="card">
-    <div class="card-title">Meetings</div>
-    ${meetingsList.length ? `<div class="task-list">${meetingsList.map(m => `
+    <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">Meetings</div>
+      ${meetingsList.length > 5 ? `<input type="search" id="meeting-list-q" placeholder="Search meetings…" value="${esc(ui.meetingListQ || '')}" style="max-width:260px;">` : ''}</div>
+    ${list.length ? `<div class="task-list">${list.map(m => `
       <button class="meeting-row" data-meeting="${m.id}">
         <b>${esc(m.title)}</b>
         <span class="small muted">${fmtTime(m.created_at)}${m.duration_sec ? ` · ${fmtDuration(m.duration_sec * 1000)}` : ''} · ${esc(personName(m.created_by))}</span>
-        <span class="badge ${m.status === 'ready' ? 'received' : m.status === 'failed' ? 'flag' : ''}">${esc(m.status)}</span>
-      </button>`).join('')}</div>` : '<div class="empty">No meetings yet.</div>'}
+        <span class="badge ${m.status === 'ready' ? 'received' : m.status === 'failed' ? 'flag' : ''}">${esc(m.status === 'ready' ? 'ready' : m.status === 'failed' ? 'failed' : 'processing…')}</span>
+      </button>`).join('')}</div>` : `<div class="empty">${meetingsList.length ? 'No meeting matches.' : 'No meetings yet.'}</div>`}
   </div>`;
 }
 function renderMeetingDetail(m) {
   const open = (m.suggestions || []).filter(s => s.status === 'pending');
   const done = (m.suggestions || []).filter(s => s.status !== 'pending');
+  const mine = m.created_by === session.username || session.role === 'admin';
+  const busy = m.status === 'processing' || m.status === 'recorded';
   return `
   <div class="card">
-    <div class="flex-between"><div class="card-title" style="margin:0;">${esc(m.title)}</div><button class="btn btn-sm" data-act="meeting-back">← All meetings</button></div>
+    <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">${esc(m.title)}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${m.status === 'ready' ? '<button class="btn btn-sm" data-act="meeting-print">🖨 Minutes (PDF)</button>' : ''}${mine && !busy ? '<button class="btn btn-sm" data-act="meeting-delete">🗑 Delete</button>' : ''}<button class="btn btn-sm" data-act="meeting-back">← All meetings</button></div></div>
     <div class="small muted">${fmtTime(m.created_at)}${m.duration_sec ? ` · ${fmtDuration(m.duration_sec * 1000)}` : ''} · by ${esc(personName(m.created_by))}${(m.participants || []).length ? ` · with ${esc(m.participants.map(personName).join(', '))}` : ''}</div>
-    ${m.status === 'processing' || m.status === 'recorded' ? '<div class="notice">Processing the recording… this page updates by itself.</div>' : ''}
-    ${m.status === 'failed' ? `<div class="sugg-warn">Processing failed: ${esc(m.error || '')} ${m.created_by === session.username || session.role === 'admin' ? '<button class="btn btn-sm" data-act="meeting-retry">Try again</button>' : ''}</div>` : ''}
+    ${busy ? '<div class="notice">⏳ Processing the recording… this page updates by itself.</div>' : ''}
+    ${m.status === 'failed' ? `<div class="sugg-warn">Processing failed: ${esc(m.error || '')} ${mine && m.recordingAvailable ? '<button class="btn btn-sm" data-act="meeting-retry">Try again</button>' : mine ? '<span class="small">If the recording is still on this phone, use "Upload again" on the Meetings page.</span>' : ''}</div>` : ''}
     ${m.summary ? `<h4>Summary</h4><p>${esc(m.summary)}</p>` : ''}
     ${(m.decisions || []).length ? `<h4>Decisions</h4><ul>${m.decisions.map(d => `<li>${esc(d)}</li>`).join('')}</ul>` : ''}
     ${(m.risks || []).length ? `<h4>Risks</h4><ul>${m.risks.map(d => `<li>${esc(d)}</li>`).join('')}</ul>` : ''}
-    ${m.recordingAvailable && (m.created_by === session.username || session.role === 'admin') ? '<button class="btn btn-sm" data-act="meeting-play">▶ Recording</button>' : ''}
+    ${m.recordingAvailable && mine ? '<button class="btn btn-sm" data-act="meeting-play">▶ Recording</button>' : ''}
   </div>
   <div class="card">
     <div class="card-title">Action items <span class="task-tab-count">${open.length}</span></div>
@@ -1932,27 +2012,75 @@ function renderMeetingDetail(m) {
   </div>
   ${m.transcript ? `<div class="card"><details><summary class="card-title" style="cursor:pointer;">Transcript${m.language ? ` (${esc(m.language)})` : ''}</summary><div class="transcript">${esc(m.transcript)}</div></details></div>` : ''}`;
 }
+// Minutes of the meeting — one printable page (Save as PDF) to share.
+function printMeetingMinutes(m) {
+  const items = (m.suggestions || []).filter(s => s.status !== 'ignored');
+  const w = window.open('', '_blank'); if (!w) { setBanner('Allow pop-ups to save the minutes.'); render(); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Minutes — ${esc(m.title)}</title><style>
+    body{font-family:Arial,Helvetica,sans-serif;color:#1d2433;padding:24px;font-size:13px;line-height:1.45;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    h1{font-size:20px;margin:0 0 4px} h2{font-size:14px;margin:16px 0 6px;border-bottom:2px solid #2D5FA8;padding-bottom:3px} .m{color:#6b7280}
+    table{width:100%;border-collapse:collapse} th,td{border:1px solid #d7dce4;padding:5px 7px;text-align:left;vertical-align:top} th{background:#eef2f8;font-size:11px;text-transform:uppercase}
+    @page{size:A4;margin:14mm} @media print{body{padding:0}}</style></head><body>
+    <h1>Minutes of meeting — ${esc(m.title)}</h1>
+    <div class="m">${esc(fmtTime(m.started_at || m.created_at))}${m.duration_sec ? ` · ${fmtDuration(m.duration_sec * 1000)}` : ''} · Organiser: ${esc(personName(m.created_by))}</div>
+    ${(m.participants || []).length ? `<div class="m">Participants: ${esc(m.participants.map(personName).join(', '))}</div>` : ''}
+    ${m.summary ? `<h2>Summary</h2><p>${esc(m.summary)}</p>` : ''}
+    ${(m.decisions || []).length ? `<h2>Decisions</h2><ol>${m.decisions.map(d => `<li>${esc(d)}</li>`).join('')}</ol>` : ''}
+    ${(m.risks || []).length ? `<h2>Risks</h2><ol>${m.risks.map(d => `<li>${esc(d)}</li>`).join('')}</ol>` : ''}
+    ${items.length ? `<h2>Action items</h2><table><tr><th>#</th><th>Action</th><th>Who</th><th>By</th><th>Status</th></tr>${items.map((s, i) => `<tr><td>${i + 1}</td><td>${esc(s.title)}</td><td>${esc((s.assignees || []).map(personName).join(', ') || '—')}</td><td>${esc(s.deadline ? String(s.deadline).slice(0, 10) : '—')}</td><td>${s.task_id ? `Task ${esc(s.task_id)}` : s.status === 'pending' ? 'To review' : esc(s.status)}</td></tr>`).join('')}</table>` : ''}
+    <p class="m" style="margin-top:18px;">Prepared from the meeting recording by MIHIR Task Manager.</p></body></html>`);
+  w.document.close(); setTimeout(() => { try { w.focus(); w.print(); } catch (e) {} }, 400);
+}
 async function openMeeting(id) { try { ui.meetingDetail = await api(`/api/meetings/${id}`); render(); window.scrollTo(0, 0); } catch (e) { setBanner(e.message); render(); } }
+let meetPollTimer = null;
 function bindMeetingsView() {
   const on = (sel, fn) => { const el = document.querySelector(sel); if (el) el.onclick = fn; };
   const t = document.getElementById('meeting-title'); if (t) t.oninput = () => { ui.meetingTitle = t.value; };
-  const p = document.getElementById('meeting-participants'); if (p) p.onchange = () => { ui.meetingParticipants = [...p.selectedOptions].map(o => o.value); };
-  on('[data-act="start-meeting"]', () => startRecording('meeting', 3 * 60 * 60 * 1000));
+  const pq = document.getElementById('meeting-people-q');
+  if (pq && !pq.dataset.bound) { pq.dataset.bound = '1'; let tm = null; pq.addEventListener('input', () => { clearTimeout(tm); tm = setTimeout(() => { ui.meetingPeopleQ = pq.value; render(); }, 150); }); }
+  const lq = document.getElementById('meeting-list-q');
+  if (lq && !lq.dataset.bound) { lq.dataset.bound = '1'; let tm = null; lq.addEventListener('input', () => { clearTimeout(tm); tm = setTimeout(() => { ui.meetingListQ = lq.value; render(); }, 150); }); }
+  document.querySelectorAll('[data-meet-person]').forEach(c => c.onchange = () => {
+    const set = new Set(ui.meetingParticipants || []); c.checked ? set.add(c.dataset.meetPerson) : set.delete(c.dataset.meetPerson);
+    ui.meetingParticipants = [...set]; render();
+  });
+  on('[data-act="start-meeting"]', async () => { rec.pausedMs = 0; if (await startRecording('meeting', 3 * 60 * 60 * 1000)) meetKeepAwake(true); });
+  on('[data-act="pause-meeting"]', () => {
+    const r = rec.recorder; if (!r) return;
+    if (r.state === 'recording') { r.pause(); rec.pausedAt = Date.now(); }
+    else if (r.state === 'paused') { r.resume(); rec.pausedMs = (rec.pausedMs || 0) + (Date.now() - (rec.pausedAt || Date.now())); rec.pausedAt = null; }
+    render();
+  });
   const finish = async (out) => {
-    ui.meetingUploading = true; render();
-    try {
-      const r = await api('/api/meetings', { method: 'POST', body: JSON.stringify({ title: ui.meetingTitle || '', participants: ui.meetingParticipants || [], audio: await blobToDataUrl(out.blob), startedAt: new Date(out.startedAt).toISOString(), endedAt: new Date(out.endedAt).toISOString() }) });
-      ui.meetingTitle = ''; ui.meetingParticipants = [];
-      await openMeeting(r.meeting.id); loadTabExtras();
-    } catch (e) { setBanner(e.message); }
-    ui.meetingUploading = false; render();
+    meetKeepAwake(false);
+    const p = { id: `m${out.startedAt}`, username: session.username, title: ui.meetingTitle || '', participants: ui.meetingParticipants || [], blob: out.blob, startedAt: out.startedAt, endedAt: out.endedAt };
+    await meetSavePending(p); // safe on the phone first
+    meetPending = (meetPending || []).filter(x => x.id !== p.id).concat([p]);
+    ui.meetingTitle = ''; ui.meetingParticipants = []; ui.meetingPeopleQ = '';
+    await meetUpload(p);
   };
   on('[data-act="stop-meeting"]', async () => { const out = await stopRecording(); if (out) finish(out); });
   if (rec.recorder && rec.kind === 'meeting') rec.onDone = finish;
+  document.querySelectorAll('[data-meet-up]').forEach(b => b.onclick = () => { const p = (meetPending || []).find(x => x.id === b.dataset.meetUp); if (p) meetUpload(p); });
+  document.querySelectorAll('[data-meet-save]').forEach(b => b.onclick = () => { const p = (meetPending || []).find(x => x.id === b.dataset.meetSave); if (p) meetDownload(p); });
+  document.querySelectorAll('[data-meet-discard]').forEach(b => b.onclick = async () => {
+    if (!confirm('Discard this recording? It is not on the server, so it will be lost.')) return;
+    await meetDeletePending(b.dataset.meetDiscard); meetPending = (meetPending || []).filter(x => x.id !== b.dataset.meetDiscard); render();
+  });
   document.querySelectorAll('[data-meeting]').forEach(b => b.onclick = () => openMeeting(b.dataset.meeting));
   on('[data-act="meeting-back"]', () => { ui.meetingDetail = null; loadTabExtras(); render(); });
-  on('[data-act="meeting-retry"]', async () => { try { await api(`/api/meetings/${ui.meetingDetail.id}/retry`, { method: 'POST' }); setBanner('Processing again…', 'ok'); } catch (e) { setBanner(e.message); } render(); });
+  on('[data-act="meeting-retry"]', async () => { try { await api(`/api/meetings/${ui.meetingDetail.id}/retry`, { method: 'POST' }); setBanner('Processing again…', 'ok'); await openMeeting(ui.meetingDetail.id); } catch (e) { setBanner(e.message); render(); } });
   on('[data-act="meeting-play"]', async () => { try { const r = await api(`/api/meetings/${ui.meetingDetail.id}/recording`); window.open(r.url, '_blank', 'noopener'); } catch (e) { setBanner(e.message); render(); } });
+  on('[data-act="meeting-print"]', () => printMeetingMinutes(ui.meetingDetail));
+  on('[data-act="meeting-delete"]', async () => {
+    if (!confirm('Delete this meeting, its recording and its waiting action items? Tasks already created stay.')) return;
+    try { await api(`/api/meetings/${ui.meetingDetail.id}`, { method: 'DELETE' }); ui.meetingDetail = null; setBanner('Meeting deleted.', 'ok'); loadTabExtras(); } catch (e) { setBanner(e.message); render(); }
+  });
+  // While a meeting is being processed, check again every 6 seconds.
+  clearTimeout(meetPollTimer);
+  const d = ui.meetingDetail;
+  if (d && (d.status === 'processing' || d.status === 'recorded')) meetPollTimer = setTimeout(() => { if (ui.adminTab === 'meetings' && ui.meetingDetail && ui.meetingDetail.id === d.id) openMeeting(d.id); }, 6000);
+  else if (!d && meetingsList.some(m => m.status === 'processing' || m.status === 'recorded')) meetPollTimer = setTimeout(() => { if (ui.adminTab === 'meetings' && !ui.meetingDetail) loadTabExtras(); }, 10000);
   bindSuggestionCards(() => { if (ui.meetingDetail) openMeeting(ui.meetingDetail.id); });
 }
 // Admin: System health
@@ -1961,17 +2089,25 @@ function renderSystemView() {
   if (!s) return '<div class="card"><div class="small muted">Loading system status…</div></div>';
   const ok = v => v ? '<span class="badge received">On</span>' : '<span class="badge">Off</span>';
   const counts = s.jobs.counts || {};
+  const q = s.requests || {};
   return `
   <div class="card">
     <div class="card-title">System health</div>
     <div class="person-chips">
       <div class="person-chip ${s.database === 'ok' ? 'good' : 'bad'}"><div class="person-chip-n">${s.database === 'ok' ? 'OK' : 'DOWN'}</div><div class="person-chip-l">Database (schema ${esc(s.schemaVersion || '?')})</div></div>
-      <div class="person-chip"><div class="person-chip-n">${Math.round(s.uptimeSec / 3600)}h</div><div class="person-chip-l">Server up since restart</div></div>
-      <div class="person-chip ${(counts.dead_letter || 0) ? 'bad' : 'good'}"><div class="person-chip-n">${counts.dead_letter || 0}</div><div class="person-chip-l">Failed jobs (gave up)</div></div>
+      <div class="person-chip ${s.dbMs != null && s.dbMs > 300 ? 'bad' : 'good'}"><div class="person-chip-n">${s.dbMs != null ? s.dbMs + ' ms' : '—'}</div><div class="person-chip-l">Database reply time</div></div>
+      <div class="person-chip ${q.p95 != null && q.p95 > 1500 ? 'bad' : 'good'}"><div class="person-chip-n">${q.p95 != null ? q.p95 + ' ms' : '—'}</div><div class="person-chip-l">Slowest 5% of requests (last hour, ${q.calls || 0} calls)</div></div>
+      <div class="person-chip ${q.errors5xxRecent ? 'bad' : 'good'}"><div class="person-chip-n">${q.errors5xxRecent || 0}</div><div class="person-chip-l">Server errors (last hour)</div></div>
+      <div class="person-chip ${(s.jobs.deadRecent || 0) ? 'bad' : 'good'}"><div class="person-chip-n">${s.jobs.deadRecent || 0}</div><div class="person-chip-l">Failed jobs (last 7 days)</div></div>
       <div class="person-chip"><div class="person-chip-n">${(counts.queued || 0) + (counts.retrying || 0)}</div><div class="person-chip-l">Jobs waiting / retrying</div></div>
-      <div class="person-chip ${s.deliveries.failed.length ? 'bad' : 'good'}"><div class="person-chip-n">${s.deliveries.failed.length}</div><div class="person-chip-l">Recent failed deliveries</div></div>
+      <div class="person-chip ${s.deliveries.failed.length ? 'bad' : 'good'}"><div class="person-chip-n">${s.deliveries.failed.length}</div><div class="person-chip-l">Failed notifications (24 h)</div></div>
+      <div class="person-chip"><div class="person-chip-n">${s.uptimeSec >= 3600 ? Math.round(s.uptimeSec / 3600) + 'h' : Math.round(s.uptimeSec / 60) + 'm'}</div><div class="person-chip-l">Server up since restart · ${s.memoryMb || '?'} MB</div></div>
     </div>
+    ${s.uptimeSec < 1800 ? '<div class="small muted" style="margin-top:8px;">The server restarted recently. On the free hosting plan it sleeps after 15 minutes without visitors, and the first visit after that takes up to a minute while it wakes up.</div>' : ''}
   </div>
+  ${(q.slowest || []).length ? `<div class="card"><div class="card-title">Slowest pages / requests (last hour)</div>
+    <table class="audit-table" style="min-width:0;"><tr><th>Request</th><th>Calls</th><th>Average</th><th>Slowest</th></tr>
+    ${q.slowest.map(r => `<tr><td class="small mono">${esc(r.path)}</td><td>${r.calls}</td><td>${r.avgMs} ms</td><td>${r.maxMs} ms</td></tr>`).join('')}</table></div>` : ''}
   ${s.ai ? `<div class="card"><div class="card-title">AI usage</div>
     <div class="person-chips">
       <div class="person-chip"><div class="person-chip-n">₹${s.ai.todayInr.toFixed(2)}</div><div class="person-chip-l">Today</div></div>
@@ -1992,17 +2128,23 @@ function renderSystemView() {
       <tr><td>Meeting assistant</td><td>${ok(s.features.meetingAi)}</td></tr>
       <tr><td>AI budget limit</td><td>${ok(s.features.aiBudgetLimit)}</td></tr>
     </table></div>
-  <div class="card"><div class="card-title">Background jobs needing attention</div>
+  <div class="card"><div class="flex-between"><div class="card-title" style="margin:0;">Background jobs needing attention (last 7 days)</div>${s.jobs.problems.some(j => j.status !== 'retrying') ? '<button class="btn btn-sm" data-job-dismiss-all>Dismiss all failed</button>' : ''}</div>
     ${s.jobs.problems.length ? `<div class="import-table-wrap"><table class="audit-table"><tr><th>Job</th><th>Status</th><th>Attempts</th><th>Last error</th><th></th></tr>
       ${s.jobs.problems.map(j => `<tr><td>${esc(j.job_type)} #${j.id}<div class="small muted">${fmtTime(j.created_at)}</div></td><td>${esc(j.status)}</td><td>${j.attempt_count}/${j.max_attempts}</td><td class="small">${esc((j.last_error || '').slice(0, 160))}</td>
-        <td>${['dead_letter', 'failed', 'retrying'].includes(j.status) ? `<button class="btn btn-sm" data-job-retry="${j.id}">Retry</button>` : ''}</td></tr>`).join('')}</table></div>` : '<div class="empty small">All background jobs are healthy.</div>'}
+        <td class="nowrap">${['dead_letter', 'failed', 'retrying'].includes(j.status) ? `<button class="btn btn-sm" data-job-retry="${j.id}">Retry</button>` : ''}${['dead_letter', 'failed'].includes(j.status) ? ` <button class="btn btn-sm" data-job-dismiss="${j.id}">Dismiss</button>` : ''}</td></tr>`).join('')}</table></div>` : '<div class="empty small">All background jobs are healthy.</div>'}
   </div>
-  <div class="card"><div class="card-title">Failed notification deliveries</div>
+  <div class="card"><div class="card-title">Failed notification deliveries (last 24 hours)</div>
     ${s.deliveries.failed.length ? `<div class="import-table-wrap"><table class="audit-table"><tr><th>When</th><th>To</th><th>Channel</th><th>Reason</th></tr>
       ${s.deliveries.failed.map(d => `<tr><td class="small nowrap">${fmtTime(d.created_at)}</td><td>${esc(personName(d.recipient_username))}</td><td>${esc(d.channel)}</td><td class="small">${esc(d.failure_reason || '')}</td></tr>`).join('')}</table></div>` : '<div class="empty small">No failed deliveries.</div>'}
   </div>`;
 }
 function bindSystemView() {
+  document.querySelectorAll('[data-job-dismiss]').forEach(b => b.onclick = async () => {
+    try { await api(`/api/admin/jobs/${b.dataset.jobDismiss}/dismiss`, { method: 'POST' }); loadTabExtras(); } catch (e) { setBanner(e.message); render(); }
+  });
+  document.querySelectorAll('[data-job-dismiss-all]').forEach(b => b.onclick = async () => {
+    try { const r = await api('/api/admin/jobs/dismiss-all', { method: 'POST' }); setBanner(`${r.dismissed} failed job(s) dismissed.`, 'ok'); loadTabExtras(); } catch (e) { setBanner(e.message); render(); }
+  });
   document.querySelectorAll('[data-job-retry]').forEach(b => b.onclick = async () => {
     try { await api(`/api/admin/jobs/${b.dataset.jobRetry}/retry`, { method: 'POST' }); await api('/api/admin/jobs/run-now', { method: 'POST' }); setBanner('Job retried.', 'ok'); loadTabExtras(); }
     catch (e) { setBanner(e.message); render(); }
@@ -2011,7 +2153,7 @@ function bindSystemView() {
 
 
 /* ==================== DATA LOADING ==================== */
-async function afterLogin() { await refreshData(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); }
+async function afterLogin() { await refreshData(); openPendingTask(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); }
 
 // ---- Push notifications (PWA) ----
 // Registering the service worker is harmless and done unconditionally (needed for the app to be
@@ -2099,7 +2241,7 @@ function dataRequests() {
     sectionsList: '/api/drawing-sections', phasesList: '/api/task-phases', openTaskTitles: '/api/tasks/open-titles', me: '/api/auth/me',
     notif: '/api/notifications', myApprovalRequests: '/api/approvals/mine', announcementsResp: '/api/announcements',
     features: '/api/features', suggestions: '/api/suggestions',
-    deliveriesResp: '/api/deliveries', budgetResp: '/api/budget', estSummaryResp: '/api/estimation/summary', apSummaryResp: '/api/payables/summary',
+    deliveriesResp: '/api/deliveries', ...(typeof BUDGET_PAGE_ON !== 'undefined' && BUDGET_PAGE_ON ? { budgetResp: '/api/budget' } : {}), estSummaryResp: '/api/estimation/summary', apSummaryResp: '/api/payables/summary',
     closureData: `/api/closure-requests${session.role === 'admin' && ui.closureScope === 'all' ? '?scope=all' : ''}`,
     extReq: '/api/extension-requests',
     attSummary: '/api/attendance/summary',
@@ -7671,7 +7813,7 @@ render();
 if (session && token) {
   // Paint the last known data from this device instantly, then fetch fresh data.
   loadDataSnapshot().then(had => { if (had) render(); });
-  refreshData().then(() => { lastFullRefreshAt = Date.now(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); });
+  refreshData().then(() => { lastFullRefreshAt = Date.now(); openPendingTask(); registerAndroidDevice(); ensurePushSubscription(false); if (ui.adminTab === 'chat') openChatTab(); else loadChatRooms().then(() => render()); });
 }
 // Guard against interrupting active typing: a full-DOM rebuild every 30s (see refreshData)
 // causes a visible flash and can even make a cursor mid-sentence jump or feel like it "vanished"

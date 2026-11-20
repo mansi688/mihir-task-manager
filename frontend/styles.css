@@ -1925,3 +1925,16 @@ input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !importan
 .act-d-ok{background:rgba(22,163,74,.13);color:#15803d;}
 .act-d-warn{background:rgba(217,119,6,.15);color:#b45309;}
 .act-d-bad{background:rgba(220,38,38,.13);color:#b91c1c;}
+/* automatic attendance */
+.att-auto{margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;gap:8px;}
+.att-auto-on{font-size:13.5px;color:#15803d;}
+.att-auto-off{font-size:13.5px;color:#b45309;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+/* meetings */
+.meet-pending{border-left:4px solid #d97706;}
+.meet-pending-row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--line);}
+.meet-pending-btns{display:flex;gap:6px;flex-wrap:wrap;}
+.meet-people{display:flex;flex-wrap:wrap;gap:6px;max-height:180px;overflow:auto;margin:6px 0;padding:6px;border:1px solid var(--line);border-radius:8px;}
+.meet-person{display:inline-flex;align-items:center;gap:5px;padding:4px 9px;border:1px solid var(--line);border-radius:999px;font-size:13px;cursor:pointer;}
+.meet-person.on{border-color:var(--amber);background:var(--amber-dim);color:var(--amber-ink);}
+.meet-person input{margin:0;}
+.rec-dot.paused{animation:none;opacity:.4;}
