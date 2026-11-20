@@ -5,6 +5,13 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.65] — 2026-11-20 — Sort tasks and filter by date
+### Added
+- **My Tasks / All Tasks / a person's tasks and search**: new **Order** — urgent first (as before), newest first,
+  oldest first, deadline soonest / latest first — and **Date** — today, yesterday, last 7 days, last 30 days, this
+  month, or custom dates (from – to), by the date the task was created or by its deadline. Works together with
+  search, project, phase and tagged filters, on open and closed lists.
+
 ## [v1.64] — 2026-11-20 — Uploads start again; Accounts search; Porter fills only what it reads
 ### Fixed
 - **v1.62 never went live**: the new server waited for a database lock left behind by an earlier start (Supabase's

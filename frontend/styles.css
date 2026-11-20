@@ -1938,3 +1938,5 @@ input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !importan
 .meet-person.on{border-color:var(--amber);background:var(--amber-dim);color:var(--amber-ink);}
 .meet-person input{margin:0;}
 .rec-dot.paused{animation:none;opacity:.4;}
+.task-date-custom{display:flex;align-items:center;gap:6px;}
+.task-date-custom input[type=date]{width:auto;min-width:140px;}

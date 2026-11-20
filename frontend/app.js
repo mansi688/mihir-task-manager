@@ -119,7 +119,7 @@ function defaultUiState() {
     levelEditKey: null, levelEditConfirmKey: null, levelEditConfirmValue: null, deleteTaskConfirmId: null,
     cancelFormTaskId: null,
     addAssigneeFormTaskId: null, addAssigneeTags: [],
-    taskSearchQuery: '', taskFilterProject: '', taskFilterPhase: '', taskFilterTagging: '',
+    taskSearchQuery: '', taskFilterProject: '', taskFilterPhase: '', taskFilterTagging: '', taskSort: 'smart', taskDate: '', taskDateField: 'created', taskDateFrom: '', taskDateTo: '',
     myOwnerFilter: 'all', myOwnerPerson: '', todayCardOpen: null, todayCardShown: 30, todayScope: 'mine', dashScope: 'mine', dashCardOpen: null, dashCardShown: 30,
     myOpenShown: 30, allOpenShown: 30, deadlineEditTaskId: null,
     myHistoryShown: 20, allHistoryShown: 20,
@@ -2528,7 +2528,33 @@ function renderLoadingSkeleton() {
   </div>`;
 }
 /* ==================== TASKS ==================== */
+// Order picked in the task filters: newest / oldest created first, or nearest deadline first ('smart' = the
+// usual priority → overdue → deadline order).
+function sortTasksByChoice(tasks) {
+  const k = ui.taskSort || 'smart';
+  const t = (x, f) => { const v = x[f] ? new Date(x[f]).getTime() : NaN; return isNaN(v) ? null : v; };
+  if (k === 'newest') return [...tasks].sort((a, b) => (t(b, 'created_at') || 0) - (t(a, 'created_at') || 0));
+  if (k === 'oldest') return [...tasks].sort((a, b) => (t(a, 'created_at') || 0) - (t(b, 'created_at') || 0));
+  if (k === 'deadline') return [...tasks].sort((a, b) => (t(a, 'deadline') ?? Infinity) - (t(b, 'deadline') ?? Infinity));
+  if (k === 'deadline_late') return [...tasks].sort((a, b) => (t(b, 'deadline') ?? -Infinity) - (t(a, 'deadline') ?? -Infinity));
+  return null;
+}
+const istDayOf = (iso) => { try { return iso ? new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : ''; } catch (e) { return ''; } };
+function taskDateRange() {
+  const today = istDayOf(new Date().toISOString());
+  const back = (n) => istDayOf(new Date(Date.now() - n * 864e5).toISOString());
+  switch (ui.taskDate) {
+    case 'today': return [today, today];
+    case 'yesterday': return [back(1), back(1)];
+    case '7': return [back(6), today];
+    case '30': return [back(29), today];
+    case 'month': return [today.slice(0, 8) + '01', today];
+    case 'custom': return [ui.taskDateFrom || '0000-00-00', ui.taskDateTo || '9999-12-31'];
+    default: return null;
+  }
+}
 function sortTasksForDisplay(tasks) {
+  const picked = sortTasksByChoice(tasks); if (picked) return picked;
   const now = Date.now();
   const priorityRank = { high: 0, medium: 1, low: 2 };
   return [...tasks].sort((a, b) => {
@@ -3192,7 +3218,12 @@ function applyTaskSearch(tasks) {
   if (ui.taskFilterPhase) filtered = filtered.filter(t => t.phase === ui.taskFilterPhase);
   if (ui.taskFilterTagging === 'untagged') filtered = filtered.filter(t => (t.assignees || []).length === 0);
   if (ui.taskFilterTagging === 'tagged') filtered = filtered.filter(t => (t.assignees || []).length > 0);
-  return filtered;
+  const range = taskDateRange();
+  if (range) {
+    const field = ui.taskDateField === 'deadline' ? 'deadline' : 'created_at';
+    filtered = filtered.filter(t => { const d = istDayOf(t[field]); return d && d >= range[0] && d <= range[1]; });
+  }
+  return sortTasksByChoice(filtered) || filtered;
 }
 // ---- "Person" filter (All Tasks): one person's tasks, user-id wise ----
 function personName(username) {
@@ -3379,6 +3410,33 @@ function searchBoxHTML() {
         </select>
       </div>` : ''}
       <div class="col">
+        <select id="task-sort" title="Order">
+          <option value="smart" ${ui.taskSort === 'smart' ? 'selected' : ''}>Order: urgent first</option>
+          <option value="newest" ${ui.taskSort === 'newest' ? 'selected' : ''}>Newest first</option>
+          <option value="oldest" ${ui.taskSort === 'oldest' ? 'selected' : ''}>Oldest first</option>
+          <option value="deadline" ${ui.taskSort === 'deadline' ? 'selected' : ''}>Deadline: soonest first</option>
+          <option value="deadline_late" ${ui.taskSort === 'deadline_late' ? 'selected' : ''}>Deadline: latest first</option>
+        </select>
+      </div>
+      <div class="col">
+        <select id="task-date" title="Date">
+          <option value="" ${!ui.taskDate ? 'selected' : ''}>Any date</option>
+          <option value="today" ${ui.taskDate === 'today' ? 'selected' : ''}>Today</option>
+          <option value="yesterday" ${ui.taskDate === 'yesterday' ? 'selected' : ''}>Yesterday</option>
+          <option value="7" ${ui.taskDate === '7' ? 'selected' : ''}>Last 7 days</option>
+          <option value="30" ${ui.taskDate === '30' ? 'selected' : ''}>Last 30 days</option>
+          <option value="month" ${ui.taskDate === 'month' ? 'selected' : ''}>This month</option>
+          <option value="custom" ${ui.taskDate === 'custom' ? 'selected' : ''}>Custom dates…</option>
+        </select>
+      </div>
+      ${ui.taskDate ? `<div class="col">
+        <select id="task-date-field" title="Which date">
+          <option value="created" ${ui.taskDateField !== 'deadline' ? 'selected' : ''}>by date created</option>
+          <option value="deadline" ${ui.taskDateField === 'deadline' ? 'selected' : ''}>by deadline</option>
+        </select>
+      </div>` : ''}
+      ${ui.taskDate === 'custom' ? `<div class="col task-date-custom"><input type="date" id="task-date-from" value="${esc(ui.taskDateFrom || '')}" aria-label="From"><span class="small muted">to</span><input type="date" id="task-date-to" value="${esc(ui.taskDateTo || '')}" aria-label="To"></div>` : ''}
+      <div class="col">
         <select id="task-filter-tagging">
           <option value="">Tagged or not</option>
           <option value="untagged" ${ui.taskFilterTagging === 'untagged' ? 'selected' : ''}>Not tagged yet</option>
@@ -3428,7 +3486,7 @@ function renderMyTasksCard() {
   const pageSize = tab === 'closed' ? HISTORY_PAGE_SIZE : OPEN_PAGE_SIZE;
   const shown = list.slice(0, ui[pageKey] || pageSize);
   const emptyText = myTasks.length === 0 ? 'No tasks yet.'
-    : ui.taskSearchQuery || ui.taskFilterProject || ui.taskFilterPhase || ui.taskFilterTagging || (ui.myOwnerFilter && ui.myOwnerFilter !== 'all') ? 'No tasks here match your search or filters.'
+    : ui.taskSearchQuery || ui.taskFilterProject || ui.taskFilterPhase || ui.taskFilterTagging || ui.taskDate || (ui.myOwnerFilter && ui.myOwnerFilter !== 'all') ? 'No tasks here match your search or filters.'
     : tab === 'closed' ? 'Nothing closed yet.' : tab === 'waiting' ? 'Nothing waiting on others.' : 'Nothing open right now. 🎉';
   return `
   <div class="card">
@@ -3460,7 +3518,7 @@ function renderAllTasksCard() {
   const list = tab === 'closed' ? closedAll : open;
   const pageKey = tab === 'closed' ? 'allHistoryShown' : 'allOpenShown';
   const shown = list.slice(0, ui[pageKey] || (tab === 'closed' ? HISTORY_PAGE_SIZE : OPEN_PAGE_SIZE));
-  const filtered = ui.taskSearchQuery || ui.taskFilterProject || ui.taskFilterPhase || ui.taskFilterTagging || ui.taskFilterPerson;
+  const filtered = ui.taskSearchQuery || ui.taskFilterProject || ui.taskFilterPhase || ui.taskFilterTagging || ui.taskFilterPerson || ui.taskDate;
   return `
   <div class="notice">Every task in the company — tagged people submit their part for approval; only whoever created the task (or Admin) can approve, reject, cancel, or force-close it.</div>
   <div class="card">
@@ -4431,7 +4489,7 @@ function openTaskOnMyTasks(taskId, retried) {
   if (w) {
     collapseTaskCards();
     ui.adminTab = 'tasks'; safeStorage.setItem('ls_last_tab', 'tasks');
-    ui.taskSearchQuery = taskId; ui.taskFilterProject = ''; ui.taskFilterPhase = ''; ui.taskFilterTagging = '';
+    ui.taskSearchQuery = taskId; ui.taskFilterProject = ''; ui.taskFilterPhase = ''; ui.taskFilterTagging = ''; ui.taskDate = '';
     ui.myOwnerFilter = 'informed'; ui.myOwnerPerson = '';
     ui.myTasksTab = w.status !== 'open' ? 'closed' : 'open';
     openDetails.add(`task-card-${taskId}`);
@@ -4441,7 +4499,7 @@ function openTaskOnMyTasks(taskId, retried) {
   }
   collapseTaskCards();
   ui.adminTab = inAll ? 'alltasks' : 'tasks'; safeStorage.setItem('ls_last_tab', ui.adminTab);
-  ui.taskSearchQuery = taskId; ui.taskFilterProject = ''; ui.taskFilterPhase = ''; ui.taskFilterTagging = '';
+  ui.taskSearchQuery = taskId; ui.taskFilterProject = ''; ui.taskFilterPhase = ''; ui.taskFilterTagging = ''; ui.taskDate = '';
   ui.myOwnerFilter = 'all'; ui.myOwnerPerson = '';
   if (t) {
     const me = (t.assignees || []).find(a => a.username === session.username);
@@ -7420,6 +7478,12 @@ function bindMyTasks() {
   if (filterProjectSelect) filterProjectSelect.onchange = () => { ui.taskFilterProject = filterProjectSelect.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; ui.myOpenShown = OPEN_PAGE_SIZE; ui.allOpenShown = OPEN_PAGE_SIZE; render(); };
   const filterPhaseSelect = document.getElementById('task-filter-phase');
   if (filterPhaseSelect) filterPhaseSelect.onchange = () => { ui.taskFilterPhase = filterPhaseSelect.value; ui.myHistoryShown = 20; ui.allHistoryShown = 20; ui.myOpenShown = OPEN_PAGE_SIZE; ui.allOpenShown = OPEN_PAGE_SIZE; render(); };
+  const resetPages = () => { ui.myHistoryShown = 20; ui.allHistoryShown = 20; ui.myOpenShown = OPEN_PAGE_SIZE; ui.allOpenShown = OPEN_PAGE_SIZE; };
+  const sortSel = document.getElementById('task-sort'); if (sortSel) sortSel.onchange = () => { ui.taskSort = sortSel.value; resetPages(); render(); };
+  const dateSel = document.getElementById('task-date'); if (dateSel) dateSel.onchange = () => { ui.taskDate = dateSel.value; resetPages(); render(); };
+  const dateField = document.getElementById('task-date-field'); if (dateField) dateField.onchange = () => { ui.taskDateField = dateField.value; resetPages(); render(); };
+  const dFrom = document.getElementById('task-date-from'); if (dFrom) dFrom.onchange = () => { ui.taskDateFrom = dFrom.value; resetPages(); render(); };
+  const dTo = document.getElementById('task-date-to'); if (dTo) dTo.onchange = () => { ui.taskDateTo = dTo.value; resetPages(); render(); };
   const filterTaggingSelect = document.getElementById('task-filter-tagging');
   if (filterTaggingSelect) filterTaggingSelect.onchange = () => { ui.taskFilterTagging = filterTaggingSelect.value; ui.myOpenShown = OPEN_PAGE_SIZE; ui.allOpenShown = OPEN_PAGE_SIZE; render(); };
   document.querySelectorAll('[data-add-delivery]').forEach(b => b.onclick = () => {
