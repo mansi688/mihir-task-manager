@@ -1940,3 +1940,6 @@ input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !importan
 .rec-dot.paused{animation:none;opacity:.4;}
 .task-date-custom{display:flex;align-items:center;gap:6px;}
 .task-date-custom input[type=date]{width:auto;min-width:140px;}
+/* an open search-dropdown must sit above the cards below it */
+.qs-open-host{position:relative;z-index:80 !important;}
+.qs-combo-list.up{top:auto;bottom:100%;margin-top:0;margin-bottom:3px;}

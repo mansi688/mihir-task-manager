@@ -7148,10 +7148,17 @@ function qsCombo(sel, active) {
     hi = Math.max(0, items.findIndex(o => o.value && o.value === sel.value)); if (words.length) hi = items.findIndex(o => o.value); if (hi < 0) hi = 0;
     list.innerHTML = items.length ? items.map((o, i) => `<div class="qs-opt ${i === hi ? 'hi' : ''} ${o.value === sel.value && o.value ? 'cur' : ''}" data-i="${i}">${(typeof esc === 'function' ? esc : String)(o.textContent.trim())}</div>`).join('') : '<div class="qs-none-msg">No match</div>';
     list.hidden = false;
+    // Cards are separate layers (their fade-in animation), so the card below would cover the list: lift this card
+    // above its neighbours while the list is open, and open upwards when there is no room below.
+    const host = wrap.closest('.card, .modal, .drawer') || wrap.parentElement;
+    if (host) host.classList.add('qs-open-host');
+    const r = inp.getBoundingClientRect(), below = window.innerHeight - r.bottom, above = r.top;
+    list.classList.toggle('up', below < 270 && above > below);
     const h = list.querySelector('.hi'); if (h && h.scrollIntoView) h.scrollIntoView({ block: 'nearest' });
   };
+  const unlift = () => { document.querySelectorAll('.qs-open-host').forEach(el => { if (!el.querySelector('.qs-combo-list:not([hidden])')) el.classList.remove('qs-open-host'); }); };
   const pick = (o) => {
-    list.hidden = true; delete qsState[sel.id];
+    list.hidden = true; unlift(); delete qsState[sel.id];
     if (!o) { inp.value = qsSelectedText(sel); return; }
     inp.value = o.value ? o.textContent.trim() : '';
     if (sel.value !== o.value) { sel.value = o.value; sel.dispatchEvent(new Event('input', { bubbles: true })); sel.dispatchEvent(new Event('change', { bubbles: true })); }
@@ -7165,7 +7172,7 @@ function qsCombo(sel, active) {
     else if (e.key === 'Escape') { pick(null); inp.blur(); }
   });
   list.addEventListener('mousedown', (e) => { const d = e.target.closest('.qs-opt'); if (!d) return; e.preventDefault(); pick(items[Number(d.dataset.i)]); inp.blur(); });
-  inp.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== inp) { list.hidden = true; delete qsState[sel.id]; inp.value = qsSelectedText(sel); } }, 150));
+  inp.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== inp) { list.hidden = true; unlift(); delete qsState[sel.id]; inp.value = qsSelectedText(sel); } }, 150));
   if (active && active.id === sel.id && active.combo) { inp.focus(); inp.value = active.text; qsState[sel.id] = active.text; show(active.text); try { inp.setSelectionRange(active.pos, active.pos); } catch (e) {} }
 }
 function qsFilterBox(sel, active) {

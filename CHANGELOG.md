@@ -5,6 +5,12 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.66] — 2026-11-20 — Search dropdowns no longer hidden behind the next card
+### Fixed
+- A typed-search dropdown (e.g. HR & Payroll → Rules → "Can check in from anywhere", person pickers everywhere)
+  opened underneath the card below it and could not be used. The card holding an open list is now lifted above
+  its neighbours, and the list opens upwards when there is no room below on the screen.
+
 ## [v1.65] — 2026-11-20 — Sort tasks and filter by date
 ### Added
 - **My Tasks / All Tasks / a person's tasks and search**: new **Order** — urgent first (as before), newest first,
