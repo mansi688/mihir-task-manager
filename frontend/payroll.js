@@ -42,13 +42,30 @@ document.addEventListener('click', async (e) => {
 
 // ---------- location + selfie
 function attGeo() {
-  return new Promise((resolve) => {
+  // 1) a fresh, accurate GPS fix; 2) if the phone / laptop can't give one, a quicker network fix; 3) the position the
+  // running location tracking saw in the last 2 minutes. The server still checks accuracy and the site circle.
+  const tracked = () => {
+    try {
+      const w = window.LocationUI && LocationUI._web && LocationUI._web.last;
+      if (w && Date.now() - w.t < 120000) return { lat: w.lat, lng: w.lng, acc: Math.round(w.acc || 0), fromTracking: true };
+    } catch (e) { /* ignore */ }
+    return null;
+  };
+  const once = (opts, ms) => new Promise((resolve) => {
     if (!navigator.geolocation) { resolve({ error: 'no GPS on this device' }); return; }
     let done = false; const fin = (v) => { if (!done) { done = true; resolve(v); } };
-    setTimeout(() => fin({ error: 'location took too long' }), 15000);
+    setTimeout(() => fin({ error: 'location took too long' }), ms);
     navigator.geolocation.getCurrentPosition(p => fin({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy || 0) }),
-      e => fin({ error: e && e.code === 1 ? 'location permission is off' : 'location not available' }), { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
+      e => fin({ error: e && e.code === 1 ? 'location permission is off for this site' : 'this device could not find its location', code: e && e.code }), opts);
   });
+  return (async () => {
+    const a = await once({ enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }, 15000);
+    if (!a.error) return a;
+    if (a.code === 1) return tracked() || a;
+    const b = await once({ enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }, 12000);
+    if (!b.error) return b;
+    return tracked() || { error: `${b.error} — on a laptop / desktop turn on Windows location (Settings → Privacy → Location) or use your phone` };
+  })();
 }
 function attSmallJpeg(file) {
   return new Promise((resolve) => {

@@ -146,7 +146,7 @@ function deliveryFormHTML() {
     ${f.task_id ? `<div class="notice" style="margin-top:10px;">From task <b>${dlvEsc(f.task_title || '')}</b> <span class="mono small">${dlvEsc(f.task_id)}</span> — only the title is copied.
       <b>The task will be closed</b> (its work is done) and from now on only this delivery is tracked — the site team you tag, not the people who did the task. The site team can still open the task.</div>
       ${(f.pendingParts || []).length ? `<div class="notice dlv-warn" style="margin-top:8px;">⚠ Still waiting for approval on the task: <b>${f.pendingParts.map(u => dlvEsc(personName(u))).join(', ')}</b>. Closing the task means their part will not count as approved work — approve them on the task first if they should get credit.</div>` : ''}` : ''}
-    ${f.fromShot ? `<div class="notice" style="margin-top:10px;">📸 Filled in from the Porter screenshot (attached). Check the details${(f.receivers || []).length ? '' : ' and <b>tag who receives it on site</b>'}, then tap <b>Add to deliveries</b>.</div>` : ''}
+    ${f.fromShot ? `<div class="notice" style="margin-top:10px;">📸 ${f.fromShot} detail${f.fromShot === 1 ? '' : 's'} filled in from the Porter screenshot (attached) — vehicle, driver, locations, date and time as shown. Fill in the rest (what is delivered, who receives it on site…), then tap <b>Add to deliveries</b>.</div>` : ''}
     ${f.mode !== 'edit' && !f.limited ? `<label class="btn btn-sm" style="margin-top:8px;">${ui.dlvShotBusy ? '⏳ Reading screenshot…' : '📸 Fill from a Porter screenshot'}<input type="file" accept="image/*" data-dlv-shot hidden></label>` : ''}
     ${f.limited ? `<div class="notice" style="margin-top:10px;">This delivery is already unloaded — only its documents list can still be changed.</div>` : `
     <div class="dlv-section">What and when</div>
@@ -533,8 +533,7 @@ function dlvStampPhoto(dataUrl, text, text2) {
 
 function bindDeliveriesView() {
   const act = (name, fn) => document.querySelectorAll(`[data-dlv-act="${name}"]`).forEach(el => el.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(el); });
-  // Porter screenshot → filled-in delivery. When the site team is known (the people on this project's last delivery)
-  // the delivery is added straight away; otherwise the form opens with only "who receives it" left to pick.
+  // Porter screenshot → the New delivery form with only the details read from the screenshot filled in.
   document.querySelectorAll('[data-dlv-shot]').forEach(inp => inp.onchange = () => {
     const file = (inp.files || [])[0]; if (!file || ui.dlvShotBusy) return;
     ui.dlvShotBusy = true; render();
@@ -544,16 +543,12 @@ function bindDeliveriesView() {
         const r = await api('/api/deliveries/read-screenshot', { method: 'POST', body: JSON.stringify({ image: data }), timeoutMs: 120000 });
         const x = r.fields || {};
         const cur = ui.deliveryForm && ui.deliveryForm.mode !== 'edit' ? ui.deliveryForm : { mode: 'new', title: '', receivers: [], files: [], search: '', required_docs: dlvDefaultRequired().slice() };
-        const fill = (k) => { if (x[k]) cur[k] = x[k]; };
-        ['title', 'transport', 'porter_order_id', 'vehicle_no', 'driver_name', 'driver_phone', 'project', 'site_location', 'vendor', 'expected_date', 'expected_time'].forEach(fill);
+        // Only the details read from the screenshot are filled in; the rest stays as it was (empty on a new form).
+        ['title', 'transport', 'porter_order_id', 'vehicle_no', 'driver_name', 'driver_phone', 'project', 'site_location', 'expected_date', 'expected_time'].forEach(k => { if (x[k]) cur[k] = x[k]; });
         if (x.description) cur.description = [cur.description, x.description].filter(Boolean).join('\n');
-        if (!(cur.receivers || []).length && (x.receivers || []).length) cur.receivers = x.receivers.filter(u => (userDirectory || []).some(p => p.username === u));
         cur.files = (cur.files || []).concat([{ name: file.name || 'porter-screenshot.jpg', data }]);
-        cur.fromShot = true;
+        cur.fromShot = Object.keys(x).filter(k => k !== 'description' && k !== 'transport').length;
         ui.deliveryForm = cur; ui.deliveryErr = ''; ui.dlvShotBusy = false;
-        if (!ui.deliveryForm.task_id && (cur.receivers || []).length && cur.title && cur.expected_date) {
-          render(); setTimeout(() => { const save = document.querySelector('[data-dlv-act="save-form"]'); if (save) save.click(); }, 80); return;
-        }
         render(); const el = document.getElementById('delivery-form'); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       } catch (e) { ui.dlvShotBusy = false; setBanner(e.message); render(); }
     });

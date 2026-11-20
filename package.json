@@ -1,7 +1,7 @@
 {
   "name": "mihir-task-manager",
   "version": "1.0.0",
-  "description": "MIHIR Task Manager — tasks, assignments, checklists, replies, escalating reminders, and drawing requests.",
+  "description": "MIHIR Task Manager \u2014 tasks, assignments, checklists, replies, escalating reminders, and drawing requests.",
   "main": "backend/server.js",
   "scripts": {
     "start": "node backend/server.js",
@@ -34,6 +34,9 @@
   },
   "overrides": {
     "qs": "^6.16.0",
-    "uuid": "^11.1.1"
+    "uuid": "^11.1.1",
+    "nodemon": {
+      "minimatch": "^11.0.9"
+    }
   }
 }

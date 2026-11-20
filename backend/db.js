@@ -517,6 +517,18 @@ async function init() {
   // Small company-wide settings (e.g. the common recovery PIN hash).
   await run('CREATE TABLE IF NOT EXISTS company_settings(key TEXT PRIMARY KEY, value TEXT, updated_by TEXT, updated_at TEXT)');
   await ensureColumn('users', 'device_poll_at', 'TEXT');
+  // One time: Dnyaneshwar Kolekar is kept informed on every OPEN task that has a project (new ones get it on creation).
+  try {
+    const done = await get("SELECT 1 AS x FROM company_settings WHERE key='backfill_always_inform_dk'");
+    if (!done && await get("SELECT 1 AS x FROM users WHERE username='dnyaneshwar.k'")) {
+      await run(`INSERT INTO task_followups(task_id, username, tagged_by, created_at)
+        SELECT t.id, 'dnyaneshwar.k', 'system', ? FROM tasks t WHERE t.status='open' AND t.archived_at IS NULL AND COALESCE(t.project,'') <> ''
+          AND t.created_by_username IS DISTINCT FROM 'dnyaneshwar.k'
+          AND NOT EXISTS (SELECT 1 FROM task_assignees a WHERE a.task_id=t.id AND a.username='dnyaneshwar.k')
+        ON CONFLICT (task_id, username) DO NOTHING`, [new Date().toISOString()]);
+      await run("INSERT INTO company_settings(key, value, updated_by, updated_at) VALUES('backfill_always_inform_dk','done','system',?) ON CONFLICT (key) DO NOTHING", [new Date().toISOString()]);
+    }
+  } catch (e) { /* not essential */ }
   await run(`CREATE TABLE IF NOT EXISTS leave_requests(
     id SERIAL PRIMARY KEY, username TEXT NOT NULL, from_day TEXT NOT NULL, to_day TEXT NOT NULL, half_day BOOLEAN NOT NULL DEFAULT FALSE,
     kind TEXT NOT NULL, days NUMERIC NOT NULL, reason TEXT, status TEXT NOT NULL DEFAULT 'pending',

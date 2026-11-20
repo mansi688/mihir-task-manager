@@ -5,6 +5,35 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.64] — 2026-11-20 — Uploads start again; Accounts search; Porter fills only what it reads
+### Fixed
+- **v1.62 never went live**: the new server waited for a database lock left behind by an earlier start (Supabase's
+  connection pooler can keep such a lock for ever) and gave up ("Query read timeout") — Render kept the old
+  version. Database updates now use a lock that is released with each update, so this can't happen again.
+- **Vercel "deployment failed" e-mails**: a Vercel project was also connected to this repository and tried to build
+  the task manager (which runs on Render) on every push. `vercel.json` now tells Vercel not to deploy this repo.
+  The CRM / sales portal on Vercel is not affected.
+- Last `npm audit` warnings (minimatch under nodemon, a development tool) — 0 vulnerabilities.
+### Added
+- **Accounts → search** above Existing Accounts: type a name, username, department, designation, phone or e-mail;
+  works together with the department filter, with a count of matches.
+### Changed
+- **Porter screenshot**: only what the screenshot shows is filled in — order id, vehicle number, driver, drop
+  location (Where on site), project when the drop address names one, date and time, and pickup / drop / vehicle /
+  fare in Notes. Nothing is guessed: what is delivered, vendor and who receives it stay empty for you to fill, and
+  the delivery is added only when you tap Add.
+
+## [v1.63] — 2026-11-20 — Dnyaneshwar Kolekar kept informed on every project task; check-in location fix
+### Added
+- **Dnyaneshwar Kolekar is kept informed on every task that has a project** (all projects) — new tasks, imported
+  tasks, and (once) every open project task already in the app. Not added on tasks he creates or is doing himself.
+  The list can be changed with `ALWAYS_INFORM_USERS`.
+### Fixed
+- Check in / out by button said "location not available" on some laptops and phones even with location on: it now
+  tries an accurate GPS fix, then a quicker network fix, then the position location tracking saw in the last
+  2 minutes — and says what to switch on when none works (on a laptop: Windows location). The server still checks
+  accuracy and the site circle.
+
 ## [v1.62] — 2026-11-20 — Porter screenshot → delivery, company recovery PIN, notification fixes, live photo back
 ### Added
 - **Deliveries → 📸 From Porter screenshot**: the AI reads the Porter booking screenshot (CRN / order id, driver name

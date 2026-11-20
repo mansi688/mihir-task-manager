@@ -4,6 +4,7 @@ const { startTestServer, api, login, createMember, futureDate } = require('../te
 const csvDataUrl = (text) => 'data:text/csv;base64,' + Buffer.from(text, 'utf8').toString('base64');
 
 test('project heads are kept informed only when the creator ticks them; departments tag their heads', async (t) => {
+  process.env.ALWAYS_INFORM_USERS = ''; // this file checks the project-head rule on its own
   const { baseUrl, stop } = await startTestServer();
   t.after(stop);
   const admin = await login(baseUrl, 'admin', 'admin123');

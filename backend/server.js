@@ -610,6 +610,20 @@ const PROJECT_HEADS = {
   'Nyati Equinox': ['anil.w', 'siddheshwar.p'],
   'Sierra (Tathawade)': ['dnyaneshwar.k'],
 };
+// Kept informed on EVERY task that has a project (all projects): Dnyaneshwar Kolekar. Change with ALWAYS_INFORM_USERS
+// (comma list of usernames; empty = nobody). Not added when they are the creator or already on the task.
+const ALWAYS_INFORM_USERS = String(process.env.ALWAYS_INFORM_USERS !== undefined ? process.env.ALWAYS_INFORM_USERS : 'dnyaneshwar.k').split(',').map(x => x.trim()).filter(Boolean);
+// tx: when called inside a transaction the lookup uses that same connection (a second pool connection per task
+// creation can exhaust the pool under load).
+async function alwaysInformFor(project, creator, alreadyOn, tx) {
+  if (!project || !ALWAYS_INFORM_USERS.length) return [];
+  const want = ALWAYS_INFORM_USERS.filter(u => u !== creator && !alreadyOn.has(u));
+  if (!want.length) return [];
+  const rows = tx ? await tx.all('SELECT username FROM users WHERE username = ANY(?::text[])', [want])
+    : (await db.pool.query('SELECT username FROM users WHERE username = ANY($1::text[])', [want])).rows;
+  const exist = new Set(rows.map(r => r.username));
+  return want.filter(u => exist.has(u));
+}
 // Heads to add for a task: only the ones the creator ticked, that really head this project, not the creator,
 // not someone already doing the task or already kept informed, and only accounts that exist.
 async function projectHeadsToAdd(project, creator, alreadyOn, chosen) {
@@ -2086,6 +2100,16 @@ async function insertTaskRecords(tx, actor, spec, { notify = true } = {}) {
     await db.addFollowup(id, uname, actor.username, tx);
     if (notify) await db.createNotification({ username: uname, type: 'followup_tagged', message: `${actor.name} created "${title}" on ${spec.project} — you are kept informed as project head.`, task_id: id }, tx);
   }
+  // Always kept informed on project tasks (e.g. Dnyaneshwar Kolekar).
+  const always = await alwaysInformFor(spec.project, actor.username, new Set([...tagged.map(t => t.username), ...(spec.followups || []), ...heads]), tx);
+  for (const uname of always) {
+    await db.addFollowup(id, uname, actor.username, tx);
+    if (notify) await db.createNotification({ username: uname, type: 'followup_tagged', message: `${actor.name} created "${title}" on ${spec.project} — you are kept informed on every project task.`, task_id: id }, tx);
+  }
+  if (always.length) {
+    const names = []; for (const u of always) { const r = await db.getUser(u); names.push(r ? r.name : u); }
+    await ev('FOLLOW_UP', `Kept informed (all project tasks): ${names.join(', ')}`, { metadata: { usernames: always, via: 'always_inform' } });
+  }
   if ((spec.departments || []).length) {
     const names = []; for (const u of spec.deptHeads || []) { const r = await db.getUser(u); names.push(r ? r.name : u); }
     await ev('ASSIGNED', `Departments tagged: ${spec.departments.join(', ')} — head${names.length > 1 ? 's' : ''} tagged: ${names.join(', ')}`, { metadata: { departments: spec.departments, usernames: spec.deptHeads || [], via: 'department' } });
@@ -2393,6 +2417,7 @@ app.post('/api/tasks/import', auth(ALL_ROLES), async (req, res) => {
     }));
     p.checklist.forEach((text, i) => bulk.checklist.push({ task_id: id, text, sort_order: i }));
     p.followups.forEach(u => { bulk.followups.push({ task_id: id, username: u, tagged_by: req.user.username }); note(u, 'followup', p.title, id); });
+    if (p.project) for (const u of await alwaysInformFor(p.project, req.user.username, new Set([...p.stageGroups.flat(), ...p.followups]))) { bulk.followups.push({ task_id: id, username: u, tagged_by: req.user.username }); note(u, 'followup', p.title, id); }
     created.push({ rowNumber: p.rowNumber, id, title: p.title });
   }
   const toUpdate = plan.plans.filter(p => p.errors.length === 0 && p.action === 'update');
@@ -4238,26 +4263,25 @@ app.post('/api/deliveries/read-screenshot', auth(ALL_ROLES), aiCallLimiter, asyn
   let r;
   try { r = await ai.readTransportScreenshot({ buffer: img.buffer, mime: img.mime, username: req.user.username, ctx: { projects: PROJECT_OPTIONS, today: localDateStr(new Date()) } }); }
   catch (e) { return res.status(aiErrorStatus(e)).json({ error: e.code ? e.message : (e.message || 'Could not read the screenshot.') }); }
+  // Only what the screenshot shows is filled in — everything else stays empty for the person to fill.
   const clean = (v, n) => (v == null ? '' : String(v).trim().slice(0, n));
-  const project = PROJECT_OPTIONS.includes(r.project) ? r.project : '';
-  // Who usually receives deliveries for this project: the people on the last one.
-  let receivers = [];
-  try {
-    const last = (await db.pool.query(`SELECT receivers FROM deliveries WHERE ($1 = '' OR project = $1) ORDER BY created_at DESC LIMIT 1`, [project])).rows[0];
-    receivers = last ? String(last.receivers || '').split(',').map(x => x.trim()).filter(Boolean) : [];
-    const ok = [];
-    for (const u of receivers) { const x = await db.getUser(u); if (x && (x.role === 'admin' || pageAllowedFor('deliveries', x.role, x.team) || x.manage_deliveries)) ok.push(u); }
-    receivers = ok; // only people who may still receive deliveries
-  } catch (e) { receivers = []; }
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(r.date || '') ? r.date : localDateStr(new Date());
-  const time = /^\d{2}:\d{2}$/.test(r.time || '') ? r.time : '';
+  const fields = {};
+  const put = (k, v) => { if (v) fields[k] = v; };
+  put('porter_order_id', clean(r.order_id, 80));
+  put('vehicle_no', clean(r.vehicle_no, 30).toUpperCase());
+  put('driver_name', clean(r.driver_name, 120));
+  put('driver_phone', clean(r.driver_phone, 30));
+  put('site_location', clean(r.drop_address, 200));
+  put('title', clean(r.goods, 200));
+  if (/^\d{4}-\d{2}-\d{2}$/.test(r.date || '')) fields.expected_date = r.date;
+  if (/^\d{2}:\d{2}$/.test(r.time || '')) fields.expected_time = r.time;
+  if (PROJECT_OPTIONS.includes(r.project)) fields.project = r.project;
+  if (Object.keys(fields).length) fields.transport = 'Porter';
   const notes = [r.pickup_address ? `Pickup: ${clean(r.pickup_address, 300)}` : '', r.drop_address ? `Drop: ${clean(r.drop_address, 300)}` : '',
-    r.vehicle_type ? `Vehicle: ${clean(r.vehicle_type, 60)}` : '', r.fare != null && isFinite(Number(r.fare)) ? `Porter fare: ₹${Number(r.fare)}` : '', r.status ? `Status in the screenshot: ${clean(r.status, 80)}` : ''].filter(Boolean).join('\n');
-  res.json({ fields: {
-    title: clean(r.goods, 200) || (r.vehicle_type ? `Material by Porter (${clean(r.vehicle_type, 40)})` : 'Material by Porter'),
-    transport: 'Porter', porter_order_id: clean(r.order_id, 80), vehicle_no: clean(r.vehicle_no, 30).toUpperCase(), driver_name: clean(r.driver_name, 120),
-    driver_phone: clean(r.driver_phone, 30), project, site_location: clean(r.drop_address, 200), vendor: clean(r.pickup_address, 160).split(',')[0].trim(),
-    expected_date: date, expected_time: time, description: notes, receivers }, read: r });
+    r.vehicle_type ? `Vehicle: ${clean(r.vehicle_type, 60)}` : '', r.fare != null && isFinite(Number(r.fare)) ? `Porter fare: ₹${Number(r.fare)}` : ''].filter(Boolean).join('\n');
+  put('description', notes);
+  if (!Object.keys(fields).length) return res.status(422).json({ error: 'Nothing could be read from that image — is it a Porter booking screenshot?' });
+  res.json({ fields, read: r });
 });
 /* backend/estimation.js — Estimation & Billing: JMR (joint measurement records) and material reconciliation. */
 const { mountEstimation } = require('./estimation');

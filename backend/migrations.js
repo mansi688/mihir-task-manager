@@ -644,10 +644,13 @@ const MIGRATIONS = [
   },
 ];
 
+// Each pending migration runs in its own transaction holding a TRANSACTION-level lock (pg_advisory_xact_lock),
+// released automatically at COMMIT / ROLLBACK. The old session-level lock could stay held for ever behind
+// Supabase's connection pooler (the unlock went to a different server connection), and then every new deploy
+// waited for it and failed to start ("Query read timeout").
 async function runMigrations(pool, log = console.log) {
   const client = await pool.connect();
   try {
-    await client.query("SELECT pg_advisory_lock(hashtext('mihir_task_manager_migrations'))");
     await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
       version TEXT PRIMARY KEY, name TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
     const done = new Set((await client.query('SELECT version FROM schema_migrations')).rows.map(r => r.version));
@@ -656,6 +659,9 @@ async function runMigrations(pool, log = console.log) {
       const started = Date.now();
       await client.query('BEGIN');
       try {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext('mihir_task_manager_migrations_v2'))");
+        // Another server may have applied it while we waited.
+        if ((await client.query('SELECT 1 FROM schema_migrations WHERE version=$1', [m.version])).rows.length) { await client.query('COMMIT'); continue; }
         await client.query(m.sql);
         await client.query('INSERT INTO schema_migrations(version, name) VALUES($1, $2)', [m.version, m.name]);
         await client.query('COMMIT');
@@ -667,7 +673,6 @@ async function runMigrations(pool, log = console.log) {
     }
     return MIGRATIONS[MIGRATIONS.length - 1].version;
   } finally {
-    try { await client.query("SELECT pg_advisory_unlock(hashtext('mihir_task_manager_migrations'))"); } catch (e) { /* connection gone; lock released with it */ }
     client.release();
   }
 }

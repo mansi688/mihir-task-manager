@@ -6801,6 +6801,13 @@ function companyPinCardHTML() {
     </div>
   </div>`;
 }
+// Accounts list: department filter + typed search (every word must match name, username, department, designation,
+// phone or email).
+function accountsShown() {
+  const words = String(ui.accountsQ || '').toLowerCase().split(/\s+/).filter(Boolean);
+  return userDirectory.filter(u => (!ui.accountsDeptFilter || u.team === ui.accountsDeptFilter)
+    && (!words.length || words.every(w => `${u.name} ${u.username} ${u.team || ''} ${u.designation || ''} ${u.phone || ''} ${u.email || ''} ${u.role || ''}`.toLowerCase().includes(w))));
+}
 function renderAccountsView() {
   return `${loginDetailsCardHTML()}${companyPinCardHTML()}
   <div class="card">
@@ -6839,15 +6846,17 @@ function renderAccountsView() {
   </div>
   <div class="card">
     <div class="flex-between">
-      <div class="card-title" style="margin:0;">Existing Accounts</div>
+      <div class="card-title" style="margin:0;">Existing Accounts <span class="small muted">(${accountsShown().length} of ${userDirectory.length})</span></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <input type="search" id="accounts-q" placeholder="Search name, username, department, phone…" value="${esc(ui.accountsQ || '')}" autocomplete="off" style="min-width:240px;">
       <select id="accounts-dept-filter" style="width:auto;">
         <option value="">All Departments</option>
         ${teamsList.map(t => `<option value="${esc(t)}" ${ui.accountsDeptFilter === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}
-      </select>
+      </select></div>
     </div>
     <p class="small muted">Click a name or username to edit it. Team Lead grants no special power over closing tasks — it currently only lets someone add new members to their own team from "My Team". Director accounts see only their own department's Performance/Peak-Hours by default — grant additional departments below their row.</p>
     <table><tr><th>Name</th><th>Username</th><th>Role</th><th>Team</th><th>Designation</th><th>Team Lead</th><th></th></tr>
-    ${userDirectory.filter(u => !ui.accountsDeptFilter || u.team === ui.accountsDeptFilter).map(u => `
+    ${accountsShown().map(u => `
       <tr>
         <td><input type="text" value="${esc(u.name)}" data-name-for="${esc(u.username)}" style="padding:5px 8px;font-size:12px;width:120px;"></td>
         <td><input type="text" class="mono" value="${esc(u.username)}" data-username-for="${esc(u.username)}" style="padding:5px 8px;font-size:12px;width:100px;"></td>
@@ -7712,6 +7721,8 @@ function bindAccounts() {
     try { await api('/api/teams', { method: 'POST', body: JSON.stringify({ name }) }); setBanner('Department added.', 'ok'); await refreshData(); }
     catch (e) { setBanner(e.message); render(); }
   };
+  const accQ = document.getElementById('accounts-q');
+  if (accQ && !accQ.dataset.bound) { accQ.dataset.bound = '1'; let tm = null; accQ.addEventListener('input', () => { clearTimeout(tm); tm = setTimeout(() => { ui.accountsQ = accQ.value; render(); }, 150); }); }
   const deptFilter = document.getElementById('accounts-dept-filter');
   if (deptFilter) deptFilter.onchange = () => { ui.accountsDeptFilter = deptFilter.value; render(); };
   document.querySelectorAll('[data-remove-department]').forEach(el => el.onclick = async () => {
