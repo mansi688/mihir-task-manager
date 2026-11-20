@@ -38,7 +38,7 @@ const ExcelJS = require('exceljs');
 
 const DEFAULTS = {
   shiftStart: '09:30', shiftEnd: '18:30', graceMin: 15, fullDayHours: 8, halfDayHours: 4, weeklyOff: [0],
-  lateMarksPerHalfDay: 3, otAfterMin: 30, otMultiplier: 1, paidLeavePerYear: 18, selfieRequired: false,
+  lateMarksPerHalfDay: 3, otAfterMin: 30, otMultiplier: 1, paidLeavePerYear: 18, selfieRequired: true,
   locationRequired: true, breakAllowanceMin: 60, autoAttendance: true, gpsMaxAccM: 100, checkoutAfterShiftMin: 30, siteTransferMin: 20,
   pfPercent: 12, pfWageCeiling: 15000, pfOnFullBasic: false, employerPfPercent: 12,
   esiEmployeePercent: 0.75, esiEmployerPercent: 3.25, esiGrossLimit: 21000,
@@ -105,8 +105,7 @@ function mountPayroll(app, deps) {
   }
   async function settingsFromDb() {
     const r = await one('SELECT data FROM payroll_settings WHERE id=1');
-    // No selfie any more: check-in / out is decided by location only.
-    return { ...DEFAULTS, ...((r && r.data) || {}), selfieRequired: false };
+    return { ...DEFAULTS, ...((r && r.data) || {}) };
   }
   async function holidaysBetween(from, to) { return rows('SELECT day, name FROM payroll_holidays WHERE day BETWEEN $1 AND $2 ORDER BY day', [from, to]); }
 
@@ -295,6 +294,11 @@ function mountPayroll(app, deps) {
     const S = await settings();
     const day = istDay();
     const geo = cleanGeo(b);
+    // Check-in / out by button: a live photo (taken in the app, not from the gallery) — kept for that day only.
+    const photo = cleanPhoto(b.photo);
+    if (photo === 'bad') return res.status(400).json({ error: 'The photo could not be read — take it again.' });
+    if (photo === 'big') return res.status(400).json({ error: 'The photo is too large — take it again.' });
+    if (S.selfieRequired && !photo) return res.status(400).json({ error: 'Take a live photo to ' + (which === 'in' ? 'check in.' : 'check out.') });
     const placeList = await places();
     // Strict GPS for a check-in / out from the phone: a fresh fix, accurate to gpsMaxAccM, inside the circle (at most
     // 15 m of GPS error is allowed for).
@@ -309,7 +313,7 @@ function mountPayroll(app, deps) {
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'manual',$3,$3) ON CONFLICT (username, day) DO UPDATE SET check_in_at=EXCLUDED.check_in_at, in_lat=EXCLUDED.in_lat, in_lng=EXCLUDED.in_lng, in_acc=EXCLUDED.in_acc,
         in_place=EXCLUDED.in_place, in_away=EXCLUDED.in_away, in_photo=EXCLUDED.in_photo, in_source='manual', updated_at=EXCLUDED.updated_at
         WHERE attendance_days.check_in_at IS NULL RETURNING check_in_at`,
-      [req.user.username, day, t, geo && geo.lat, geo && geo.lng, geo && geo.acc, where.place, !!(geo && where.away), null]);
+      [req.user.username, day, t, geo && geo.lat, geo && geo.lng, geo && geo.acc, where.place, !!(geo && where.away), photo]);
       if (!ins.rows[0]) return res.status(400).json({ error: 'You are already checked in today.' });
     } else {
       if (!rec || !rec.check_in_at) return res.status(400).json({ error: 'Check in first.' });
@@ -318,7 +322,7 @@ function mountPayroll(app, deps) {
       const breaks = closeOpenBreak(rec.breaks, t, where.place);
       const away = await awayMinutes(req.user.username, rec.check_in_at, t, breaks, placeList);
       const up = await q("UPDATE attendance_days SET check_out_at=$3, out_lat=$4, out_lng=$5, out_acc=$6, out_place=$7, out_away=$8, out_photo=$9, breaks=$10, away_minutes=$11, out_source='manual', updated_at=$3 WHERE username=$1 AND day=$2 AND check_out_at IS NULL RETURNING check_out_at",
-        [req.user.username, day, t, geo && geo.lat, geo && geo.lng, geo && geo.acc, where.place, !!(geo && where.away), null, JSON.stringify(breaks), away]);
+        [req.user.username, day, t, geo && geo.lat, geo && geo.lng, geo && geo.acc, where.place, !!(geo && where.away), photo, JSON.stringify(breaks), away]);
       if (!up.rows[0]) return res.status(400).json({ error: 'You are already checked out today.' });
     }
     const late = which === 'in' && minutesOf(istHM(t)) > minutesOf(S.shiftStart) + Number(S.graceMin || 0);
@@ -536,6 +540,7 @@ function mountPayroll(app, deps) {
     for (const [k, [lo, hi]] of Object.entries(ranges)) if (b[k] != null && b[k] !== '') { const v = num(b[k], lo, hi); if (v == null) return res.status(400).json({ error: `${k} must be between ${lo} and ${hi}.` }); next[k] = v; }
     if (b.weeklyOff != null) next.weeklyOff = (Array.isArray(b.weeklyOff) ? b.weeklyOff : []).map(Number).filter(n => n >= 0 && n <= 6);
     if (b.autoAttendance != null) next.autoAttendance = !!b.autoAttendance;
+    if (b.selfieRequired != null) next.selfieRequired = !!b.selfieRequired;
     if (b.checkoutAfterShiftMin != null) next.checkoutAfterShiftMin = Math.max(0, Math.min(240, Math.round(Number(b.checkoutAfterShiftMin) || 0)));
     if (b.siteTransferMin != null) next.siteTransferMin = Math.max(0, Math.min(120, Math.round(Number(b.siteTransferMin) || 0)));
     if (b.gpsMaxAccM != null) next.gpsMaxAccM = Math.max(20, Math.min(200, Math.round(Number(b.gpsMaxAccM) || 100)));
@@ -898,7 +903,16 @@ function mountPayroll(app, deps) {
       return r ? { at: new Date(r.last_inside_at).toISOString(), place: r.name } : null;
     } catch (e) { return null; }
   }
+  // Attendance photos are kept for the day only: from the next day they are deleted.
+  let photosPurgedFor = null;
+  async function purgeOldPhotos(today) {
+    if (photosPurgedFor === today) return 0;
+    const r = await q('UPDATE attendance_days SET in_photo=NULL, out_photo=NULL WHERE day < $1 AND (in_photo IS NOT NULL OR out_photo IS NOT NULL)', [today]);
+    photosPurgedFor = today;
+    return r.rowCount;
+  }
   async function autoSweep(nowDate = new Date()) {
+    await purgeOldPhotos(istDay(nowDate)).catch(() => 0);
     const S = await settings();
     if (!S.autoAttendance) return { skipped: 'off' };
     const today = istDay(nowDate);

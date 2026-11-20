@@ -5,6 +5,32 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.62] — 2026-11-20 — Porter screenshot → delivery, company recovery PIN, notification fixes, live photo back
+### Added
+- **Deliveries → 📸 From Porter screenshot**: the AI reads the Porter booking screenshot (CRN / order id, driver name
+  and phone, vehicle number and type, pickup and drop, date and time, fare, goods) and fills in the delivery, with
+  the screenshot attached and the site team of that project's last delivery. When the site team is known the
+  delivery is added straight away; otherwise the form opens with only "who receives it" to pick. Also inside the
+  New delivery form: "Fill from a Porter screenshot".
+- **Company recovery PIN** (Admin → Accounts): one 6-digit PIN that resets any account's password except Admin's
+  (login page → Forgot password?), for people who forget their own PIN too. Each use is written to the Audit Log and
+  the person and Admin get a notification. Admin can change or remove it.
+- **System health → Phone notifications**: how many people get notifications on a phone (notifications turned on /
+  MIHIR app) and the list of people who get none, to ask them to turn them on.
+- In the MIHIR phone app, location (and so the automatic check-in) starts by itself once the person has accepted
+  the location notice — unless they stopped it themselves that day.
+### Changed
+- **Reminders**: at the 9 AM / 3 PM / 6 PM slots, a person with more than 3 reminders now gets ONE summary
+  ("📋 47 of your tasks need attention…") instead of a card per task — the next slot replaces it. This is what sent
+  Vaibhav (and others with many open tasks) ~100 notifications at once, which the phone service then refused.
+- A phone notification the push service asks to delay is now sent later (as one), not marked failed; an old phone
+  that was removed is recorded as "cancelled", not as a failure — System health shows only real problems.
+- **Live photo is back for check-in / check-out by button** (camera only, not the gallery), together with the
+  location check. Automatic check-in / out from location needs no photo. Photos are kept for the day only — from
+  the next day they are deleted. HR → Today shows 📷 In / 📷 Out; HR → Rules can switch the photo off.
+### Database: new table `company_settings`; new column `users.device_poll_at`. API: `GET/POST /api/admin/company-pin`,
+`POST /api/deliveries/read-screenshot`.
+
 ## [v1.61] — 2026-11-20 — Automatic check-in / out, better Meetings, faster pages, security fixes
 ### Added
 - **Automatic check-in and check-out from location tracking** (no selfie any more). With location on:

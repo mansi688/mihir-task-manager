@@ -266,7 +266,52 @@ function createAI({ pool, env = process.env, fetchImpl = fetch, log = () => {}, 
     await record({ feature, source, username, inTokens: result.inTokens, outTokens: result.outTokens, audio });
     return result.out;
   }
+  // Porter (or any transport app) booking screenshot → delivery details. Nothing is guessed: a value not visible
+  // in the screenshot comes back null.
+  const PORTER_SCHEMA = { type: 'OBJECT', properties: {
+    order_id: { type: 'STRING', nullable: true }, vehicle_no: { type: 'STRING', nullable: true }, vehicle_type: { type: 'STRING', nullable: true },
+    driver_name: { type: 'STRING', nullable: true }, driver_phone: { type: 'STRING', nullable: true },
+    pickup_address: { type: 'STRING', nullable: true }, drop_address: { type: 'STRING', nullable: true },
+    date: { type: 'STRING', nullable: true }, time: { type: 'STRING', nullable: true }, fare: { type: 'NUMBER', nullable: true },
+    goods: { type: 'STRING', nullable: true }, status: { type: 'STRING', nullable: true }, project: { type: 'STRING', nullable: true } } };
+  const PORTER_RULES = [
+    'You read a screenshot of a goods-transport booking (usually the Porter app, India) and return its details as JSON.',
+    'order_id: the booking / order / CRN id exactly as shown. vehicle_no: Indian registration number (e.g. MH12AB1234), as shown.',
+    'vehicle_type: e.g. "Tata Ace", "3 Wheeler", "Pickup 8ft". driver_name, driver_phone (10 digits, Indian mobile) of the driver / partner.',
+    'pickup_address and drop_address as shown. date as YYYY-MM-DD and time as HH:MM (24 h) of the pickup / booking / expected arrival.',
+    'fare in rupees as a number. goods: the goods type / description if shown. status: e.g. "Driver on the way", "Trip completed".',
+    'project: if the drop address clearly matches one of these company projects, its exact name; else null. Projects: {PROJECTS}',
+    'Today is {TODAY} (India). Use null for anything not visible — never invent a value.',
+  ].join('\n');
+  function mockPorter(text, ctx) {
+    const t = String(text || '');
+    const pick = (re) => { const m = re.exec(t); return m ? m[1].trim() : null; };
+    const phone = pick(/(?:\+91[\s-]?)?\b([6-9]\d{4}\s?\d{5})\b/);
+    const drop = pick(/drop[^:\n]*:\s*([^\n]+)/i);
+    return { order_id: pick(/\b(CRN\s?\d{6,})\b/i) || pick(/order\s*(?:id|no)[:\s#]*([A-Z0-9-]{5,})/i), vehicle_no: pick(/\b([A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,3}\s?\d{3,4})\b/),
+      vehicle_type: pick(/vehicle[^:\n]*:\s*([^\n]+)/i), driver_name: pick(/driver[^:\n]*:\s*([A-Za-z .]+)/i), driver_phone: phone ? phone.replace(/\s/g, '') : null,
+      pickup_address: pick(/pick ?up[^:\n]*:\s*([^\n]+)/i), drop_address: drop, date: pick(/\b(\d{4}-\d{2}-\d{2})\b/), time: pick(/\b([01]\d|2[0-3]):([0-5]\d)\b/) ? (/\b(([01]\d|2[0-3]):[0-5]\d)\b/.exec(t) || [])[1] : null,
+      fare: (() => { const f = pick(/(?:₹|rs\.?|fare[:\s]*)\s*([\d,]+(?:\.\d+)?)/i); return f ? Number(f.replace(/,/g, '')) : null; })(),
+      goods: pick(/goods[^:\n]*:\s*([^\n]+)/i), status: null,
+      project: drop ? ((ctx.projects || []).find(p => drop.toLowerCase().includes(String(p).toLowerCase().split(' ').pop())) || null) : null };
+  }
+  async function readTransportScreenshot({ buffer, mime, username, ctx = {} }) {
+    if (!configured) throw new AINotConfigured();
+    await guardBudget();
+    if (provider === 'mock') {
+      await record({ feature: 'porter_screenshot', source: 'delivery', username, inTokens: 300, outTokens: 120 });
+      return mockPorter(buffer.toString('utf8'), ctx);
+    }
+    const sys = PORTER_RULES.replace('{PROJECTS}', (ctx.projects || []).join('; ') || '—').replace('{TODAY}', ctx.today || new Date().toISOString().slice(0, 10));
+    const j = await geminiPost({ systemInstruction: { parts: [{ text: sys }] }, contents: [{ role: 'user', parts: [{ inline_data: { mime_type: mime || 'image/jpeg', data: buffer.toString('base64') } }, { text: 'Read this booking screenshot.' }] }],
+      generationConfig: { temperature: 0, responseMimeType: 'application/json', responseSchema: PORTER_SCHEMA } });
+    await record({ feature: 'porter_screenshot', source: 'delivery', username, inTokens: (j.usageMetadata || {}).promptTokenCount || 0, outTokens: (j.usageMetadata || {}).candidatesTokenCount || 0 });
+    const text = ((((j.candidates || [])[0] || {}).content || {}).parts || []).map(x => x.text || '').join('');
+    try { return JSON.parse(text); } catch (e) { throw new Error('Could not read the screenshot — please fill the details in by hand.'); }
+  }
+
   return {
+    readTransportScreenshot,
     configured, provider: configured ? provider : null, get model() { return provider === 'mock' ? 'mock' : model; },
     extractTasks: ({ text, source, username, ctx }) => run({ feature: 'task_extraction', source, username, parts: [{ text: `MESSAGE:\n${text}` }], rawText: text, ctx: { ...ctx, mode: 'task' } }),
     // Audio → transcript (original language) + tasks in ONE call. In mock mode the "audio" bytes are read as UTF-8 text.

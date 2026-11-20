@@ -44,3 +44,26 @@ test('forgot password with a recovery PIN; team leads reset their own team', asy
     assert.equal((await P(lead, '/api/users/admin/reset-password', { newPassword: 'Store@5512' })).status, 403);
   });
 });
+
+test('company recovery PIN: works for everyone but Admin, every use is told', async (t) => {
+  const { baseUrl, stop } = await startTestServer();
+  t.after(() => stop());
+  const admin = await login(baseUrl, 'admin', 'admin123');
+  const P = (tok, path, body) => api(baseUrl, path, { method: 'POST', token: tok, body });
+  const u = await createMember(baseUrl, admin, 'forgot.all', 'Forgot All', 'Execution Department');
+  assert.equal((await P(u, '/api/admin/company-pin', { pin: '583920' })).status, 403, 'Admin only');
+  assert.equal((await P(admin, '/api/admin/company-pin', { pin: '1234' })).status, 400, '6 digits');
+  assert.equal((await P(admin, '/api/admin/company-pin', { pin: '123456' })).status, 400, 'not an easy one');
+  assert.equal((await P(admin, '/api/admin/company-pin', { pin: '583920' })).status, 200);
+  assert.equal((await api(baseUrl, '/api/admin/company-pin', { token: admin })).data.set, true);
+  // The person never set their own PIN — the company PIN still works.
+  const r = await P(null, '/api/auth/forgot-password', { username: 'forgot.all', pin: '583920', newPassword: 'Brick@2468' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.ok(await login(baseUrl, 'forgot.all', 'Brick@2468'));
+  const theirs = (await api(baseUrl, '/api/notifications', { token: await login(baseUrl, 'forgot.all', 'Brick@2468') })).data.items;
+  assert.ok(theirs.some(n => /company recovery PIN/.test(n.message)), 'the person is told');
+  assert.ok((await api(baseUrl, '/api/notifications', { token: admin })).data.items.some(n => /Forgot All .* company recovery PIN/.test(n.message)), 'Admin is told');
+  assert.equal((await P(null, '/api/auth/forgot-password', { username: 'admin', pin: '583920', newPassword: 'Brick@2468' })).status, 400, 'never for Admin');
+  assert.equal((await P(admin, '/api/admin/company-pin', { pin: '', remove: true })).status, 200);
+  assert.equal((await P(null, '/api/auth/forgot-password', { username: 'forgot.all', pin: '583920', newPassword: 'Brick@9999' })).status, 400, 'removed');
+});

@@ -6,8 +6,9 @@ const { startTestServer, api, login, createMember, futureDate } = require('../te
 // on when the suite runs. Tasks are created now, so at tomorrow 09:05 they are < 48 h old (no
 // age escalations interfere).
 test('Phase 2 — reminder engine: windows, due today, overdue days, combining, anti-spam, idempotency, follow-up', async (t) => {
+  process.env.REMINDER_DIGEST_AFTER = '1000'; // these checks look at each task's own message (summary is tested below)
   const { baseUrl, stop, getRawClient } = await startTestServer();
-  t.after(() => stop());
+  t.after(() => { delete process.env.REMINDER_DIGEST_AFTER; return stop(); });
   const admin = await login(baseUrl, 'admin', 'admin123');
   const eng = await createMember(baseUrl, admin, 'eng.x', 'Eng X', 'Site');
   const eng2 = await createMember(baseUrl, admin, 'eng.y', 'Eng Y', 'Site');
@@ -123,4 +124,26 @@ test('Phase 2 — reminder engine: windows, due today, overdue days, combining, 
     const hist = (await api(baseUrl, `/api/tasks/${id}/events?type=FOLLOW_UP_SENT`, { token: admin })).data.events;
     assert.equal(hist.length, 2);
   });
+});
+
+test('many reminders for one person in one slot → one summary notification', async (t) => {
+  delete process.env.REMINDER_DIGEST_AFTER;
+  const { baseUrl, stop } = await startTestServer();
+  t.after(() => stop());
+  const admin = await login(baseUrl, 'admin', 'admin123');
+  const busy = await createMember(baseUrl, admin, 'busy.v', 'Busy V', 'Purchase');
+  const calm = await createMember(baseUrl, admin, 'calm.c', 'Calm C', 'Purchase');
+  const D = futureDate(1);
+  for (let i = 0; i < 6; i++) await api(baseUrl, '/api/tasks', { method: 'POST', token: admin, body: { title: `Order item ${i}`, deadline: futureDate(-3), assignedToList: ['busy.v'] } });
+  await api(baseUrl, '/api/tasks', { method: 'POST', token: admin, body: { title: 'One item', deadline: futureDate(-3), assignedToList: ['calm.c'] } });
+  const s = (await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: admin, body: { at: `${D}T09:05:00+05:30` } })).data;
+  assert.ok(s.digests >= 1, 'busy.v (and the creator, copied on overdue tasks) get a summary');
+  const items = (await api(baseUrl, '/api/notifications', { token: busy })).data.items.filter(n => n.type !== 'task_assigned');
+  assert.equal(items.length, 1, 'one summary instead of six cards');
+  assert.equal(items[0].type, 'task_reminder_digest'); assert.match(items[0].message, /^📋 6 of your tasks need attention/);
+  const calmItems = (await api(baseUrl, '/api/notifications', { token: calm })).data.items.filter(n => n.type !== 'task_assigned');
+  assert.equal(calmItems.length, 1); assert.notEqual(calmItems[0].type, 'task_reminder_digest', 'a single reminder stays a normal card');
+  // The next slot replaces the summary, it does not stack.
+  await api(baseUrl, '/api/tasks/send-reminders-now', { method: 'POST', token: admin, body: { at: `${D}T15:05:00+05:30` } });
+  assert.equal((await api(baseUrl, '/api/notifications', { token: busy })).data.items.filter(n => n.type === 'task_reminder_digest').length, 1);
 });

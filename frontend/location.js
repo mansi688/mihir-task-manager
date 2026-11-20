@@ -62,7 +62,19 @@
     catch (e) { /* offline: keep the last state */ }
     finally { S.meLoading = false; }
     syncTrackers();
+    maybeAutoStart();
     render();
+  }
+  // In the MIHIR phone app, location starts by itself (attendance is automatic) once the person has accepted the
+  // location notice — unless they stopped it themselves today. The website can't send location in the background.
+  let autoTried = false;
+  function maybeAutoStart() {
+    if (autoTried || !Native.available() || !S.me || !S.me.enabled || S.me.activeSession || S.myBusy) return;
+    if (!(S.me.consent && S.me.consent.accepted) || (S.me.eligible && S.me.eligible.ok === false)) return;
+    let stopped = null; try { stopped = safeStorage.getItem('loc_stopped_day'); } catch (e) { /* ignore */ }
+    if (stopped === today()) return;
+    autoTried = true;
+    startWork(true);
   }
 
   // ---------- trackers: native app (background) or this browser (foreground only) ----------
@@ -167,8 +179,9 @@
     if (active.platform === 'web' && mine === String(active.id) && !Web.running()) Web.start(active.id, S.me.config || {});
   }
 
-  async function startWork() {
+  async function startWork(quiet) {
     if (S.myBusy) return;
+    try { safeStorage.removeItem('loc_stopped_day'); } catch (e) { /* ignore */ }
     S.myBusy = true; render();
     try {
       const platform = Native.platform();
@@ -177,6 +190,7 @@
       if (Native.available()) {
         const out = Native.start({ uploadUrl: location.origin + '/api/location/points', sightingsUrl: location.origin + '/api/location/indoor/sightings', token: r.uploadToken, sessionId: r.session.id, config: r.config, name: session.name });
         if (out === 'asking') setBanner('Tap "Allow" when the phone asks for location — the session starts as soon as you do.', 'ok');
+        else if (quiet === true && out !== 'denied') { /* started by itself — no message */ }
         else if (out === 'denied') {
           await api('/api/location/sessions/stop', { method: 'POST' });
           setBanner('Location permission was refused, so the work session was not started. Allow "Location" for the MIHIR app in phone settings and try again.');
@@ -191,6 +205,7 @@
   }
   async function stopWork() {
     if (S.myBusy) return;
+    try { safeStorage.setItem('loc_stopped_day', today()); } catch (e) { /* ignore */ }
     S.myBusy = true; render();
     try {
       if (Native.available()) Native.stop();

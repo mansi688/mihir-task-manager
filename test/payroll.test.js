@@ -26,8 +26,9 @@ test('attendance, leave and a month of payroll', async (t) => {
   const P = (tok, path, body) => api(baseUrl, path, { method: 'POST', token: tok, body });
   const G = (tok, path) => api(baseUrl, path, { token: tok });
 
-  await t.test('check in / out on the phone (no selfie)', async () => {
-    const a = await P(emp, '/api/attendance/check-in', { lat: 18.5, lng: 73.8, acc: 10 });
+  await t.test('check in / out by button: live photo, kept for the day only', async () => {
+    assert.equal((await P(emp, '/api/attendance/check-in', { lat: 18.5, lng: 73.8, acc: 10 })).status, 400, 'live photo needed');
+    const a = await P(emp, '/api/attendance/check-in', { lat: 18.5, lng: 73.8, acc: 10, photo: SELFIE });
     assert.equal(a.status, 200, JSON.stringify(a.data));
     assert.equal((await P(emp, '/api/attendance/check-in', { photo: SELFIE })).status, 400, 'only once a day');
     assert.equal((await P(emp, '/api/attendance/check-out', { lat: 18.5, lng: 73.8, photo: SELFIE })).status, 200);
@@ -36,9 +37,18 @@ test('attendance, leave and a month of payroll', async (t) => {
     assert.equal((await G(emp, '/api/attendance/today')).status, 403);
     const today = (await G(hr, '/api/attendance/today')).data;
     assert.ok(today.list.find(x => x.username === 'pay.emp').in);
-    const day = me.today;
-    assert.equal((await G(hr, `/api/attendance/photo/pay.emp/${day}/in`)).status, 404, 'no photo is kept any more');
     assert.equal(today.list.find(x => x.username === 'pay.emp').inHow, 'phone');
+    const day = me.today;
+    assert.equal((await G(hr, `/api/attendance/photo/pay.emp/${day}/in`)).status, 200);
+    assert.equal((await G(other, `/api/attendance/photo/pay.emp/${day}/in`)).status, 403);
+    // The next day the photos are gone.
+    const raw = await getRawClient();
+    await raw.query("INSERT INTO attendance_days(username, day, check_in_at, in_photo, out_photo, created_at) VALUES('pay.emp', '2020-01-02', '2020-01-02T04:00:00Z', 'x', 'y', '2020-01-02T04:00:00Z')");
+    await P(hr, '/api/attendance/auto-run', {});
+    const left = (await raw.query("SELECT in_photo, out_photo FROM attendance_days WHERE username='pay.emp' AND day='2020-01-02'")).rows[0];
+    assert.equal(left.in_photo, null); assert.equal(left.out_photo, null);
+    assert.ok((await raw.query("SELECT in_photo FROM attendance_days WHERE username='pay.emp' AND day=$1", [day])).rows[0].in_photo, "today's photo stays");
+    await raw.end();
   });
 
   await t.test('only inside a site; breaks of up to an hour; exempt people check in anywhere', async () => {

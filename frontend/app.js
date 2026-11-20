@@ -867,7 +867,7 @@ const NOTIF_CATS = [
   { key: 'other', label: 'Other', icon: 'bell', hint: 'Everything else.' },
 ];
 const NOTIF_TYPE_CAT = {
-  task_reminder: 'reminder', task_reminder_recurring: 'reminder', task_reminder_3day: 'reminder', deadline_window: 'reminder', deadline_soon: 'reminder', deadline_due_today: 'reminder', follow_up: 'reminder',
+  task_reminder_digest: 'reminder', task_reminder: 'reminder', task_reminder_recurring: 'reminder', task_reminder_3day: 'reminder', deadline_window: 'reminder', deadline_soon: 'reminder', deadline_due_today: 'reminder', follow_up: 'reminder',
   deadline_passed: 'warning', task_overdue_days: 'warning', task_warning: 'warning', task_warning_urgent: 'warning', task_warning_creator: 'warning', task_flagged: 'flagged', admin_late_flag: 'flagged', weekly_warning_digest: 'warning',
   task_assigned: 'task', task_reply: 'task', task_closed: 'task', task_reopened: 'task', task_deleted: 'task', task_rejected: 'task', individual_deadline_set: 'task', level_changed: 'task', mentioned_in_comment: 'task', followup_tagged: 'task', meeting_summary: 'task',
   task_submitted: 'approval', approval_requested: 'approval', approval_rejected: 'approval', approval_approved: 'approval', closure_requested: 'approval', extension_requested: 'approval', leave_requested: 'approval', leave_decided: 'approval', payroll_submitted: 'approval', payroll_approved: 'approval', payslip_ready: 'approval', extension_decided: 'approval', closure_approved: 'approval', closure_declined: 'approval', est_submitted: 'approval', est_decided: 'approval', est_remark: 'approval', est_jmr_open: 'approval', est_recon_due: 'approval', est_completed: 'approval', ap_bill_added: 'approval', ap_reminder: 'reminder', ap_update: 'approval', ap_reply: 'approval', ap_followup: 'approval', compliance_due: 'reminder', compliance_done: 'approval',
@@ -876,8 +876,8 @@ const NOTIF_TYPE_CAT = {
   delivery_scheduled: 'delivery', delivery_update: 'delivery', delivery_delivered: 'delivery', delivery_unloaded: 'delivery', delivery_reminder: 'delivery', delivery_followup: 'delivery', delivery_document: 'delivery', delivery_payment: 'delivery', budget_verify: 'delivery', budget_allotted: 'delivery', budget_verified: 'delivery', budget_topup: 'delivery',
 };
 const notifCat = n => NOTIF_TYPE_CAT[n.type] || 'other';
-const NOTIF_TYPE_ICON = { task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', extension_requested: 'clock', leave_requested: 'clock', leave_decided: 'checkCircle', payroll_submitted: 'wallet', payroll_approved: 'wallet', payslip_ready: 'wallet', extension_decided: 'clock', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin', delivery_scheduled: 'truck', delivery_update: 'truck', delivery_delivered: 'truck', delivery_unloaded: 'checkCircle', delivery_reminder: 'clock', delivery_followup: 'truck', delivery_document: 'clipboard', delivery_payment: 'clipboard', budget_verify: 'wallet', budget_allotted: 'wallet', budget_verified: 'wallet', budget_topup: 'wallet', est_submitted: 'clipboard', est_decided: 'checkCircle', est_remark: 'chat', est_jmr_open: 'checkCircle', est_recon_due: 'clipboard', est_completed: 'checkCircle', ap_bill_added: 'wallet', ap_reminder: 'clock', ap_update: 'wallet', ap_reply: 'chat', ap_followup: 'wallet', compliance_due: 'clock', compliance_done: 'checkCircle' };
-const NOTIF_TYPE_LABEL = { task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', extension_requested: 'More time requested', leave_requested: 'Leave requested', leave_decided: 'Leave decision', payroll_submitted: 'Payroll to approve', payroll_approved: 'Payroll approved', payslip_ready: 'Payslip ready', extension_decided: 'Deadline extension decision', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked', delivery_scheduled: 'Delivery coming', delivery_update: 'Delivery update', delivery_delivered: 'Delivered at site', delivery_unloaded: 'Unloaded at site', delivery_reminder: 'Delivery reminder', delivery_followup: 'Delivery follow-up', delivery_document: 'Delivery document', delivery_payment: 'Delivery payment', budget_verify: 'Payment to verify', budget_allotted: 'Money allotted', budget_verified: 'Payment checked', budget_topup: 'Top-up requested', est_submitted: 'Estimation to approve', est_decided: 'Estimation decision', est_remark: 'Estimation remark', est_jmr_open: 'Estimate approved — JMR open', est_recon_due: 'Reconciliation report due', est_completed: 'Estimate completed', ap_bill_added: 'New vendor bill', ap_reminder: 'Payment due', ap_update: 'Bill update from Accounts', ap_reply: 'Reply from Purchase', ap_followup: 'Payment follow-up', compliance_due: 'Compliance due date', compliance_done: 'Compliance done' };
+const NOTIF_TYPE_ICON = { task_reminder_digest: 'clipboard', attendance: 'clock', security: 'alertTriangle', task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', extension_requested: 'clock', leave_requested: 'clock', leave_decided: 'checkCircle', payroll_submitted: 'wallet', payroll_approved: 'wallet', payslip_ready: 'wallet', extension_decided: 'clock', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin', delivery_scheduled: 'truck', delivery_update: 'truck', delivery_delivered: 'truck', delivery_unloaded: 'checkCircle', delivery_reminder: 'clock', delivery_followup: 'truck', delivery_document: 'clipboard', delivery_payment: 'clipboard', budget_verify: 'wallet', budget_allotted: 'wallet', budget_verified: 'wallet', budget_topup: 'wallet', est_submitted: 'clipboard', est_decided: 'checkCircle', est_remark: 'chat', est_jmr_open: 'checkCircle', est_recon_due: 'clipboard', est_completed: 'checkCircle', ap_bill_added: 'wallet', ap_reminder: 'clock', ap_update: 'wallet', ap_reply: 'chat', ap_followup: 'wallet', compliance_due: 'clock', compliance_done: 'checkCircle' };
+const NOTIF_TYPE_LABEL = { task_reminder_digest: 'Tasks waiting on you', attendance: 'Attendance', security: 'Security', task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', extension_requested: 'More time requested', leave_requested: 'Leave requested', leave_decided: 'Leave decision', payroll_submitted: 'Payroll to approve', payroll_approved: 'Payroll approved', payslip_ready: 'Payslip ready', extension_decided: 'Deadline extension decision', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked', delivery_scheduled: 'Delivery coming', delivery_update: 'Delivery update', delivery_delivered: 'Delivered at site', delivery_unloaded: 'Unloaded at site', delivery_reminder: 'Delivery reminder', delivery_followup: 'Delivery follow-up', delivery_document: 'Delivery document', delivery_payment: 'Delivery payment', budget_verify: 'Payment to verify', budget_allotted: 'Money allotted', budget_verified: 'Payment checked', budget_topup: 'Top-up requested', est_submitted: 'Estimation to approve', est_decided: 'Estimation decision', est_remark: 'Estimation remark', est_jmr_open: 'Estimate approved — JMR open', est_recon_due: 'Reconciliation report due', est_completed: 'Estimate completed', ap_bill_added: 'New vendor bill', ap_reminder: 'Payment due', ap_update: 'Bill update from Accounts', ap_reply: 'Reply from Purchase', ap_followup: 'Payment follow-up', compliance_due: 'Compliance due date', compliance_done: 'Compliance done' };
 // Where tapping a notification takes you.
 function notifTarget(n) {
   if (/^closure_/.test(n.type)) return 'data-notif-goto-tab="closure"';
@@ -1476,7 +1476,7 @@ function renderLoginPage() {
         <button type="button" class="guide-open-link" data-act="open-guide">📺 Watch the app guide · <span>English · हिंदी · मराठी</span></button>
         ${ui.showForgotPassword ? `
         <div class="notice" style="margin-top:4px;">
-          <p style="margin:0 0 8px;"><b>Reset your password with your recovery PIN</b> — the 4–6 digit PIN you set in the app.</p>
+          <p style="margin:0 0 8px;"><b>Reset your password with a recovery PIN</b> — your own 4–6 digit PIN, or the company recovery PIN (ask Admin / HR).</p>
           <label>Username</label>
           <input type="text" id="fp-username" placeholder="e.g. rahul.p" autocomplete="username" autocapitalize="off" spellcheck="false" value="${esc(ui.forgotPasswordUsername || '')}">
           <label>Recovery PIN</label>
@@ -1485,7 +1485,7 @@ function renderLoginPage() {
           ${passwordFieldHTML('fp-new-password', '8+ characters, letters and numbers')}
           <button class="btn btn-primary btn-sm" style="margin-top:8px;" data-act="submit-pin-reset">Reset password</button>
           ${ui.forgotPasswordErr ? `<div class="err" style="margin-top:6px;">${esc(ui.forgotPasswordErr)}</div>` : ''}
-          <p class="small muted" style="margin-top:10px;">No PIN set yet? Ask your <b>team lead</b> (or Admin) to reset your password, then set a PIN on <b>My Profile</b>.</p>
+          <p class="small muted" style="margin-top:10px;">Forgot your PIN too? Ask Admin / HR for the company recovery PIN, or ask your <b>team lead</b> to reset your password.</p>
         </div>` : ''}
       </div>
     </div>
@@ -2114,6 +2114,15 @@ function renderSystemView() {
       <div class="person-chip ${s.ai.monthInr >= s.ai.budgetInr * 0.8 ? 'bad' : ''}"><div class="person-chip-n">₹${s.ai.monthInr.toFixed(2)}</div><div class="person-chip-l">This month (budget ₹${s.ai.budgetInr})</div></div>
     </div>
     ${s.ai.bySource.length ? `<table class="audit-table" style="min-width:0;margin-top:10px;"><tr><th>Source</th><th>Calls this month</th><th>This month</th></tr>${s.ai.bySource.map(r => `<tr><td>${esc(SOURCE_BADGE[r.k] || r.k)}</td><td>${r.calls}</td><td>₹${(r.month || 0).toFixed(2)}</td></tr>`).join('')}</table>` : ''}</div>` : ''}
+  ${s.phones ? `<div class="card"><div class="card-title">Phone notifications</div>
+    <div class="person-chips">
+      <div class="person-chip good"><div class="person-chip-n">${s.phones.withPush}</div><div class="person-chip-l">Notifications turned on (phone / computer)</div></div>
+      <div class="person-chip good"><div class="person-chip-n">${s.phones.withApp}</div><div class="person-chip-l">Using the MIHIR phone app (last 3 days)</div></div>
+      <div class="person-chip ${s.phones.none.length ? 'bad' : 'good'}"><div class="person-chip-n">${s.phones.none.length}</div><div class="person-chip-l">Get NO phone notifications</div></div>
+    </div>
+    ${s.phones.none.length ? `<details style="margin-top:8px;"><summary class="small" style="cursor:pointer;">Who gets no phone notifications (${s.phones.none.length}) — ask them to tap <b>Turn on</b> on the notifications card, or install the MIHIR app</summary>
+      <div class="small" style="margin-top:6px;line-height:1.8;">${s.phones.none.map(u => `${esc(u.name)} <span class="muted">(${esc(u.team || '—')})</span>`).join(' · ')}</div></details>` : ''}
+  </div>` : ''}
   <div class="card"><div class="card-title">Integrations & features</div>
     <table class="audit-table" style="min-width:0;">
       <tr><td>Phone/computer notifications (web push)</td><td>${ok(s.integrations.webPush)}</td></tr>
@@ -6777,8 +6786,23 @@ function bindPerformanceView() {
 }
 
 /* ==================== ACCOUNTS (Admin) ==================== */
+// Company recovery PIN (Admin): one 6-digit PIN that resets any account's password except Admin's.
+let companyPinInfo = null;
+function companyPinCardHTML() {
+  if (!companyPinInfo) { companyPinInfo = { loading: true }; api('/api/admin/company-pin').then(r => { companyPinInfo = r; render(); }).catch(() => { companyPinInfo = { error: true }; }); }
+  const c = companyPinInfo;
+  return `<div class="card">
+    <div class="card-title">🔑 Company recovery PIN</div>
+    <p class="small muted" style="margin-top:0;">One 6-digit PIN that works for <b>every account except Admin</b> on the login page → Forgot password? — for people who forget their own PIN too. Give it only to people you trust (e.g. HR): anyone who knows it can reset someone else's password. Every use is noted in the Audit Log and the person and Admin are told.</p>
+    <div class="small" style="margin-bottom:6px;">${c.loading ? 'Loading…' : c.set ? `✅ Set${c.updatedAt ? ` · changed ${esc(fmtTime(c.updatedAt))}` : ''}` : '⚪ Not set'}</div>
+    <div class="row" style="align-items:flex-end;">
+      <div class="col"><label>${c.set ? 'New company PIN' : 'Company PIN'} (6 digits)</label><input type="password" id="company-pin" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="6 digits"></div>
+      <div class="col" style="flex:0 0 auto;display:flex;gap:6px;"><button class="btn btn-primary btn-sm" data-act="company-pin-save">Save</button>${c.set ? '<button class="btn btn-sm" data-act="company-pin-remove">Remove</button>' : ''}</div>
+    </div>
+  </div>`;
+}
 function renderAccountsView() {
-  return `${loginDetailsCardHTML()}
+  return `${loginDetailsCardHTML()}${companyPinCardHTML()}
   <div class="card">
     <div class="card-title">Departments</div>
     <p class="small muted">The list everyone picks a department from when adding or editing an account. Typing a brand-new department name into any Team field also adds it here automatically.</p>
@@ -7670,6 +7694,14 @@ function bindMyTasks() {
   });
 }
 function bindAccounts() {
+  document.querySelectorAll('[data-act="company-pin-save"]').forEach(b => b.onclick = async () => {
+    const pin = (document.getElementById('company-pin') || {}).value || '';
+    try { await api('/api/admin/company-pin', { method: 'POST', body: JSON.stringify({ pin: pin.trim() }) }); companyPinInfo = null; setBanner('Company recovery PIN saved.', 'ok'); render(); } catch (e) { setBanner(e.message); render(); }
+  });
+  document.querySelectorAll('[data-act="company-pin-remove"]').forEach(b => b.onclick = async () => {
+    if (!confirm('Remove the company recovery PIN? People will need their own PIN or a team lead to reset a password.')) return;
+    try { await api('/api/admin/company-pin', { method: 'POST', body: JSON.stringify({ pin: '', remove: true }) }); companyPinInfo = null; setBanner('Company recovery PIN removed.', 'ok'); render(); } catch (e) { setBanner(e.message); render(); }
+  });
   bindPasswordToggles(); bindLoginDetailsCard();
   const submitDept = document.querySelector('[data-act="submit-new-department"]');
   if (submitDept) submitDept.onclick = async () => {

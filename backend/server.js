@@ -110,13 +110,13 @@ if (pushConfigured) {
 const pushBackoff = new Map();   // endpoint → time until which the push service asked us to wait
 const pushErrLogged = new Map(); // one log line per person + error every 10 minutes, not one per push
 async function sendPushToUser(username, title, body, taskId) {
-  const result = { devices: 0, sent: 0, errors: [] };
+  const result = { devices: 0, sent: 0, errors: [], removed: 0, waitUntil: 0 };
   if (!pushConfigured) return result;
   const subs = await db.listPushSubscriptionsForUser(username);
   result.devices = subs.length;
   for (const sub of subs) {
     const until = pushBackoff.get(sub.endpoint) || 0;
-    if (until > Date.now()) { result.errors.push('device rate-limited by the push service — skipped'); continue; }
+    if (until > Date.now()) { result.waitUntil = Math.max(result.waitUntil, until); continue; }
     try {
       await webpush.sendNotification(
         { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
@@ -131,11 +131,12 @@ async function sendPushToUser(username, title, body, taskId) {
       // permission revoked, etc.) — clean it up instead of retrying it forever.
       // 400/401/403/404/410 are permanent (expired, revoked, or registered with old keys) — remove the device at once
       // so it is never retried. Only temporary errors (429, 5xx, network) keep it.
-      if ([400, 401, 403, 404, 410, 413].includes(e.statusCode)) { await db.removePushSubscription(sub.endpoint); result.errors.push(`device removed (${e.statusCode})`); }
+      if ([400, 401, 403, 404, 410, 413].includes(e.statusCode)) { await db.removePushSubscription(sub.endpoint); result.removed++; result.errors.push(`old device removed (${e.statusCode})`); }
       else {
         // 429 (too many) / 5xx: the push service asks us to slow down — pause this device (Retry-After, else 2 min).
         const ra = Number((e.headers && (e.headers['retry-after'] || e.headers['Retry-After'])) || 0);
         pushBackoff.set(sub.endpoint, Date.now() + (ra > 0 ? Math.min(ra, 3600) * 1000 : 120000));
+        result.waitUntil = Math.max(result.waitUntil, pushBackoff.get(sub.endpoint));
         const key = `${username}:${e.statusCode || 'net'}`;
         if (!pushErrLogged.has(key) || Date.now() - pushErrLogged.get(key) > 600000) { pushErrLogged.set(key, Date.now()); log('WARN', 'push failed', { username, status: e.statusCode || null, error: e.message }); }
         result.errors.push(String(e.statusCode || '') + ' ' + e.message);
@@ -203,9 +204,17 @@ async function flushPush(username) {
   const last = items[items.length - 1];
   const body = items.length === 1 ? last.summary : summarizeNotification(`${items.length} new notifications — ${last.summary}`, 120);
   const r = await sendPushToUser(username, 'MIHIR Task Manager', body, items.length === 1 ? last.task_id : null);
+  // The push service asked to wait and nothing went out: keep these and send them (as one) when it allows.
+  if (r && r.devices > 0 && r.sent === 0 && r.waitUntil > Date.now() && r.removed < r.devices) {
+    q.items = items.concat(q.items);
+    if (!q.timer) q.timer = setTimeout(() => flushPush(username).catch(() => {}), Math.min(3600000, r.waitUntil - Date.now() + 1000));
+    return;
+  }
   if (r && r.devices > 0) {
+    // Only a real failure is "failed": an old phone that was removed is housekeeping, not a problem.
+    const status = r.sent > 0 ? 'sent' : r.removed >= r.devices ? 'cancelled' : 'failed';
     for (const it of items) await db.recordChannelDelivery({ notificationId: it.notificationId, recipient: username, taskId: it.task_id, channel: 'web_push', type: it.type,
-      status: r.sent > 0 ? 'sent' : 'failed', reason: r.errors.length ? r.errors.join('; ').slice(0, 300) : (items.length > 1 ? `sent together with ${items.length - 1} more` : null) }).catch(() => {});
+      status, reason: r.errors.length ? r.errors.join('; ').slice(0, 300) : (items.length > 1 ? `sent together with ${items.length - 1} more` : null) }).catch(() => {});
   }
   if (q.items.length && !q.timer) q.timer = setTimeout(() => flushPush(username).catch(() => {}), PUSH_GAP_MS);
   else if (!q.items.length) setTimeout(() => { const x = pushQueues.get(username); if (x && !x.items.length && !x.timer) pushQueues.delete(username); }, PUSH_GAP_MS);
@@ -677,6 +686,8 @@ app.get('/api/device/notifications', async (req, res) => {
   const user = await db.getUser(payload.username);
   if (!user || (user.token_version || 0) !== (payload.tv || 0)) return res.status(401).json({ error: 'Device signed out.' });
   const after = Math.max(0, parseInt(req.query.after, 10) || 0);
+  // Remember that this person's phone app is checking for notifications (System health → phone notifications).
+  if (!user.device_poll_at || Date.now() - Date.parse(user.device_poll_at) > 3600000) db.pool.query('UPDATE users SET device_poll_at=$1 WHERE username=$2', [new Date().toISOString(), user.username]).catch(() => {});
   const items = await db.listUnreadNotificationsAfter(user.username, after, 20);
   res.setHeader('Cache-Control', 'no-store');
   res.json({ items: items.map(n => ({ id: n.id, message: n.message, task_id: n.task_id, created_at: n.created_at })), latestId: items.length ? Math.max(...items.map(n => n.id)) : after });
@@ -1042,6 +1053,27 @@ app.post('/api/auth/recovery-pin', auth(ALL_ROLES), async (req, res) => {
   await auditFromReq(req, 'recovery_pin_set', 'Set their password recovery PIN.');
   res.json({ ok: true });
 });
+// Company recovery PIN (Admin sets it): works for every account except Admin's, for people who forget their own PIN
+// too. Every use is written to the audit log and told to the person and to Admin.
+async function companyPinHash() { try { const r = await db.pool.query("SELECT value FROM company_settings WHERE key='recovery_pin'"); return r.rows[0] ? r.rows[0].value : null; } catch (e) { return null; } }
+app.get('/api/admin/company-pin', auth(['admin']), async (req, res) => {
+  const r = await db.pool.query("SELECT updated_by, updated_at FROM company_settings WHERE key='recovery_pin'");
+  res.json({ set: !!r.rows[0], updatedBy: r.rows[0] ? r.rows[0].updated_by : null, updatedAt: r.rows[0] ? r.rows[0].updated_at : null });
+});
+app.post('/api/admin/company-pin', auth(['admin']), async (req, res) => {
+  const pin = str((req.body || {}).pin).trim();
+  if (pin === '' && (req.body || {}).remove) {
+    await db.pool.query("DELETE FROM company_settings WHERE key='recovery_pin'");
+    await auditFromReq(req, 'company_pin_removed', 'Removed the company recovery PIN.');
+    return res.json({ ok: true, set: false });
+  }
+  if (!/^\d{6}$/.test(pin)) return res.status(400).json({ error: 'The company PIN must be exactly 6 digits.' });
+  if (weakPin(pin)) return res.status(400).json({ error: 'That PIN is too easy to guess (like 111111 or 123456) — pick another.' });
+  await db.pool.query(`INSERT INTO company_settings(key, value, updated_by, updated_at) VALUES ('recovery_pin', $1, $2, $3)
+    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=EXCLUDED.updated_at`, [bcrypt.hashSync(pin, 10), req.user.username, new Date().toISOString()]);
+  await auditFromReq(req, 'company_pin_set', 'Set the company recovery PIN.');
+  res.json({ ok: true, set: true });
+});
 app.post('/api/auth/forgot-password', loginRateLimiter, async (req, res) => {
   const username = str((req.body || {}).username).trim();
   const pin = str((req.body || {}).pin).trim();
@@ -1051,17 +1083,24 @@ app.post('/api/auth/forgot-password', loginRateLimiter, async (req, res) => {
   if (!user) return res.status(400).json({ error: 'Username or recovery PIN is wrong.' });
   const lockedUntil = pinLocked(user.username);
   if (lockedUntil) return res.status(429).json({ error: `Too many wrong PINs — try again after ${new Date(lockedUntil).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: 'numeric', minute: '2-digit' })}.` });
-  if (!user.recovery_pin_hash) {
+  const companyHash = user.role === 'admin' ? null : await companyPinHash();
+  if (!user.recovery_pin_hash && !companyHash) {
     const leads = await teamLeadsOf(user);
     return res.status(400).json({ error: `No recovery PIN is set for this account. Ask ${leads.length ? `your team lead (${leads.map(l => l.name).join(' or ')}) or Admin` : 'Admin'} to reset your password — then set a PIN on My Profile.`, noPin: true });
   }
   if (!pin) return res.status(400).json({ error: 'Enter your recovery PIN.' });
-  if (!bcrypt.compareSync(pin, user.recovery_pin_hash)) { pinFailed(user.username); return res.status(400).json({ error: 'Username or recovery PIN is wrong.' }); }
+  const ownOk = !!user.recovery_pin_hash && bcrypt.compareSync(pin, user.recovery_pin_hash);
+  const companyOk = !ownOk && !!companyHash && bcrypt.compareSync(pin, companyHash);
+  if (!ownOk && !companyOk) { pinFailed(user.username); return res.status(400).json({ error: 'Username or recovery PIN is wrong.' }); }
   const pwErr1 = validatePasswordStrength(newPassword); if (pwErr1) return res.status(400).json({ error: pwErr1 });
   await db.setPassword(user.username, bcrypt.hashSync(newPassword, 10));
   await db.forcePasswordUnlock(user.username);
   pinTries.delete(user.username);
-  await auditFromReq(req, 'password_reset_via_pin', 'Reset their own password with their recovery PIN.', { username: user.username, name: user.name });
+  await auditFromReq(req, 'password_reset_via_pin', companyOk ? 'Reset their password with the COMPANY recovery PIN.' : 'Reset their own password with their recovery PIN.', { username: user.username, name: user.name });
+  if (companyOk) {
+    await db.createNotification({ username: user.username, type: 'security', message: '🔑 Your password was reset with the company recovery PIN. If this was not you, tell Admin at once.', task_id: null });
+    for (const a of (await db.listUsers()).filter(u => u.role === 'admin')) await db.createNotification({ username: a.username, type: 'security', message: `🔑 ${user.name} (${user.username}) reset their password with the company recovery PIN.`, task_id: null });
+  }
   res.json({ ok: true, username: user.username });
 });
 // The old email-code reset is switched off.
@@ -3337,6 +3376,8 @@ app.get('/api/admin/notification-reads/:username', auth(['admin', 'director']), 
 // exact minute). REMINDER_WINDOWS=none turns slots off (everything sends as soon as it is due).
 const REMINDER_WINDOWS = String(process.env.REMINDER_WINDOWS || '09:00,15:00,18:00').split(',').map(s => s.trim()).filter(s => /^\d{1,2}:\d{2}$/.test(s));
 const REMINDER_CATCHUP_HOURS = Number(process.env.REMINDER_CATCHUP_HOURS) || 2;
+// More reminders than this for one person in one slot → one summary notification instead.
+const REMINDER_DIGEST_AFTER = process.env.REMINDER_DIGEST_AFTER !== undefined ? Number(process.env.REMINDER_DIGEST_AFTER) : 3;
 // Slots are 3 hours apart (15:00 → 18:00), so the routine-nudge gap must be shorter than that.
 const AUTO_REMINDER_MIN_GAP_HOURS = process.env.AUTO_REMINDER_MIN_GAP_HOURS !== undefined ? Number(process.env.AUTO_REMINDER_MIN_GAP_HOURS) : 2;
 // Short enough that a task still open at the next reminder slot (slots are 3 h apart) can be followed up again.
@@ -3510,6 +3551,7 @@ async function flushReminderOutbox(out, now) {
   const groups = new Map();
   for (const it of out) { const k = `${it.to}|${it.taskId}`; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(it); }
   const lastSent = await db.lastReminderSentMap(REMINDER_TYPES, new Date(now - 24 * 3600000).toISOString());
+  const perPerson = new Map();
   for (const [gk, items] of groups) {
     items.sort((a, b) => b.rank - a.rank);
     // Anti-spam applies to every ROUTINE message individually: if this person got a reminder about
@@ -3529,23 +3571,51 @@ async function flushReminderOutbox(out, now) {
       stats.duplicates++;
     }
     if (!primary) continue; // everything for this person + task was already handled
-    try {
-      // Replace this person's earlier automatic reminder/warning about the same task (one card per task).
-      await db.removeEarlierAutoNotifications(primary.to, primary.taskId, AUTO_REMINDER_TYPES);
-      const notificationId = await db.createNotification({ username: primary.to, type: primary.type, message: primary.message, task_id: primary.taskId });
-      await db.finishDelivery(deliveryId, { status: 'sent', notificationId, sentAt: now.toISOString() });
-      lastSent.set(gk, now.getTime());
-    } catch (e) {
-      await db.finishDelivery(deliveryId, { status: 'failed', reason: e.message.slice(0, 300) });
-      log('ERROR', 'reminder delivery failed', { key: primary.key, recipient: primary.to, taskId: primary.taskId, error: e.message });
-      stats.failed++;
-      continue; // not marked — retried on the next run
+    if (!perPerson.has(primary.to)) perPerson.set(primary.to, []);
+    perPerson.get(primary.to).push({ gk, primary, deliveryId, candidates });
+  }
+  // One person with many tasks (e.g. 100 open tasks at the 9 AM slot) gets ONE summary instead of a card per task —
+  // their bell and phone are not flooded. Up to REMINDER_DIGEST_AFTER reminders still go one by one.
+  for (const [to, list] of perPerson) {
+    const digest = list.length > REMINDER_DIGEST_AFTER;
+    let digestId = null;
+    if (digest) {
+      try {
+        for (const x of list) await db.removeEarlierAutoNotifications(to, x.primary.taskId, AUTO_REMINDER_TYPES);
+        await db.pool.query("DELETE FROM notifications WHERE username=$1 AND type='task_reminder_digest'", [to]);
+        const urgent = list.filter(x => !x.primary.routine).length;
+        const top = list.slice().sort((a, b) => b.primary.rank - a.primary.rank).slice(0, 3).map(x => x.primary.message.replace(/^[^"]*"/, '"').replace(/".*$/, '"'));
+        digestId = await db.createNotification({ username: to, type: 'task_reminder_digest', task_id: null,
+          message: `📋 ${list.length} of your tasks need attention${urgent ? ` (${urgent} urgent)` : ''} — e.g. ${top.join(', ')}. Open My Tasks to see them all.` });
+      } catch (e) {
+        log('ERROR', 'reminder digest failed', { recipient: to, error: e.message });
+        for (const x of list) await db.finishDelivery(x.deliveryId, { status: 'failed', reason: e.message.slice(0, 300) });
+        stats.failed += list.length; continue;
+      }
     }
-    for (const it of candidates.slice(candidates.indexOf(primary))) {
-      if (it !== primary) { await db.recordSkippedDelivery({ key: it.key, recipient: it.to, taskId: it.taskId, type: it.type, reason: `combined into ${primary.key}` }); stats.combined++; }
-      try { await it.mark(); } catch (e) { log('ERROR', 'reminder mark failed', { key: it.key, error: e.message }); }
+    for (const { gk, primary, deliveryId, candidates } of list) {
+      try {
+        if (digest) await db.finishDelivery(deliveryId, { status: 'sent', notificationId: digestId, sentAt: now.toISOString() });
+        else {
+          // Replace this person's earlier automatic reminder/warning about the same task (one card per task).
+          await db.removeEarlierAutoNotifications(primary.to, primary.taskId, AUTO_REMINDER_TYPES);
+          const notificationId = await db.createNotification({ username: primary.to, type: primary.type, message: primary.message, task_id: primary.taskId });
+          await db.finishDelivery(deliveryId, { status: 'sent', notificationId, sentAt: now.toISOString() });
+        }
+        lastSent.set(gk, now.getTime());
+      } catch (e) {
+        await db.finishDelivery(deliveryId, { status: 'failed', reason: e.message.slice(0, 300) });
+        log('ERROR', 'reminder delivery failed', { key: primary.key, recipient: primary.to, taskId: primary.taskId, error: e.message });
+        stats.failed++;
+        continue; // not marked — retried on the next run
+      }
+      for (const it of candidates.slice(candidates.indexOf(primary))) {
+        if (it !== primary) { await db.recordSkippedDelivery({ key: it.key, recipient: it.to, taskId: it.taskId, type: it.type, reason: `combined into ${primary.key}` }); stats.combined++; }
+        try { await it.mark(); } catch (e) { log('ERROR', 'reminder mark failed', { key: it.key, error: e.message }); }
+      }
+      if (primary.cat === 'reminder') stats.remindersSent++; else if (primary.cat === 'escalation') stats.escalationsSent++; else stats.deadlineRemindersSent++;
     }
-    if (primary.cat === 'reminder') stats.remindersSent++; else if (primary.cat === 'escalation') stats.escalationsSent++; else stats.deadlineRemindersSent++;
+    if (digest) stats.digests = (stats.digests || 0) + 1;
   }
   return stats;
 }
@@ -3795,6 +3865,19 @@ app.post('/api/suggestions/:id/ignore', auth(ALL_ROLES), async (req, res) => {
   if (r.status !== 200) return res.status(r.status).json({ error: r.error });
   res.json({ ok: true });
 });
+// Who gets notifications on a phone: a browser / home-screen app subscribed to push, or the Android app checking in
+// the last 3 days. The rest only see notifications when they open the app.
+async function phoneNotificationCoverage() {
+  try {
+    const users = await db.listUsers();
+    const subs = (await db.pool.query('SELECT username, COUNT(*)::int AS n FROM push_subscriptions GROUP BY username')).rows;
+    const pushBy = new Map(subs.map(r => [r.username, r.n]));
+    const recent = (iso) => iso && Date.now() - Date.parse(iso) < 3 * 864e5;
+    const none = users.filter(u => !pushBy.get(u.username) && !recent(u.device_poll_at)).map(u => ({ username: u.username, name: u.name, team: u.team || '' }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return { people: users.length, withPush: users.filter(u => pushBy.get(u.username)).length, withApp: users.filter(u => recent(u.device_poll_at)).length, none, pushOn: !!pushConfigured };
+  } catch (e) { return null; }
+}
 // Admin: one place to see whether everything is healthy.
 app.get('/api/admin/system', auth(['admin']), async (req, res) => {
   let database = 'ok', dbMs = null, schemaVersion = null;
@@ -3811,6 +3894,7 @@ app.get('/api/admin/system', auth(['admin']), async (req, res) => {
     requests: { ...reqStats.summary(3600000), total: reqStats.total, errors5xx: reqStats.errors5xx },
     jobs: { counts: await jobs.counts(), problems, deadRecent: problems.filter(j => j.status === 'dead_letter').length },
     deliveries: { failed: failedDeliveries },
+    phones: await phoneNotificationCoverage(),
     integrations: { webPush: !!pushConfigured, whatsappSending: !!whatsappConfigured, email: !!process.env.SMTP_HOST, ai: ai.configured ? `${ai.provider} (${ai.model})` : null, storage: storage.configured },
     features: featureFlags(),
     ai: ai.configured ? await ai.usageSummary() : null,
@@ -4142,6 +4226,39 @@ app.post('/api/meetings/:id/retry', auth(ALL_ROLES), meetingsAllowed, async (req
 const { mountDeliveries, DOC_TYPES: DELIVERY_DOC_TYPES } = require('./deliveries');
 const DELIVERY_DOC = Object.fromEntries(DELIVERY_DOC_TYPES.map(d => [d.key, d]));
 mountDeliveries(app, { db, auth, ALL_ROLES, auditFromReq, taskEvent, collectUploads, MAX_FILE_CHARS, displayName, str, releaseDependentsOf });
+// Porter (transport app) screenshot → a filled-in New delivery form. The person checks it, picks who receives it and
+// saves; the screenshot is attached to the delivery. Same people who can add deliveries.
+app.post('/api/deliveries/read-screenshot', auth(ALL_ROLES), aiCallLimiter, async (req, res) => {
+  const me = await db.getUser(req.user.username);
+  if (!(req.user.role === 'admin' || /purchase/i.test((me && me.team) || '') || (me && me.manage_deliveries))) return res.status(403).json({ error: 'Only Admin, the Purchase Department and people given delivery access can add deliveries.' });
+  if (!ai.configured) return res.status(503).json({ error: 'Reading screenshots needs the AI to be switched on (System → AI provider).' });
+  const img = dataUrlToBuffer((req.body || {}).image);
+  if (!img || !img.buffer.length || !/^image\//.test(img.mime)) return res.status(400).json({ error: 'Choose the Porter screenshot (an image).' });
+  if (img.buffer.length > 8 * 1024 * 1024) return res.status(400).json({ error: 'That image is too large — take a normal screenshot.' });
+  let r;
+  try { r = await ai.readTransportScreenshot({ buffer: img.buffer, mime: img.mime, username: req.user.username, ctx: { projects: PROJECT_OPTIONS, today: localDateStr(new Date()) } }); }
+  catch (e) { return res.status(aiErrorStatus(e)).json({ error: e.code ? e.message : (e.message || 'Could not read the screenshot.') }); }
+  const clean = (v, n) => (v == null ? '' : String(v).trim().slice(0, n));
+  const project = PROJECT_OPTIONS.includes(r.project) ? r.project : '';
+  // Who usually receives deliveries for this project: the people on the last one.
+  let receivers = [];
+  try {
+    const last = (await db.pool.query(`SELECT receivers FROM deliveries WHERE ($1 = '' OR project = $1) ORDER BY created_at DESC LIMIT 1`, [project])).rows[0];
+    receivers = last ? String(last.receivers || '').split(',').map(x => x.trim()).filter(Boolean) : [];
+    const ok = [];
+    for (const u of receivers) { const x = await db.getUser(u); if (x && (x.role === 'admin' || pageAllowedFor('deliveries', x.role, x.team) || x.manage_deliveries)) ok.push(u); }
+    receivers = ok; // only people who may still receive deliveries
+  } catch (e) { receivers = []; }
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(r.date || '') ? r.date : localDateStr(new Date());
+  const time = /^\d{2}:\d{2}$/.test(r.time || '') ? r.time : '';
+  const notes = [r.pickup_address ? `Pickup: ${clean(r.pickup_address, 300)}` : '', r.drop_address ? `Drop: ${clean(r.drop_address, 300)}` : '',
+    r.vehicle_type ? `Vehicle: ${clean(r.vehicle_type, 60)}` : '', r.fare != null && isFinite(Number(r.fare)) ? `Porter fare: ₹${Number(r.fare)}` : '', r.status ? `Status in the screenshot: ${clean(r.status, 80)}` : ''].filter(Boolean).join('\n');
+  res.json({ fields: {
+    title: clean(r.goods, 200) || (r.vehicle_type ? `Material by Porter (${clean(r.vehicle_type, 40)})` : 'Material by Porter'),
+    transport: 'Porter', porter_order_id: clean(r.order_id, 80), vehicle_no: clean(r.vehicle_no, 30).toUpperCase(), driver_name: clean(r.driver_name, 120),
+    driver_phone: clean(r.driver_phone, 30), project, site_location: clean(r.drop_address, 200), vendor: clean(r.pickup_address, 160).split(',')[0].trim(),
+    expected_date: date, expected_time: time, description: notes, receivers }, read: r });
+});
 /* backend/estimation.js — Estimation & Billing: JMR (joint measurement records) and material reconciliation. */
 const { mountEstimation } = require('./estimation');
 mountEstimation(app, { db, auth, ALL_ROLES, auditFromReq, collectUploads, MAX_FILE_CHARS, str, PROJECT_OPTIONS, PROJECT_HEADS });

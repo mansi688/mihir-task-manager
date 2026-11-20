@@ -13,6 +13,7 @@ const NOW = Date.now();
 const T = (minAgo) => NOW - minAgo * 60000;
 const fix = (where, minAgo, acc = 8) => ({ id: `a${++seq}`, t: T(minAgo), lat: where.lat, lng: where.lng, acc, spd: 0, bat: 0.8, moving: false });
 const HM = (ms) => new Date(ms + 330 * 60000).toISOString().slice(11, 16);
+const PHOTO = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACv/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AN//Z';
 const IN = at(20), FAR = at(900, 90);
 
 async function upload(baseUrl, tok, points) {
@@ -108,11 +109,11 @@ test('automatic check-in / out from location tracking', async (t) => {
     assert.equal(r.in, HM(T(150))); assert.equal(r.out, HM(T(50)));
   });
 
-  await t.test('phone check-in is strict: accurate GPS inside the circle only; no selfie needed', async () => {
+  await t.test('button check-in is strict: live photo, accurate GPS inside the circle only', async () => {
     const d = await createMember(baseUrl, admin, 'auto.d', 'Auto D', 'Execution Department');
-    assert.match((await P('/api/attendance/check-in', d, { lat: IN.lat, lng: IN.lng, acc: 180 })).data.error, /not accurate enough/);
-    assert.equal((await P('/api/attendance/check-in', d, { lat: at(175).lat, lng: at(175).lng, acc: 40 })).status, 400, '25 m outside the circle is refused even with ±40 m GPS');
-    const ok = await P('/api/attendance/check-in', d, { lat: IN.lat, lng: IN.lng, acc: 15 });
+    assert.match((await P('/api/attendance/check-in', d, { lat: IN.lat, lng: IN.lng, acc: 180, photo: PHOTO })).data.error, /not accurate enough/);
+    assert.equal((await P('/api/attendance/check-in', d, { lat: at(175).lat, lng: at(175).lng, acc: 40, photo: PHOTO })).status, 400, '25 m outside the circle is refused even with ±40 m GPS');
+    const ok = await P('/api/attendance/check-in', d, { lat: IN.lat, lng: IN.lng, acc: 15, photo: PHOTO });
     assert.equal(ok.status, 200, JSON.stringify(ok.data)); assert.equal(ok.data.place, 'Tower A site');
   });
 });
