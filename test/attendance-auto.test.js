@@ -65,7 +65,7 @@ test('automatic check-in / out from location tracking', async (t) => {
   await t.test('a jittery outside fix does not end the stay; leaving during the shift starts a break', async () => {
     await upload(baseUrl, a.up, [fix(IN, 150), fix(FAR, 148), fix(IN, 146), fix(IN, 140)]);
     assert.equal((await today(a.tok)).onBreak, false, 'one stray fix is ignored');
-    await upload(baseUrl, a.up, [fix(FAR, 120), fix(FAR, 118)]);
+    await upload(baseUrl, a.up, [fix(FAR, 120), fix(FAR, 118), fix(FAR, 117)]);
     const r = await today(a.tok);
     assert.equal(r.onBreak, true); assert.equal(r.breakSince, HM(T(140)), 'break from the last fix inside');
   });
@@ -73,7 +73,7 @@ test('automatic check-in / out from location tracking', async (t) => {
     await upload(baseUrl, a.up, [fix(IN, 100), fix(IN, 97), fix(IN, 90)]);
     let r = await today(a.tok);
     assert.equal(r.onBreak, false); assert.equal(r.breakUsedMin, 40);
-    await upload(baseUrl, a.up, [fix(IN, 60), fix(IN, 38), fix(FAR, 30), fix(FAR, 28)]);
+    await upload(baseUrl, a.up, [fix(IN, 60), fix(IN, 38), fix(FAR, 30), fix(FAR, 28), fix(FAR, 27)]);
     assert.equal((await today(a.tok)).out, '', 'not before the time allowed to reach another site');
     await P('/api/attendance/auto-run', admin, {});
     r = await today(a.tok);
@@ -85,14 +85,14 @@ test('automatic check-in / out from location tracking', async (t) => {
   const w = await startTracking('auto.w', 'Auto W');
   await t.test('walking over to another of our sites is not a break', async () => {
     const STORE = at(400, 180);
-    await upload(baseUrl, w.up, [fix(IN, 170), fix(IN, 160), fix(IN, 130), fix(at(250, 180), 127), fix(at(260, 180), 126), fix(STORE, 124), fix(STORE, 118), fix(STORE, 100)]);
+    await upload(baseUrl, w.up, [fix(IN, 170), fix(IN, 160), fix(IN, 130), fix(at(250, 180), 127), fix(at(260, 180), 126), fix(at(270, 180), 125), fix(STORE, 124), fix(STORE, 118), fix(STORE, 100)]);
     const r = await today(w.tok);
     assert.equal(r.in, HM(T(170))); assert.equal(r.onBreak, false); assert.equal(r.breakUsedMin, 0);
   });
 
   const b = await startTracking('auto.b', 'Auto B');
   await t.test('left before the shift end and never came back → checked out at the time they left', async () => {
-    await upload(baseUrl, b.up, [fix(IN, 150), fix(IN, 145), fix(IN, 130), fix(FAR, 110), fix(FAR, 108)]);
+    await upload(baseUrl, b.up, [fix(IN, 150), fix(IN, 145), fix(IN, 130), fix(FAR, 110), fix(FAR, 108), fix(FAR, 107)]);
     assert.equal((await today(b.tok)).onBreak, true);
     const sw = await P('/api/attendance/auto-run', admin, {});
     assert.equal(sw.status, 200); assert.ok(sw.data.closed >= 1);

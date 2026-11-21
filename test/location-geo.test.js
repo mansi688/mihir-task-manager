@@ -77,3 +77,20 @@ test('BLE: nearest beacon with 1–2 beacons, weighted centroid with 3+', () => 
   assert.equal(geo.pointInPixelPolygon(5, 5, [[0, 0], [10, 0], [10, 10], [0, 10]]), true);
   assert.equal(geo.pointInPixelPolygon(15, 5, [[0, 0], [10, 0], [10, 10], [0, 10]]), false);
 });
+
+test('cleanTrack: standing-still jitter and spikes are removed, real walks and drives are kept', () => {
+  const geo = require('../backend/location/geo');
+  const base = { lat: 18.5204, lng: 73.8567 };
+  const off = (m, b = 0) => ({ lat: base.lat + m * Math.cos(b) / 111320, lng: base.lng + m * Math.sin(b) / (111320 * Math.cos(base.lat * Math.PI / 180)) });
+  let t = Date.parse('2026-11-21T04:00:00Z');
+  const P = (o, acc = 15) => ({ ...o, accuracy_m: acc, speed_mps: null, recorded_at: new Date(t += 30000).toISOString() });
+  const site = [P(off(0)), P(off(10, 1)), P(off(250, 2)), P(off(5, 3)), P(off(300, 4)), P(off(280, 4.1)), P(off(8, 5)), P(off(12, 6)), P(off(200, 1)), P(off(3, 2))];
+  assert.ok(geo.routeDistanceM(site) > 1000);
+  assert.equal(Math.round(geo.routeDistanceM(geo.cleanTrack(site))), 0, 'on site all day = 0 km');
+  const walk = []; for (let i = 0; i < 20; i++) walk.push(P(off(i * 36, 0.5), 10));
+  assert.equal(Math.round(geo.routeDistanceM(geo.cleanTrack(walk))), Math.round(geo.routeDistanceM(walk)));
+  const drive = []; for (let i = 0; i < 20; i++) drive.push(P(off(i * 300, 1.2), 10));
+  assert.equal(Math.round(geo.routeDistanceM(geo.cleanTrack(drive))), Math.round(geo.routeDistanceM(drive)));
+  const go = [P(off(0)), P(off(5)), P(off(400, 1)), P(off(405, 1)), P(off(398, 1)), P(off(402, 1))];
+  assert.ok(Math.abs(geo.routeDistanceM(geo.cleanTrack(go)) - 400) < 15, 'moved and stayed = kept');
+});

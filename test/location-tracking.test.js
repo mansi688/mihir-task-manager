@@ -103,11 +103,13 @@ test('employee location tracking', async (t) => {
     assert.deepEqual(link.map(l => [l.task_id, l.how]), [[taskId, 'project']]);
     const note = (await G('/api/notifications', ravi)).data.items.find(n => n.type === 'location');
     assert.match(note.message, /You're at Tower B site — 1 open task here/);
-    // Uncertain GPS near the edge changes nothing; two clear outside fixes = departure.
+    // Uncertain GPS near the edge changes nothing; three clear outside fixes in a row = departure (two could be jitter).
     tt += 9 * 60000;
     await upload(baseUrl, uploadToken, { points: [fix(at(170), tt, { acc: 40 })] });
     assert.equal((await raw.query('SELECT departed_at FROM geofence_visits')).rows[0].departed_at, null);
     await upload(baseUrl, uploadToken, { points: [fix(at(800), tt + 60000), fix(at(900), tt + 120000)] });
+    assert.equal((await raw.query('SELECT departed_at FROM geofence_visits')).rows[0].departed_at, null, 'two fixes outside could be GPS jitter');
+    await upload(baseUrl, uploadToken, { points: [fix(at(950), tt + 180000)] });
     const done = (await raw.query('SELECT * FROM geofence_visits')).rows[0];
     assert.ok(done.departed_at); assert.equal(done.duration_s, 8 * 60);
   });

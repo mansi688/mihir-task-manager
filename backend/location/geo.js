@@ -94,6 +94,44 @@ function simplifyRoute(points, toleranceM = 8) {
   return points.filter((_, i) => keep[i]);
 }
 
+// Cleans a phone track for display and distance: phones standing still (indoors, near tall buildings) report
+// positions that hop 50–300 m and back. A fix is dropped when
+//  - it is within the GPS error of the last kept fix and the phone is not moving (standing-still jitter), or
+//  - it jumps faster than a person walks while the phone reports no real speed, AND within the next fixes the
+//    phone comes back to the last kept spot (a spike, not a real move), or
+//  - it jumps faster than any vehicle (70 m/s).
+// Real moves are kept: a vehicle keeps moving away (the next fix does not come back), a walk is slower than 4 m/s.
+function cleanTrack(points, { walkMps = 4, maxSpeedMps = 70 } = {}) {
+  if (!Array.isArray(points) || points.length < 2) return points || [];
+  const T = (p) => new Date(p.recorded_at || p.t).getTime() / 1000;
+  const A = (p) => Number(p.accuracy_m != null ? p.accuracy_m : p.acc) || 20;
+  const S = (p) => Number(p.speed_mps != null ? p.speed_mps : p.spd) || 0;
+  const out = [points[0]];
+  let nearT = T(points[0]); // last moment the phone was seen at the last kept spot (kept or jitter around it)
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i], a = out[out.length - 1];
+    const d = distanceM(a.lat, a.lng, p.lat, p.lng);
+    const dt = T(p) - nearT;
+    const moving = S(p) > 1.5;
+    if (!moving && d <= Math.max(25, A(a) + A(p))) { nearT = T(p); continue; }
+    if (dt > 0 && d / dt > maxSpeedMps) continue;
+    if (S(p) < 2) {
+      const n = points[i + 1];
+      // fast jump and the very next fix is nearer the old spot than the new one
+      if ((dt <= 0 || d / dt > walkMps) && n && distanceM(n.lat, n.lng, a.lat, a.lng) < distanceM(n.lat, n.lng, p.lat, p.lng)) continue;
+      // out and back within the next 3 fixes, quicker than a brisk walk could do the round trip
+      const back = points.slice(i + 1, i + 4).find(m => distanceM(m.lat, m.lng, a.lat, a.lng) <= Math.max(25, A(a) + A(m)));
+      if (back && (2 * d) / Math.max(1, T(back) - nearT) > 2) continue;
+    }
+    out.push(p); nearT = T(p);
+  }
+  if (out[out.length - 1] !== points[points.length - 1]) {
+    const last = points[points.length - 1], a = out[out.length - 1];
+    if (distanceM(a.lat, a.lng, last.lat, last.lng) <= Math.max(25, A(a) + A(last))) out.push({ ...last, lat: a.lat, lng: a.lng });
+  }
+  return out;
+}
+
 // Total path length, skipping jumps that are physically implausible (GPS glitches).
 function routeDistanceM(points, maxSpeedMps = 70) {
   let total = 0;
@@ -153,5 +191,5 @@ function estimateBlePosition(sightings, anchors, { metersPerPx = null, minRssi =
 
 module.exports = {
   distanceM, validLatLng, pointInPolygon, distanceToPolygonM, geofenceDistanceM, classifyAgainstGeofence,
-  simplifyRoute, routeDistanceM, pointInPixelPolygon, estimateBlePosition,
+  simplifyRoute, routeDistanceM, cleanTrack, pointInPixelPolygon, estimateBlePosition,
 };

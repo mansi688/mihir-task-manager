@@ -241,16 +241,10 @@ function createLocationService({ pool, db, log = () => {} }) {
   async function afterInsert(session, points, settings) {
     const watermark = session.last_point_at ? new Date(session.last_point_at).getTime() : 0;
     const fresh = points.filter(p => new Date(p.recorded_at).getTime() > watermark);
-    let distance = 0;
-    let prev = session.last_lat != null ? { lat: session.last_lat, lng: session.last_lng, recorded_at: session.last_point_at } : null;
-    for (const p of fresh) {
-      if (prev && (p.accuracy_m == null || p.accuracy_m <= settings.maxAccuracyM)) {
-        const d = geo.distanceM(prev.lat, prev.lng, p.lat, p.lng);
-        const dt = (new Date(p.recorded_at) - new Date(prev.recorded_at)) / 1000;
-        if (dt > 0 && d / dt <= 70 && d >= Math.min(10, (p.accuracy_m || 0) / 2)) distance += d;
-      }
-      if (p.accuracy_m == null || p.accuracy_m <= settings.maxAccuracyM) prev = p;
-    }
+    // Distance: the same cleaning as the drawn route (standing-still jitter and spikes do not add kilometres).
+    const prev = session.last_lat != null ? [{ lat: session.last_lat, lng: session.last_lng, recorded_at: session.last_point_at, accuracy_m: session.last_accuracy_m }] : [];
+    const goodFresh = fresh.filter(p => p.accuracy_m == null || p.accuracy_m <= settings.maxAccuracyM);
+    const distance = goodFresh.length ? geo.routeDistanceM(geo.cleanTrack([...prev, ...goodFresh])) : 0;
     const last = fresh[fresh.length - 1];
     if (last) {
       await q(`UPDATE location_sessions SET last_point_at = $2, last_received_at = now(), last_lat = $3, last_lng = $4, last_accuracy_m = $5,
@@ -301,7 +295,9 @@ function createLocationService({ pool, db, log = () => {} }) {
           }
         } else if (state === 'outside' && v) {
           v.outside_streak = (v.outside_streak || 0) + 1;
-          if (v.outside_streak >= 2) {
+          // A drive-by (not yet confirmed) ends after 2 fixes outside; a confirmed stay needs 3 in a row, so a
+          // phone that hops out of the site and back for a fix or two (GPS jitter) does not count as leaving.
+          if (v.outside_streak >= (v.confirmed_at ? 3 : 2)) {
             open.delete(String(g.id));
             if (!v.confirmed_at) { await q('DELETE FROM geofence_visits WHERE id = $1', [v.id]); continue; } // drive-by
             const dur = Math.max(0, Math.round((new Date(v.last_inside_at) - new Date(v.arrived_at)) / 1000));
@@ -486,11 +482,13 @@ function createLocationService({ pool, db, log = () => {} }) {
       const dt = (new Date(good[i].recorded_at) - new Date(good[i - 1].recorded_at)) / 1000;
       if (dt > 0 && dt < 600 && (good[i].is_moving || (good[i].speed_mps || 0) > 1)) movingS += dt;
     }
-    const route = raw ? good : geo.simplifyRoute(good, 6);
+    // Standing-still jitter and GPS spikes are taken out of the drawn route and the distance.
+    const clean = geo.cleanTrack(good);
+    const route = raw ? good : geo.simplifyRoute(clean, 6);
     return {
       points: route.map(p => ({ t: p.recorded_at, lat: p.lat, lng: p.lng, acc: p.accuracy_m, spd: p.speed_mps, hdg: p.heading, bat: p.battery, moving: p.is_moving, s: p.session_id })),
       totalPoints: pts.length, sessions, visits, indoor,
-      stats: { distanceM: Math.round(geo.routeDistanceM(good)), movingMinutes: Math.round(movingS / 60), placesVisited: new Set(visits.map(v => v.geofence_id)).size,
+      stats: { distanceM: Math.round(geo.routeDistanceM(clean)), movingMinutes: Math.round(movingS / 60), placesVisited: new Set(visits.map(v => v.geofence_id)).size,
         trackedMinutes: Math.round(sessions.reduce((s2, x) => s2 + (Math.min(new Date(x.ended_at || Date.now()), new Date(to)) - Math.max(new Date(x.started_at), new Date(from))) / 60000, 0)) },
     };
   }

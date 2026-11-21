@@ -5,6 +5,15 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.71] — 2026-11-21 — No more zig-zag tracks while standing on site
+### Fixed
+- A phone standing still on site (indoors, near tall buildings, or tracking from the browser) reports positions that
+  hop 50–300 m and back. These jumps were drawn as zig-zag lines to places the person never went and added
+  kilometres ("2.0 km travelled" while on site all morning). The route and the distance now drop standing-still
+  jitter and out-and-back spikes; real walks and drives are kept.
+- Leaving a site (which starts a break / auto check-out) now needs 3 clear fixes outside in a row, not 2, so a
+  GPS hop of one or two fixes never takes someone off site.
+
 ## [v1.70] — 2026-11-21 — Refused check-ins: HR accepts or denies when told; Google Maps view
 ### Changed
 - Check-in / out stays automatic. A refused try is NOT sent to HR by itself any more — the person tells HR or Admin,
