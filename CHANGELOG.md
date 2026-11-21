@@ -5,6 +5,20 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.68] — 2026-11-21 — Download the Android app from the website
+### Added
+- The MIHIR Android app can be downloaded at **mihir-task-manager.onrender.com/app/android**. A "📱 Download the
+  MIHIR Android app" link shows on the login page and on My Attendance when the site is opened in a phone browser
+  (not inside the app).
+
+## [v1.67] — 2026-11-21 — Check-in by button works indoors (office, sites)
+### Fixed
+- "Your GPS is not accurate enough (±145 m)" inside the office / on site: the button now watches the GPS for up to
+  15 seconds and uses the most accurate reading (indoors it usually improves from ±150 m to ±10–30 m within
+  seconds; the button shows the accuracy while it waits). With the live photo, a weaker reading — up to twice the
+  HR limit, at most ±300 m — is accepted, but then the position itself must be inside the site circle (no extra
+  allowance). HR → Today shows the accuracy of every button check-in / out (e.g. "📍 GPS ±145 m").
+
 ## [v1.66] — 2026-11-20 — Search dropdowns no longer hidden behind the next card
 ### Fixed
 - A typed-search dropdown (e.g. HR & Payroll → Rules → "Can check in from anywhere", person pickers everywhere)

@@ -111,9 +111,11 @@ test('automatic check-in / out from location tracking', async (t) => {
 
   await t.test('button check-in is strict: live photo, accurate GPS inside the circle only', async () => {
     const d = await createMember(baseUrl, admin, 'auto.d', 'Auto D', 'Execution Department');
-    assert.match((await P('/api/attendance/check-in', d, { lat: IN.lat, lng: IN.lng, acc: 180, photo: PHOTO })).data.error, /not accurate enough/);
+    assert.match((await P('/api/attendance/check-in', d, { lat: IN.lat, lng: IN.lng, acc: 260, photo: PHOTO })).data.error, /not accurate enough/);
     assert.equal((await P('/api/attendance/check-in', d, { lat: at(175).lat, lng: at(175).lng, acc: 40, photo: PHOTO })).status, 400, '25 m outside the circle is refused even with ±40 m GPS');
-    const ok = await P('/api/attendance/check-in', d, { lat: IN.lat, lng: IN.lng, acc: 15, photo: PHOTO });
+    assert.match((await P('/api/attendance/check-in', d, { lat: at(160).lat, lng: at(160).lng, acc: 170, photo: PHOTO })).data.error, /edge of the site/, 'weak GPS: the position itself must be inside');
+    // Indoors (±170 m) with a live photo and the position inside the site → accepted.
+    const ok = await P('/api/attendance/check-in', d, { lat: IN.lat, lng: IN.lng, acc: 170, photo: PHOTO });
     assert.equal(ok.status, 200, JSON.stringify(ok.data)); assert.equal(ok.data.place, 'Tower A site');
   });
 });

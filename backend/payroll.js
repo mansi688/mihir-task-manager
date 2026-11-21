@@ -121,7 +121,7 @@ function mountPayroll(app, deps) {
       if (!best || d - g.radius_m < best.d - best.g.radius_m) best = { g, d };
     }
     const slack = Math.min(Number(acc) || 0, slackCap);
-    if (best && best.d <= best.g.radius_m + slack) return { place: best.g.name, away: false, nearest: null };
+    if (best && best.d <= best.g.radius_m + slack) return { place: best.g.name, away: false, nearest: null, metres: Math.round(best.d), radius: best.g.radius_m };
     return { place: null, away: true, nearest: best ? { name: best.g.name, metres: Math.round(best.d) } : null };
   }
   // First and last tracked position of each person on each day of a range (Locations tracking)
@@ -190,14 +190,14 @@ function mountPayroll(app, deps) {
     if (extra && worked != null) flags.push(`${extra} min over the break allowance not counted`);
     if (source === 'tracking') flags.push('from tracking');
     const how = (src) => src === 'auto' ? 'auto' : src === 'manual' ? 'phone' : '';
-    return { day, status, in: inAt ? istHM(inAt) : '', out: outAt ? istHM(outAt) : '', inHow: rec && rec.manual_in ? 'corrected' : how(rec && rec.check_in_at ? (rec.in_source || 'manual') : ''), outHow: rec && rec.manual_out ? 'corrected' : how(rec && rec.check_out_at ? (rec.out_source || 'manual') : ''), worked, breakMin, awayMin, overBreak: extra, late: status === 'P' || status === 'H' ? late : 0, ot: Math.max(0, ot), source, flags,
+    return { day, status, in: inAt ? istHM(inAt) : '', out: outAt ? istHM(outAt) : '', inHow: rec && rec.manual_in ? 'corrected' : how(rec && rec.check_in_at ? (rec.in_source || 'manual') : ''), outHow: rec && rec.manual_out ? 'corrected' : how(rec && rec.check_out_at ? (rec.out_source || 'manual') : ''), inAcc: rec && rec.in_acc != null ? Number(rec.in_acc) : null, outAcc: rec && rec.out_acc != null ? Number(rec.out_acc) : null, worked, breakMin, awayMin, overBreak: extra, late: status === 'P' || status === 'H' ? late : 0, ot: Math.max(0, ot), source, flags,
       inPlace: rec && rec.in_place || '', outPlace: rec && rec.out_place || '', hasInPhoto: !!(rec && rec.has_in_photo), hasOutPhoto: !!(rec && rec.has_out_photo),
       note: rec && rec.override_reason || '', holiday: hol, leaveKind: leave ? leave.kind : null };
   }
   // A month for a set of people → { username: [days…] }
   async function monthFor(usernames, period, onlyDays) {
     const days = onlyDays && onlyDays.length ? onlyDays : monthDays(period), from = days[0], to = days[days.length - 1];
-    const [S, hols, recs, leaves] = await Promise.all([settings(), holidaysBetween(from, to), usernames.length ? rows(`SELECT username, day, check_in_at, check_out_at, in_source, out_source, in_place, out_place, in_away, out_away, status_override, override_reason, ot_minutes_override, manual_in, manual_out, breaks, away_minutes,
+    const [S, hols, recs, leaves] = await Promise.all([settings(), holidaysBetween(from, to), usernames.length ? rows(`SELECT username, day, check_in_at, check_out_at, in_source, out_source, in_acc, out_acc, in_place, out_place, in_away, out_away, status_override, override_reason, ot_minutes_override, manual_in, manual_out, breaks, away_minutes,
       (in_photo IS NOT NULL) AS has_in_photo, (out_photo IS NOT NULL) AS has_out_photo FROM attendance_days WHERE username = ANY($1::text[]) AND day BETWEEN $2 AND $3`, [usernames, from, to]) : [],
       leavesBetween(usernames, from, to)]);
     const holidays = Object.fromEntries(hols.map(h => [h.day, h.name]));
@@ -250,7 +250,13 @@ function mountPayroll(app, deps) {
     const u = await one('SELECT att_anywhere FROM users WHERE username=$1', [username]);
     if (u && u.att_anywhere) return null;
     if (!geo) return `Turn on location to ${what} — it works only inside a site or the office.`;
-    if (geo.acc == null || geo.acc > Number(S.gpsMaxAccM || 100)) return `Your GPS is not accurate enough${geo.acc != null ? ` (±${geo.acc} m)` : ''} to ${what}. Step into the open for a few seconds and try again.`;
+    // Indoors (an office, a slab under construction) phones often give ±100–250 m. With a LIVE PHOTO as proof the
+    // limit is doubled (up to 300 m) — but then the position itself must be inside the site circle, with no extra
+    // allowance for GPS error. Without a photo the normal limit applies.
+    const base = Number(S.gpsMaxAccM || 100);
+    const limit = geo.photo ? Math.min(300, base * 2) : base;
+    if (geo.acc == null || geo.acc > limit) return `Your GPS is not accurate enough${geo.acc != null ? ` (±${geo.acc} m — needs ±${limit} m or better)` : ''} to ${what}. Go near a window or step outside for a few seconds and try again.`;
+    if (geo.acc > base && where.place && where.metres != null && where.radius != null && where.metres > where.radius) return `Your position is at the edge of the site and GPS is weak (±${geo.acc} m) — step a little further inside or outside for a few seconds and try again.`;
     if (where.away) return `You are not inside a site — ${what} only from inside a site or the office${where.nearest ? ` (you are ${where.nearest.metres >= 1000 ? `${(where.nearest.metres / 1000).toFixed(1)} km` : `${where.nearest.metres} m`} from ${where.nearest.name})` : ''}. If GPS is weak, step outside for a moment and try again.`;
     return null;
   }
@@ -299,6 +305,7 @@ function mountPayroll(app, deps) {
     if (photo === 'bad') return res.status(400).json({ error: 'The photo could not be read — take it again.' });
     if (photo === 'big') return res.status(400).json({ error: 'The photo is too large — take it again.' });
     if (S.selfieRequired && !photo) return res.status(400).json({ error: 'Take a live photo to ' + (which === 'in' ? 'check in.' : 'check out.') });
+    if (geo && photo) geo.photo = true;
     const placeList = await places();
     // Strict GPS for a check-in / out from the phone: a fresh fix, accurate to gpsMaxAccM, inside the circle (at most
     // 15 m of GPS error is allowed for).

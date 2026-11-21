@@ -1473,6 +1473,7 @@ function renderLoginPage() {
         ${ui.loginErr ? `<div class="err">${esc(ui.loginErr)}</div>` : ''}
         ${ui.loginOk ? `<div class="notice" style="margin-top:8px;">✅ ${esc(ui.loginOk)}</div>` : ''}
         <p class="hint"><a href="#" data-act="toggle-forgot-password">Forgot password?</a></p>
+        ${!window.AndroidBridge && /android/i.test(navigator.userAgent) ? '<p class="hint"><a href="/app/android" download>📱 Download the MIHIR Android app</a> — attendance by location works best in the app.</p>' : ''}
         <button type="button" class="guide-open-link" data-act="open-guide">📺 Watch the app guide · <span>English · हिंदी · मराठी</span></button>
         ${ui.showForgotPassword ? `
         <div class="notice" style="margin-top:4px;">

@@ -41,7 +41,7 @@ document.addEventListener('click', async (e) => {
 }, true);
 
 // ---------- location + selfie
-function attGeo() {
+function attGeo(onProgress) {
   // 1) a fresh, accurate GPS fix; 2) if the phone / laptop can't give one, a quicker network fix; 3) the position the
   // running location tracking saw in the last 2 minutes. The server still checks accuracy and the site circle.
   const tracked = () => {
@@ -58,9 +58,25 @@ function attGeo() {
     navigator.geolocation.getCurrentPosition(p => fin({ lat: p.coords.latitude, lng: p.coords.longitude, acc: Math.round(p.coords.accuracy || 0) }),
       e => fin({ error: e && e.code === 1 ? 'location permission is off for this site' : 'this device could not find its location', code: e && e.code }), opts);
   });
+  // Watch the GPS for up to 15 s and keep the most accurate reading — the first reading indoors is often ±150 m
+  // and improves to ±10–30 m within seconds. Stops as soon as one is good enough.
+  const best = (ms) => new Promise((resolve) => {
+    if (!navigator.geolocation || !navigator.geolocation.watchPosition) { resolve(null); return; }
+    let top = null, id = null, done = false;
+    const fin = () => { if (done) return; done = true; try { navigator.geolocation.clearWatch(id); } catch (e) {} resolve(top || { error: lastErr || 'this device could not find its location', code: lastCode }); };
+    let lastErr = null, lastCode = null;
+    id = navigator.geolocation.watchPosition(p => {
+      const acc = Math.round(p.coords.accuracy || 9999);
+      if (!top || acc < top.acc) top = { lat: p.coords.latitude, lng: p.coords.longitude, acc };
+      if (typeof onProgress === 'function') onProgress(top.acc);
+      if (acc <= 25) fin();
+    }, e => { lastErr = e && e.code === 1 ? 'location permission is off for this site' : 'this device could not find its location'; lastCode = e && e.code; if (e && e.code === 1) fin(); },
+    { enableHighAccuracy: true, maximumAge: 0, timeout: ms });
+    setTimeout(fin, ms);
+  });
   return (async () => {
-    const a = await once({ enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }, 15000);
-    if (!a.error) return a;
+    const a = (await best(15000)) || await once({ enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }, 15000);
+    if (!a.error) { const t = tracked(); return t && t.acc && t.acc < a.acc ? t : a; }
     if (a.code === 1) return tracked() || a;
     const b = await once({ enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }, 12000);
     if (!b.error) return b;
@@ -137,7 +153,7 @@ function renderAttendanceView() {
     ${R.autoAttendance ? attAutoHTML(t, R) : ''}
     ${!(t && t.out) && !(t && t.onBreak) ? `<div class="att-punch">
       <button type="button" class="btn btn-primary att-punch-btn ${p && p.busy ? 'disabled' : ''}" data-att-act="punch" ${p && p.busy ? 'disabled' : ''}>${p && p.busy ? '⏳ ' + attEsc(p.msg || 'Working…') : t && t.in ? '📷 Check out' : '📷 Check in'}</button>
-      <div class="small muted">${R.selfieRequired ? 'Opens the camera for a live photo (not from the gallery) and ' : ''}uses your GPS right now — it must be inside a site and accurate to ${R.gpsMaxAccM || 100} m.${R.autoAttendance ? ' With location on, this also happens by itself.' : ''} Photos are kept for the day only.</div>
+      <div class="small muted">${R.selfieRequired ? 'Opens the camera for a live photo (not from the gallery) and ' : ''}uses your GPS for up to 15 seconds to get an accurate position — you must be inside a site (indoors, ±${Math.min(300, (R.gpsMaxAccM || 100) * 2)} m is accepted with the photo).${R.autoAttendance ? ' With location on, this also happens by itself.' : ''} Photos are kept for the day only.</div>
     </div>` : t && t.out ? '<div class="small" style="margin-top:8px;">✅ Done for today.</div>' : ''}
     ${p && p.err ? `<div class="err">${attEsc(p.err)}</div>` : ''}
     ${p && p.done ? `<div class="notice">${attEsc(p.done)}</div>` : ''}
@@ -193,7 +209,8 @@ function attAutoHTML(t, R) {
   else if (L.active) state = `<div class="att-auto-on">🛰 <b>Location is on</b>${L.lastFix ? ` · last position ${attEsc(new Date(L.lastFix).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}` : ''} — keep it on until you leave the site.</div>`;
   else state = `<div class="att-auto-off"><span>⚠ <b>Location is off</b> — you will not be checked in or out automatically.</span>
       <button type="button" class="btn btn-primary btn-sm" data-att-act="loc-on" ${L.busy ? 'disabled' : ''}>${L.consent ? '▶ Turn on location' : 'Turn on location…'}</button></div>`;
-  return `<div class="att-auto"><div class="small">${how}</div>${state}</div>`;
+  const getApp = !window.AndroidBridge && /android/i.test(navigator.userAgent) ? '<div class="small">📱 For automatic attendance install the app: <a href="/app/android" download><b>Download the MIHIR Android app</b></a> (the website can\'t send location when it is closed).</div>' : '';
+  return `<div class="att-auto"><div class="small">${how}</div>${state}${getApp}</div>`;
 }
 // ---------- live selfie camera (no gallery / file picker)
 let attCamStream = null;
@@ -293,8 +310,8 @@ function bindAttendanceView() {
   document.querySelectorAll('[data-att-month]').forEach(b => b.onclick = () => { const n = Number(b.dataset.attMonth); s.month = n === 0 ? attMonthNow() : attShiftMonth(s.month, n); render(); attLoad(true); });
   const doPunch = async (photo) => {
     const which = attMe && attMe.todayRec && attMe.todayRec.in ? 'out' : 'in';
-    s.punch = { busy: true, msg: 'Getting your location…' }; render();
-    const geo = await attGeo();
+    s.punch = { busy: true, msg: 'Getting an accurate location…' }; render();
+    const geo = await attGeo((acc) => { if (s.punch && s.punch.busy) { s.punch.msg = `Getting an accurate location… ±${acc} m`; const b = document.querySelector('[data-att-act="punch"]'); if (b) b.textContent = '⏳ ' + s.punch.msg; } });
     s.punch.msg = 'Saving…'; render();
     try {
       const r = await api(`/api/attendance/check-${which}`, { method: 'POST', body: JSON.stringify({ ...(geo && !geo.error ? geo : {}), photo }) });
@@ -395,7 +412,7 @@ function hrTodayHTML() {
       <td class="mono">${attEsc(p.in || '—')}</td><td class="mono">${attEsc(p.out || '—')}</td><td>${p.worked != null ? `${Math.floor(p.worked / 60)}h ${p.worked % 60}m` : ''}</td>
       <td class="small">${p.breakMin ? `☕ ${p.breakMin} min` : ''}${p.awayMin ? ` · away ${p.awayMin} min` : ''}${p.overBreak ? ` <span class="dlv-warn-text">(${p.overBreak} over)</span>` : ''}</td>
       <td class="small">${attEsc(p.inPlace || '')}${p.flags.includes('not at a site') ? ' <span class="dlv-warn-text">⚠ not at a site</span>' : ''}${p.flags.includes('from tracking') ? ' <span class="muted">from tracking</span>' : ''}</td>
-      <td class="small">${p.inHow ? `In: ${p.inHow === 'auto' ? '🛰 auto' : p.inHow === 'phone' ? '📍 GPS' : '✏️ HR'}` : ''}${p.outHow ? `<br>Out: ${p.outHow === 'auto' ? '🛰 auto' : p.outHow === 'phone' ? '📍 GPS' : '✏️ HR'}` : ''}${p.hasInPhoto || p.hasOutPhoto ? `<div style="margin-top:4px;display:flex;gap:4px;">${p.hasInPhoto ? `<button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|in">📷 In</button>` : ''}${p.hasOutPhoto ? `<button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|out">📷 Out</button>` : ''}</div>` : ''}</td></tr>`).join('')}
+      <td class="small">${p.inHow ? `In: ${p.inHow === 'auto' ? '🛰 auto' : p.inHow === 'phone' ? `📍 GPS${p.inAcc != null ? ` ±${p.inAcc} m` : ''}` : '✏️ HR'}` : ''}${p.outHow ? `<br>Out: ${p.outHow === 'auto' ? '🛰 auto' : p.outHow === 'phone' ? `📍 GPS${p.outAcc != null ? ` ±${p.outAcc} m` : ''}` : '✏️ HR'}` : ''}${p.hasInPhoto || p.hasOutPhoto ? `<div style="margin-top:4px;display:flex;gap:4px;">${p.hasInPhoto ? `<button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|in">📷 In</button>` : ''}${p.hasOutPhoto ? `<button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|out">📷 Out</button>` : ''}</div>` : ''}</td></tr>`).join('')}
     </tbody></table></div></div>
     ${ui.hrPhoto ? `<div class="att-modal" data-hr-photo-close><div class="att-modal-box" style="max-width:420px;text-align:center;"><img src="${ui.hrPhoto}" alt="Selfie" style="max-width:100%;border-radius:10px;"><div style="margin-top:8px;"><button class="btn btn-sm" data-hr-photo-close>Close</button></div></div></div>` : ''}`;
 }

@@ -364,6 +364,14 @@ app.get(['/', '/index.html'], (req, res, next) => {
     res.type('html').send(indexHtmlCache);
   } catch (e) { next(); }
 });
+// The MIHIR Android app (opens this site; sends location in the background for automatic attendance).
+app.get(['/app/android', '/download/android', '/MIHIR-Tasks.apk'], (req, res) => {
+  const f = path.join(__dirname, '..', 'android', 'MIHIR-Tasks.apk');
+  if (!fs.existsSync(f)) return res.status(404).send('The Android app is not available right now.');
+  res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.download(f, 'MIHIR-Tasks.apk');
+});
 app.use(express.static(path.join(__dirname, '..', 'frontend'), {
   setHeaders(res, filePath) {
     if (/\.(html|js|css|json)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
