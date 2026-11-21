@@ -1,7 +1,6 @@
 package com.mihir.taskmanager;
 
 import android.app.Notification;
-import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
@@ -148,26 +147,38 @@ public class LocationService extends Service implements LocationListener {
     // ---------- notification (the always-visible tracking status) ----------
     private void startInForeground() {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (Build.VERSION.SDK_INT >= 26 && nm != null && nm.getNotificationChannel(CHANNEL) == null) {
-            NotificationChannel ch = new NotificationChannel(CHANNEL, "Location sharing (work session)", NotificationManager.IMPORTANCE_LOW);
-            ch.setDescription("Shown whenever your location is being shared during a work session.");
-            ch.setShowBadge(false);
-            nm.createNotificationChannel(ch);
+        // Android 8+ APIs are called by reflection so the app also builds against an Android 6 android.jar.
+        if (Build.VERSION.SDK_INT >= 26 && nm != null) {
+            try {
+                Object existing = NotificationManager.class.getMethod("getNotificationChannel", String.class).invoke(nm, CHANNEL);
+                if (existing == null) {
+                    Class<?> chClass = Class.forName("android.app.NotificationChannel");
+                    Object ch = chClass.getConstructor(String.class, CharSequence.class, int.class).newInstance(CHANNEL, "Location sharing (work session)", 2 /* IMPORTANCE_LOW */);
+                    chClass.getMethod("setDescription", String.class).invoke(ch, "Shown whenever your location is being shared during a work session.");
+                    chClass.getMethod("setShowBadge", boolean.class).invoke(ch, false);
+                    NotificationManager.class.getMethod("createNotificationChannel", chClass).invoke(nm, ch);
+                }
+            } catch (Exception e) { /* the notification still shows on the default channel */ }
         }
         int piFlags = Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT : PendingIntent.FLAG_UPDATE_CURRENT;
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), piFlags);
         PendingIntent stop = PendingIntent.getService(this, 1, new Intent(this, LocationService.class).setAction(ACTION_STOP).putExtra("fromNotification", true), piFlags);
-        Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
+        Notification.Builder b = new Notification.Builder(this);
+        if (Build.VERSION.SDK_INT >= 26) { try { Notification.Builder.class.getMethod("setChannelId", String.class).invoke(b, CHANNEL); } catch (Exception e) { /* old phone */ } }
         b.setSmallIcon(R.drawable.ic_stat_notify)
          .setContentTitle("Sharing location — work session on")
          .setContentText("MIHIR records your location until you stop the session.")
          .setOngoing(true)
          .setContentIntent(open)
          .addAction(new Notification.Action.Builder(0, "Stop work session", stop).build());
-        if (Build.VERSION.SDK_INT >= 31) b.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
+        if (Build.VERSION.SDK_INT >= 31) { try { Notification.Builder.class.getMethod("setForegroundServiceBehavior", int.class).invoke(b, 1 /* FOREGROUND_SERVICE_IMMEDIATE */); } catch (Exception e) { /* ignore */ } }
         Notification n = b.build();
-        if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIF_ID, n, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
-        else startForeground(NOTIF_ID, n);
+        boolean typed = false;
+        if (Build.VERSION.SDK_INT >= 29) {
+            try { Service.class.getMethod("startForeground", int.class, Notification.class, int.class).invoke(this, NOTIF_ID, n, 8 /* FOREGROUND_SERVICE_TYPE_LOCATION */); typed = true; }
+            catch (Exception e) { /* fall back below */ }
+        }
+        if (!typed) startForeground(NOTIF_ID, n);
     }
 
     // ---------- location ----------
@@ -182,8 +193,14 @@ public class LocationService extends Service implements LocationListener {
         long minTime = (moving ? movingSec : stationarySec) * 1000L;
         float minDist = moving ? distanceM : Math.max(50f, distanceM);
         try {
+            // Android 12+: the "fused" provider is Google's location engine (GPS + Wi-Fi + cell + motion sensors,
+            // the same one Google Maps uses). When it exists it replaces the raw network provider, whose Wi-Fi /
+            // tower guesses are what make a phone standing still "jump" 200–300 m.
+            boolean fused = Build.VERSION.SDK_INT >= 31 && lm.getAllProviders().contains(FUSED);
+            usingFused = fused;
+            if (fused) lm.requestLocationUpdates(FUSED, minTime, minDist, this, main.getLooper());
             if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, minTime, minDist, this, main.getLooper());
-            if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, minTime, minDist, this, main.getLooper());
+            if (!fused && lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, minTime, minDist, this, main.getLooper());
             lm.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, minTime, minDist, this, main.getLooper());
         } catch (SecurityException e) { lastError = "permission"; }
     }
@@ -191,6 +208,11 @@ public class LocationService extends Service implements LocationListener {
     @Override public void onLocationChanged(Location loc) {
         if (loc == null || !running) return;
         if (loc.hasAccuracy() && loc.getAccuracy() > 500) return; // a cell-tower guess, not a position
+        rememberBest(loc);
+        // A Wi-Fi / tower guess is ignored while a GPS or fused fix from the last 30 s is more accurate.
+        if (LocationManager.NETWORK_PROVIDER.equals(loc.getProvider()) || LocationManager.PASSIVE_PROVIDER.equals(loc.getProvider())) {
+            if (precise != null && loc.getTime() - precise.getTime() < 30000 && loc.hasAccuracy() && precise.hasAccuracy() && loc.getAccuracy() > precise.getAccuracy()) return;
+        }
         // Same moment from two providers: keep the more accurate one.
         if (lastStored != null && Math.abs(loc.getTime() - lastStored.getTime()) < 3000
             && loc.hasAccuracy() && lastStored.hasAccuracy() && loc.getAccuracy() >= lastStored.getAccuracy()) return;
@@ -217,6 +239,17 @@ public class LocationService extends Service implements LocationListener {
             p.put("src", loc.getProvider());
             store.add(id, token, uploadUrl, loc.getTime(), p);
         } catch (Exception e) { lastError = "store: " + e.getMessage(); }
+    }
+
+    static final String FUSED = "fused";
+    static volatile boolean usingFused = false;
+    private Location precise = null;           // latest GPS / fused fix
+    static volatile Location best = null;     // latest good fix of any provider (for check-in from the app)
+    private void rememberBest(Location loc) {
+        String pr = loc.getProvider();
+        if (LocationManager.GPS_PROVIDER.equals(pr) || FUSED.equals(pr)) precise = loc;
+        Location b = best;
+        if (b == null || loc.getTime() - b.getTime() > 20000 || (loc.hasAccuracy() && (!b.hasAccuracy() || loc.getAccuracy() <= b.getAccuracy()))) best = loc;
     }
 
     // Moving ↔ stationary, from the phone's own displacement (no Google Play services needed).
@@ -365,7 +398,7 @@ public class LocationService extends Service implements LocationListener {
         // One last attempt to upload what is queued (anything left goes up next time the app tracks).
         bg.post(new Runnable() { @Override public void run() { uploadAllQuietly(); } });
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("config").apply();
-        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE); else stopForeground(true);
+        stopForeground(true);
         stopSelf();
     }
 
@@ -380,7 +413,10 @@ public class LocationService extends Service implements LocationListener {
     static void start(Context c, String configJson) {
         c.getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("config", configJson).apply();
         Intent i = new Intent(c, LocationService.class).setAction(ACTION_START);
-        if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i); else c.startService(i);
+        if (Build.VERSION.SDK_INT >= 26) {
+            try { Context.class.getMethod("startForegroundService", Intent.class).invoke(c, i); return; } catch (Exception e) { /* fall back */ }
+        }
+        c.startService(i);
     }
     static void stop(Context c) {
         if (!running) { c.getSharedPreferences(PREFS, MODE_PRIVATE).edit().remove("config").apply(); return; }

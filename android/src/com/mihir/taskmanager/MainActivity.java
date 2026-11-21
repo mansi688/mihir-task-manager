@@ -298,6 +298,31 @@ public class MainActivity extends Activity {
             } });
             return "asking";
         }
+        // The best position the phone has right now, for check-in / out: the tracking service's latest fix, or the
+        // last known fix of Google's fused provider / GPS / network (only if younger than 2 minutes).
+        @JavascriptInterface public String currentFix() {
+            try {
+                android.location.Location b = LocationService.best;
+                long now = System.currentTimeMillis();
+                if (hasLocationPermission()) {
+                    android.location.LocationManager lm = (android.location.LocationManager) getSystemService(LOCATION_SERVICE);
+                    if (lm != null) for (String pr : new String[] { "fused", "gps", "network" }) {
+                        try {
+                            if (!lm.getAllProviders().contains(pr)) continue;
+                            android.location.Location l = lm.getLastKnownLocation(pr);
+                            if (l == null || now - l.getTime() > 120000) continue;
+                            if (b == null || now - b.getTime() > 120000 || (l.hasAccuracy() && (!b.hasAccuracy() || l.getAccuracy() < b.getAccuracy()))) b = l;
+                        } catch (SecurityException e) { /* no permission */ }
+                    }
+                }
+                if (b == null || now - b.getTime() > 120000) return "";
+                JSONObject o = new JSONObject();
+                o.put("lat", b.getLatitude()); o.put("lng", b.getLongitude());
+                if (b.hasAccuracy()) o.put("acc", b.getAccuracy());
+                o.put("t", b.getTime()); o.put("src", b.getProvider());
+                return o.toString();
+            } catch (Exception e) { return ""; }
+        }
         @JavascriptInterface public void locationStop() { LocationService.stop(MainActivity.this); }
         @JavascriptInterface public String locationStatus() {
             try {
@@ -306,6 +331,7 @@ public class MainActivity extends Activity {
                 o.put("queued", LocationService.queued(MainActivity.this));
                 o.put("lastFixAt", LocationService.lastFixAt);
                 o.put("lastAccuracy", LocationService.lastAccuracy);
+                o.put("fused", LocationService.usingFused);
                 o.put("permission", hasLocationPermission() ? "granted" : "missing");
                 android.location.LocationManager lm = (android.location.LocationManager) getSystemService(LOCATION_SERVICE);
                 o.put("gpsEnabled", lm != null && lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER));

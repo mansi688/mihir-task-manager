@@ -5,6 +5,19 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.72] — 2026-11-21 — Android app 1.6: Google location for tracking and check-in
+### Changed
+- **MIHIR Android app 1.6** (versionCode 7, same signing key — installs over 1.5, people stay logged in):
+  - Tracking uses Google's **fused location** (the engine Google Maps uses: GPS + Wi-Fi + towers + motion sensors) on
+    Android 12+, instead of the raw network provider whose Wi-Fi guesses made phones on site "jump".
+  - A Wi-Fi / tower guess is ignored while a GPS / fused fix from the last 30 s is more accurate.
+  - Check-in / out from the app takes the best of: the 15-second GPS reading, the tracking service's latest fix, and
+    Google's fused last-known position.
+- My Attendance asks app 1.5 users to install 1.6; phone-browser users are asked to install the app.
+- Locations → Live marks people tracking from a browser (🌐 browser) — those tracks stop when the screen is off.
+### Added
+- `android/repack-apk.sh`: rebuilds the APK after a Java-only change without an API 34 android.jar.
+
 ## [v1.71] — 2026-11-21 — No more zig-zag tracks while standing on site
 ### Fixed
 - A phone standing still on site (indoors, near tall buildings, or tracking from the browser) reports positions that

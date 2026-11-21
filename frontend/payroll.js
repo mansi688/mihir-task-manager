@@ -49,6 +49,15 @@ function attGeo(onProgress) {
       const w = window.LocationUI && LocationUI._web && LocationUI._web.last;
       if (w && Date.now() - w.t < 120000) return { lat: w.lat, lng: w.lng, acc: Math.round(w.acc || 0), fromTracking: true };
     } catch (e) { /* ignore */ }
+    return nativeFix();
+  };
+  // MIHIR Android app 1.6+: the phone's best position from Google's fused location / the tracking service
+  const nativeFix = () => {
+    try {
+      if (!window.AndroidBridge || typeof window.AndroidBridge.currentFix !== 'function') return null;
+      const f = JSON.parse(window.AndroidBridge.currentFix() || 'null');
+      if (f && f.lat != null && Date.now() - Number(f.t || 0) < 120000) return { lat: f.lat, lng: f.lng, acc: Math.round(f.acc || 0), fromTracking: true };
+    } catch (e) { /* old app */ }
     return null;
   };
   const once = (opts, ms) => new Promise((resolve) => {
@@ -76,7 +85,7 @@ function attGeo(onProgress) {
   });
   return (async () => {
     const a = (await best(15000)) || await once({ enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }, 15000);
-    if (!a.error) { const t = tracked(); return t && t.acc && t.acc < a.acc ? t : a; }
+    if (!a.error) { const t = tracked(), n = nativeFix(); return [a, t, n].filter(x => x && x.acc).sort((x, y) => x.acc - y.acc)[0] || a; }
     if (a.code === 1) return tracked() || a;
     const b = await once({ enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }, 12000);
     if (!b.error) return b;
@@ -209,7 +218,9 @@ function attAutoHTML(t, R) {
   else if (L.active) state = `<div class="att-auto-on">🛰 <b>Location is on</b>${L.lastFix ? ` · last position ${attEsc(new Date(L.lastFix).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}` : ''} — keep it on until you leave the site.</div>`;
   else state = `<div class="att-auto-off"><span>⚠ <b>Location is off</b> — you will not be checked in or out automatically.</span>
       <button type="button" class="btn btn-primary btn-sm" data-att-act="loc-on" ${L.busy ? 'disabled' : ''}>${L.consent ? '▶ Turn on location' : 'Turn on location…'}</button></div>`;
-  const getApp = !window.AndroidBridge && /android/i.test(navigator.userAgent) ? '<div class="small">📱 For automatic attendance install the app: <a href="/app/android" download><b>Download the MIHIR Android app</b></a> (the website can\'t send location when it is closed).</div>' : '';
+  const getApp = window.AndroidBridge && typeof window.AndroidBridge.currentFix !== 'function'
+    ? '<div class="small">📱 A new MIHIR app (1.6) with Google location is out: <a href="/app/android" download><b>download and install it</b></a> over this one — you stay logged in.</div>'
+    : !window.AndroidBridge && /android/i.test(navigator.userAgent) ? '<div class="small">📱 For automatic attendance install the app: <a href="/app/android" download><b>Download the MIHIR Android app</b></a> (the website can\'t send location when it is closed).</div>' : '';
   return `<div class="att-auto"><div class="small">${how}</div>${state}${getApp}</div>`;
 }
 // ---------- live selfie camera (no gallery / file picker)
