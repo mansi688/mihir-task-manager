@@ -411,12 +411,16 @@
             <i class="loc-dot" style="background:${STATUS[p.status].color}"></i>
             <span style="flex:1;min-width:0;text-align:left;"><b>${esc(p.name)}</b> <span class="muted small">${esc(p.team || '')}</span>
               <span class="small" style="display:block;">${p.place ? `${p.status === 'at_place' ? '' : `${STATUS[p.status].label} · last at `}${esc(p.place.name)}` : STATUS[p.status].label}${p.indoor ? ` · ${esc(p.indoor.floor)}${p.indoor.zone ? ` / ${esc(p.indoor.zone)}` : ''}` : ''}${p.speedKmh && p.status === 'moving' ? ` · ${Math.round(p.speedKmh)} km/h` : ''}</span>
-              <span class="small muted" style="display:block;">${esc(ago(p.lastPointAt))}${p.accuracyM ? ` · ±${Math.round(p.accuracyM)} m` : ''}${p.battery != null ? ` · 🔋${Math.round(p.battery * 100)}%` : ''} · ${p.distanceKm} km</span>
+              <span class="small muted" style="display:block;">${esc(ago(p.lastPointAt))}${p.accuracyM ? ` · ±${Math.round(p.accuracyM)} m` : ''}${p.battery != null ? ` · 🔋${Math.round(p.battery * 100)}%` : ''} · ${p.distanceKm} km${p.lat != null ? ` · <span class="loc-gmaps" role="link" tabindex="0" data-gmaps="${p.lat},${p.lng}" title="Open this position in Google Maps">🗺 Google Maps</span>` : ''}</span>
               ${p.status === 'lost' || p.status === 'stale' ? `<span class="small dlv-warn-text" style="display:block;">${esc(lostReason(p))}</span>` : ''}</span>
           </button>`).join('')}
         </div>
       </div>
-      <div class="card loc-map-card">${mapSearchHTML()}<div id="loc-map-live" class="loc-map" data-morph-skip></div></div>
+      <div class="card loc-map-card">
+        <div class="loc-mapsw"><button type="button" class="${!S.gview ? 'on' : ''}" data-gview="">Everyone</button><button type="button" class="${S.gview === 'm' ? 'on' : ''}" data-gview="m">Google Maps</button><button type="button" class="${S.gview === 'k' ? 'on' : ''}" data-gview="k">Satellite</button>
+          ${S.gview ? `<span class="small muted">${gFocus() ? `Showing <b>${esc(gFocus().name || '')}</b> — tap another person to switch` : 'Tap a person on the left'}</span>` : ''}</div>
+        ${S.gview ? `<div class="loc-map loc-gmap" data-morph-skip><iframe id="loc-gframe" title="Google Maps" loading="lazy" referrerpolicy="no-referrer-when-downgrade" style="width:100%;height:100%;border:0;border-radius:10px;"></iframe></div>`
+          : `${mapSearchHTML()}<div id="loc-map-live" class="loc-map" data-morph-skip></div>`}</div>
     </div>`;
   }
   async function loadLive(force) {
@@ -819,6 +823,18 @@
     });
     return leafletLoading;
   }
+  // Google Maps view (no key needed): Google's own map / satellite around ONE person — the one tapped in the list.
+  function gFocus() {
+    const ppl = (S.live && S.live.people || []).filter(p => p.lat != null);
+    return ppl.find(p => p.username === S.gfocus) || ppl[0] || null;
+  }
+  function gSrc() {
+    const p = gFocus();
+    const places = (S.live && S.live.places) || [];
+    const c = p ? { lat: p.lat, lng: p.lng } : places[0] ? { lat: places[0].center_lat, lng: places[0].center_lng } : { lat: 18.52, lng: 73.86 };
+    return `https://maps.google.com/maps?q=${Number(c.lat).toFixed(6)},${Number(c.lng).toFixed(6)}&z=${p ? 18 : 12}&t=${S.gview === 'k' ? 'k' : 'm'}&hl=en&output=embed`;
+  }
+  function syncGFrame() { const f = document.getElementById('loc-gframe'); if (!f) return; const src = gSrc(); if (f.getAttribute('src') !== src) f.setAttribute('src', src); }
   function mapEl() { return document.querySelector('[id^="loc-map-"]'); }
   function syncMap() {
     const el = mapEl();
@@ -832,7 +848,9 @@
         if (mapEl() !== el || S.map) return;
         const m = S.me.map || {};
         S.map = L.map(el, { zoomControl: true, attributionControl: true }).setView([18.52, 73.86], 11);
-        L.tileLayer(m.tileUrl || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: m.attribution || '&copy; OpenStreetMap contributors' }).addTo(S.map);
+        const base = L.tileLayer(m.tileUrl || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: m.maxZoom || 19, attribution: m.attribution || '&copy; OpenStreetMap contributors' }).addTo(S.map);
+        // Google Maps: a Map / Satellite switch (satellite is handy to see where on a big site someone is)
+        if (m.satelliteUrl && L.control && L.control.layers) L.control.layers({ 'Map': base, 'Satellite': L.tileLayer(m.satelliteUrl, { maxZoom: m.maxZoom || 22, attribution: m.attribution }) }, null, { position: 'topright' }).addTo(S.map);
         S.layer = L.layerGroup().addTo(S.map);
         S.pinLayer = L.layerGroup().addTo(S.map);
         S.mapEl = el; S.mapId = el.id; S.fitNext = !S.msearch.pin; S.sig = '';
@@ -1021,7 +1039,10 @@
     on('[data-loc-tab]', (e) => { S.tab = e.currentTarget.dataset.locTab; S.fitNext = true; try { safeStorage.setItem('loc_tab', S.tab); } catch (x) { /* ignore */ } stopReplay(); render(); loadForTab(true); });
     const f = document.getElementById('loc-live-filter');
     if (f) f.oninput = () => { S.liveFilter = f.value; render(); };
-    on('[data-loc-person]', (e) => { const u = e.currentTarget.dataset.locPerson; const p = S.live && S.live.people.find(x => x.username === u); if (p && p.lat != null && S.map) S.map.setView([p.lat, p.lng], 16); });
+    document.querySelectorAll('[data-gmaps]').forEach(el => { el.onclick = (e) => { e.stopPropagation(); e.preventDefault(); window.open(`https://www.google.com/maps?q=${el.dataset.gmaps}`, '_blank', 'noopener'); }; });
+    document.querySelectorAll('[data-gview]').forEach(b => { b.onclick = () => { S.gview = b.dataset.gview || null; try { safeStorage.setItem('loc_gview', S.gview || ''); } catch (x) { /* ignore */ } render(); }; });
+    syncGFrame();
+    on('[data-loc-person]', (e) => { const u = e.currentTarget.dataset.locPerson; S.gfocus = u; if (S.gview) { render(); return; } const p = S.live && S.live.people.find(x => x.username === u); if (p && p.lat != null && S.map) S.map.setView([p.lat, p.lng], 16); });
     document.querySelectorAll('[data-loc-person]').forEach(b => { b.ondblclick = () => { S.tab = 'history'; S.hist.username = b.dataset.locPerson; S.hist.day = today(); loadHistory(); }; });
     // history
     const hu = document.getElementById('loc-h-user'), hd = document.getElementById('loc-h-day');
@@ -1206,6 +1227,7 @@
   window.addEventListener('online', () => Web.flush());
   document.addEventListener('visibilitychange', () => { if (document.hidden) Web.flush(); else { refreshMe(true).then(resumeNativeIfNeeded); } });
   try { S.tab = safeStorage.getItem('loc_tab') || 'live'; } catch (e) { /* ignore */ }
+  try { S.gview = safeStorage.getItem('loc_gview') || null; } catch (e) { /* ignore */ }
   setTimeout(() => { refreshMe(true).then(resumeNativeIfNeeded); }, 1500);
 
   // For My Attendance (automatic check-in needs a running work session).

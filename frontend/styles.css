@@ -1943,3 +1943,11 @@ input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !importan
 /* an open search-dropdown must sit above the cards below it */
 .qs-open-host{position:relative;z-index:80 !important;}
 .qs-combo-list.up{top:auto;bottom:100%;margin-top:0;margin-bottom:3px;}
+/* HR Today: refused check-ins */
+.att-attempts { border: 1px solid #f3c27a; background: #fff8ec; border-radius: 10px; padding: 8px 10px; margin: 8px 0; }
+.att-attempts summary { cursor: pointer; }
+.att-attempts .dpr-table-wrap { margin-top: 8px; }
+.loc-gmaps { color: #1a73e8; text-decoration: underline; cursor: pointer; }
+.loc-mapsw { padding: 6px 6px 0; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.loc-mapsw button { border: 1px solid var(--border, #ddd); background: transparent; border-radius: 999px; padding: 4px 12px; font-size: 13px; cursor: pointer; }
+.loc-mapsw button.on { background: #1a73e8; color: #fff; border-color: #1a73e8; }

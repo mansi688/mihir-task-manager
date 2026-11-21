@@ -405,6 +405,7 @@ function hrTodayHTML() {
   return `<div class="card">
     <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">${attEsc(attDayLabel(x.day))}</div><input type="date" id="hr-day" value="${attEsc(s.day)}" max="${attToday()}" style="width:auto;margin:0;"></div>
     <div class="att-chips"><span class="att-chip st-P">Checked in <b>${t.in}</b></span><span class="att-chip st-A">Not in <b>${t.notIn}</b></span><span class="att-chip">Late <b>${t.late}</b></span><span class="att-chip">Not at a site <b>${t.away}</b></span><span class="att-chip st-L">On leave <b>${t.onLeave}</b></span></div>
+    ${hrAttemptsHTML(x)}
     ${hrSearchHTML()}
     <div class="dpr-table-wrap"><table class="dpr-table"><thead><tr><th>Person</th><th>Status</th><th>In</th><th>Out</th><th>Hours</th><th>Break / away</th><th>Where</th><th>How</th></tr></thead><tbody>
     ${list.map(p => `<tr><td><b>${attEsc(p.name)}</b><div class="small muted">${attEsc(p.username)} · ${attEsc(p.team)}</div></td>
@@ -412,9 +413,33 @@ function hrTodayHTML() {
       <td class="mono">${attEsc(p.in || '—')}</td><td class="mono">${attEsc(p.out || '—')}</td><td>${p.worked != null ? `${Math.floor(p.worked / 60)}h ${p.worked % 60}m` : ''}</td>
       <td class="small">${p.breakMin ? `☕ ${p.breakMin} min` : ''}${p.awayMin ? ` · away ${p.awayMin} min` : ''}${p.overBreak ? ` <span class="dlv-warn-text">(${p.overBreak} over)</span>` : ''}</td>
       <td class="small">${attEsc(p.inPlace || '')}${p.flags.includes('not at a site') ? ' <span class="dlv-warn-text">⚠ not at a site</span>' : ''}${p.flags.includes('from tracking') ? ' <span class="muted">from tracking</span>' : ''}</td>
-      <td class="small">${p.inHow ? `In: ${p.inHow === 'auto' ? '🛰 auto' : p.inHow === 'phone' ? `📍 GPS${p.inAcc != null ? ` ±${p.inAcc} m` : ''}` : '✏️ HR'}` : ''}${p.outHow ? `<br>Out: ${p.outHow === 'auto' ? '🛰 auto' : p.outHow === 'phone' ? `📍 GPS${p.outAcc != null ? ` ±${p.outAcc} m` : ''}` : '✏️ HR'}` : ''}${p.hasInPhoto || p.hasOutPhoto ? `<div style="margin-top:4px;display:flex;gap:4px;">${p.hasInPhoto ? `<button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|in">📷 In</button>` : ''}${p.hasOutPhoto ? `<button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|out">📷 Out</button>` : ''}</div>` : ''}</td></tr>`).join('')}
+      <td class="small">${p.inHow ? `In: ${p.inHow === 'auto' ? '🛰 auto' : p.inHow === 'phone' ? `📍 GPS${p.inAcc != null ? ` ±${p.inAcc} m` : ''}` : p.inHow === 'hr' ? '✅ accepted by HR' : '✏️ HR'}` : ''}${p.outHow ? `<br>Out: ${p.outHow === 'auto' ? '🛰 auto' : p.outHow === 'phone' ? `📍 GPS${p.outAcc != null ? ` ±${p.outAcc} m` : ''}` : p.outHow === 'hr' ? '✅ accepted by HR' : '✏️ HR'}` : ''}${p.hasInPhoto || p.hasOutPhoto ? `<div style="margin-top:4px;display:flex;gap:4px;">${p.hasInPhoto ? `<button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|in">📷 In</button>` : ''}${p.hasOutPhoto ? `<button class="btn btn-sm" data-hr-photo="${attEsc(p.username)}|${attEsc(x.day)}|out">📷 Out</button>` : ''}</div>` : ''}</td></tr>`).join('')}
     </tbody></table></div></div>
     ${ui.hrPhoto ? `<div class="att-modal" data-hr-photo-close><div class="att-modal-box" style="max-width:420px;text-align:center;"><img src="${ui.hrPhoto}" alt="Selfie" style="max-width:100%;border-radius:10px;"><div style="margin-top:8px;"><button class="btn btn-sm" data-hr-photo-close>Close</button></div></div></div>` : ''}`;
+}
+// Refused check-ins / outs today: one row per person and action (latest attempt), why, where, photo; HR accepts.
+function hrAttemptsHTML(x) {
+  const all = x.attempts || [];
+  if (!all.length) return '';
+  // one row per person and action: the FIRST try that has a photo (accepting it marks the time they first tried)
+  const seen = new Set(); const rows = [];
+  for (const a of all) {
+    const k = `${a.username}|${a.action}`; if (seen.has(k)) continue; seen.add(k);
+    const mine = all.filter(b => b.username === a.username && b.action === a.action);
+    const pick = mine.slice().reverse().find(b => b.has_photo && b.lat != null) || a;
+    rows.push({ ...pick, reason: a.reason, tries: mine.length });
+  }
+  const open = rows.filter(a => !a.done && a.status === 'open');
+  return `<details class="att-attempts" ${open.length ? 'open' : ''}><summary><b>⚠ Could not check in / out</b> <span class="badge ${open.length ? 'flag' : ''}">${open.length}</span> <span class="small muted">— refused by the app (weak GPS, outside a site, no photo). When someone tells you they were on site, check the photo and the map, then accept or deny.</span></summary>
+    <div class="dpr-table-wrap"><table class="dpr-table"><thead><tr><th>Person</th><th>Tried</th><th>Why it was refused</th><th>Where</th><th></th></tr></thead><tbody>
+    ${rows.map(a => `<tr><td><b>${attEsc(a.name || a.username)}</b><div class="small muted">${attEsc(a.username)}${a.team ? ` · ${attEsc(a.team)}` : ''}</div></td>
+      <td class="small">${a.action === 'in' ? 'Check-in' : 'Check-out'} <span class="mono">${attEsc(a.at_hm)}</span>${a.tries > 1 ? `<div class="muted">${a.tries} tries</div>` : ''}</td>
+      <td class="small">${attEsc(a.reason)}</td>
+      <td class="small">${a.acc != null ? `GPS ±${a.acc} m` : 'No location'}${a.nearest ? `<div>${a.nearest_m != null ? `${a.nearest_m >= 1000 ? `${(a.nearest_m / 1000).toFixed(1)} km` : `${a.nearest_m} m`} from ` : ''}${attEsc(a.nearest)}</div>` : ''}${a.map ? `<a href="${attEsc(a.map)}" target="_blank" rel="noopener">🗺 Google Maps</a>` : ''}</td>
+      <td class="small" style="white-space:nowrap;">${a.has_photo ? `<button class="btn btn-sm" data-hr-att-photo="${a.id}">📷 Photo</button> ` : ''}
+        ${a.done ? `<span class="muted">${a.status === 'accepted' ? '✅ accepted' : '✓ done later'}</span>` : a.status === 'denied' || a.status === 'dismissed' ? '<span class="muted">✖ denied</span>'
+          : x.canAccept ? `<button class="btn btn-primary btn-sm" data-hr-att-dec="${a.id}|accept">Accept ${attEsc(a.at_hm)}</button> <button class="btn btn-sm" data-hr-att-dec="${a.id}|deny">Deny</button>` : ''}</td></tr>`).join('')}
+    </tbody></table></div></details>`;
 }
 function hrRegisterHTML() {
   const s = hrState(); const d = hrNeed('register'); const l = hrLoadingHTML(d); if (l) return l;
@@ -570,6 +595,12 @@ function bindHrPayrollView() {
   document.querySelectorAll('[data-hr-month]').forEach(b => b.onclick = () => { s.month = attShiftMonth(s.month, Number(b.dataset.hrMonth)); s.edit = null; render(); });
   document.querySelectorAll('[data-hr-paymonth]').forEach(b => b.onclick = () => { s.payMonth = attShiftMonth(s.payMonth, Number(b.dataset.hrPaymonth)); s.lineEdit = null; render(); });
   document.querySelectorAll('[data-hr-photo]').forEach(b => b.onclick = async () => { const [u, d, w] = b.dataset.hrPhoto.split('|'); try { const r = await api(`/api/attendance/photo/${encodeURIComponent(u)}/${d}/${w}`); ui.hrPhoto = r.data; render(); } catch (e) { setBanner(e.message); render(); } });
+  document.querySelectorAll('[data-hr-att-photo]').forEach(b => b.onclick = async () => { try { const r = await api(`/api/attendance/attempts/${b.dataset.hrAttPhoto}/photo`); ui.hrPhoto = r.data; render(); } catch (e) { setBanner(e.message); render(); } });
+  document.querySelectorAll('[data-hr-att-dec]').forEach(b => b.onclick = async () => {
+    const [id, dec] = b.dataset.hrAttDec.split('|'); b.disabled = true;
+    try { await api(`/api/attendance/attempts/${id}/${dec}`, { method: 'POST' }); setBanner(dec === 'accept' ? 'Accepted — the attendance is marked.' : 'Denied — the person is told.', 'ok'); await hrLoad('today', true); }
+    catch (e) { setBanner(e.message); b.disabled = false; render(); }
+  });
   document.querySelectorAll('[data-hr-photo-close]').forEach(b => b.onclick = (e) => { if (e.target !== b) return; ui.hrPhoto = null; render(); });
   const act = (n, fn) => document.querySelectorAll(`[data-hr-act="${n}"]`).forEach(b => b.onclick = fn);
   // register corrections

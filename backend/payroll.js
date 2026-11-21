@@ -189,7 +189,7 @@ function mountPayroll(app, deps) {
     if (awayMin) flags.push(`away ${awayMin} min`);
     if (extra && worked != null) flags.push(`${extra} min over the break allowance not counted`);
     if (source === 'tracking') flags.push('from tracking');
-    const how = (src) => src === 'auto' ? 'auto' : src === 'manual' ? 'phone' : '';
+    const how = (src) => src === 'auto' ? 'auto' : src === 'manual' ? 'phone' : src === 'hr' ? 'hr' : '';
     return { day, status, in: inAt ? istHM(inAt) : '', out: outAt ? istHM(outAt) : '', inHow: rec && rec.manual_in ? 'corrected' : how(rec && rec.check_in_at ? (rec.in_source || 'manual') : ''), outHow: rec && rec.manual_out ? 'corrected' : how(rec && rec.check_out_at ? (rec.out_source || 'manual') : ''), inAcc: rec && rec.in_acc != null ? Number(rec.in_acc) : null, outAcc: rec && rec.out_acc != null ? Number(rec.out_acc) : null, worked, breakMin, awayMin, overBreak: extra, late: status === 'P' || status === 'H' ? late : 0, ot: Math.max(0, ot), source, flags,
       inPlace: rec && rec.in_place || '', outPlace: rec && rec.out_place || '', hasInPhoto: !!(rec && rec.has_in_photo), hasOutPhoto: !!(rec && rec.has_out_photo),
       note: rec && rec.override_reason || '', holiday: hol, leaveKind: leave ? leave.kind : null };
@@ -295,6 +295,25 @@ function mountPayroll(app, deps) {
     if (s.length > 700000) return 'big';
     return s;
   };
+  // A refused check-in / out is kept (with its reason, GPS and live photo) so HR sees why and can accept it.
+  // The photo is deleted the next day like the other attendance photos.
+  async function refuse(req, res, which, reason, geo, where, photo, opts = {}) {
+    const username = req.user.username, day = istDay(), t = now();
+    const near = where && where.nearest ? where.nearest : (where && where.place ? { name: where.place, metres: null } : null);
+    let id = null;
+    try {
+      const r = await one(`INSERT INTO attendance_attempts(username, day, action, at, reason, lat, lng, acc, nearest, nearest_m, photo, client)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
+      [username, day, which, t, String(reason).slice(0, 400), geo ? geo.lat : null, geo ? geo.lng : null, geo ? geo.acc : null,
+        near ? near.name : null, near && near.metres != null ? Math.round(near.metres) : null, photo || null, str(req.get && req.get('user-agent')).slice(0, 160)]);
+      id = r && r.id;
+    } catch (e) { /* the table is new — never block the answer on it */ }
+    console.warn(JSON.stringify({ timestamp: t, level: 'WARN', message: 'attendance_refused', username, action: which, reason: String(reason).slice(0, 200),
+      acc: geo ? geo.acc : null, nearest: near ? near.name : null, nearestM: near ? near.metres : null, photo: !!photo, located: !!geo }));
+    // Nothing is sent to HR automatically: a person who is really on site tells HR / Admin, who accept or deny it.
+    const canAsk = !opts.noAsk && !!geo && !!photo && !!id;
+    return res.status(400).json({ error: reason + (canAsk ? ' If you are on site, tell HR or Admin — they can see this try with your photo and accept it.' : ''), outside: true, nearest: where ? where.nearest : null, attemptId: id, sentToHr: canAsk });
+  }
   async function punch(req, res, which) {
     const b = req.body || {};
     const S = await settings();
@@ -304,14 +323,14 @@ function mountPayroll(app, deps) {
     const photo = cleanPhoto(b.photo);
     if (photo === 'bad') return res.status(400).json({ error: 'The photo could not be read — take it again.' });
     if (photo === 'big') return res.status(400).json({ error: 'The photo is too large — take it again.' });
-    if (S.selfieRequired && !photo) return res.status(400).json({ error: 'Take a live photo to ' + (which === 'in' ? 'check in.' : 'check out.') });
-    if (geo && photo) geo.photo = true;
     const placeList = await places();
     // Strict GPS for a check-in / out from the phone: a fresh fix, accurate to gpsMaxAccM, inside the circle (at most
     // 15 m of GPS error is allowed for).
     const where = placeFor(geo && geo.lat, geo && geo.lng, geo && geo.acc, placeList, 15);
+    if (S.selfieRequired && !photo) return refuse(req, res, which, 'Take a live photo to ' + (which === 'in' ? 'check in.' : 'check out.'), geo, where, null, { noAsk: true });
+    if (geo && photo) geo.photo = true;
     const block = await locationBlock(req.user.username, S, geo, where, placeList, which === 'in' ? 'check in' : 'check out');
-    if (block) return res.status(400).json({ error: block, outside: true, nearest: where.nearest });
+    if (block) return refuse(req, res, which, block, geo, where, photo);
     const rec = await one('SELECT * FROM attendance_days WHERE username=$1 AND day=$2', [req.user.username, day]);
     const t = now();
     if (which === 'in') {
@@ -421,7 +440,8 @@ function mountPayroll(app, deps) {
       return { username: u.username, name: u.name, team: u.team || '', ...d };
     }).sort((a, b) => (a.in ? 0 : 1) - (b.in ? 0 : 1) || String(a.in).localeCompare(String(b.in)) || a.name.localeCompare(b.name));
     const count = (f) => list.filter(f).length;
-    res.json({ day, list, shiftStart: S.shiftStart, totals: { in: count(x => x.in), notIn: count(x => !x.in && !['WO', 'HO', 'L', 'U'].includes(x.status)), late: count(x => x.late), away: count(x => x.flags.includes('not at a site')), onLeave: count(x => ['L', 'U', 'LH'].includes(x.status)) } });
+    const attempts = await attemptsFor(day).catch(() => []);
+    res.json({ day, list, attempts, canAccept: m.canEditAttendance, shiftStart: S.shiftStart, totals: { in: count(x => x.in), notIn: count(x => !x.in && !['WO', 'HO', 'L', 'U'].includes(x.status)), late: count(x => x.late), away: count(x => x.flags.includes('not at a site')), onLeave: count(x => ['L', 'U', 'LH'].includes(x.status)) } });
   });
   // HR view: the month register
   app.get('/api/attendance/register', auth(ALL_ROLES), async (req, res) => {
@@ -440,6 +460,68 @@ function mountPayroll(app, deps) {
     const r = await one(`SELECT ${req.params.which === 'out' ? 'out_photo' : 'in_photo'} AS p FROM attendance_days WHERE username=$1 AND day=$2`, [req.params.username, req.params.day]);
     if (!r || !r.p) return res.status(404).json({ error: 'No photo.' });
     res.json({ data: r.p });
+  });
+  // HR: refused check-ins / outs of a day — why, where (Google Maps link), the live photo; accept or dismiss.
+  app.get('/api/attendance/attempts', auth(ALL_ROLES), async (req, res) => {
+    const m = await me(req.user);
+    if (!m.canSeeAttendance) return res.status(403).json({ error: 'Only HR and Admin see this.' });
+    const day = validDay(req.query.day) || istDay();
+    res.json({ day, canAccept: m.canEditAttendance, list: await attemptsFor(day) });
+  });
+  async function attemptsFor(day) {
+    const list = await rows(`SELECT a.id, a.username, u.name, u.team, a.day, a.action, a.at, a.reason, a.lat, a.lng, a.acc, a.nearest, a.nearest_m,
+      (a.photo IS NOT NULL) AS has_photo, a.status, a.decided_by, a.decided_at, a.client
+      FROM attendance_attempts a LEFT JOIN users u ON u.username = a.username WHERE a.day = $1 ORDER BY a.at DESC LIMIT 500`, [day]).catch(() => []);
+    const recs = await rows('SELECT username, check_in_at, check_out_at FROM attendance_days WHERE day=$1', [day]);
+    const byUser = Object.fromEntries(recs.map(r => [r.username, r]));
+    return list.map(a => {
+      const r = byUser[a.username] || {};
+      const done = a.action === 'in' ? !!r.check_in_at : !!r.check_out_at;
+      return { ...a, at_hm: istHM(a.at), done, map: a.lat != null ? `https://www.google.com/maps?q=${a.lat},${a.lng}` : null };
+    });
+  }
+  app.get('/api/attendance/attempts/:id/photo', auth(ALL_ROLES), async (req, res) => {
+    const m = await me(req.user);
+    if (!m.canSeeAttendance) return res.status(403).json({ error: 'Not allowed.' });
+    const r = await one('SELECT photo FROM attendance_attempts WHERE id=$1', [Number(req.params.id) || 0]);
+    if (!r || !r.photo) return res.status(404).json({ error: 'No photo (photos are deleted the next day).' });
+    res.json({ data: r.photo });
+  });
+  app.post('/api/attendance/attempts/:id/:decision', auth(ALL_ROLES), async (req, res) => {
+    const m = await me(req.user);
+    if (!m.canEditAttendance) return res.status(403).json({ error: 'Only HR and Admin can accept a check-in.' });
+    const decision = req.params.decision;
+    if (!['accept', 'deny', 'dismiss'].includes(decision)) return res.status(404).json({ error: 'Unknown action.' });
+    const a = await one('SELECT * FROM attendance_attempts WHERE id=$1', [Number(req.params.id) || 0]);
+    if (!a) return res.status(404).json({ error: 'That attempt is gone.' });
+    if (a.username === m.username && !m.admin) return res.status(403).json({ error: 'Someone else in HR must accept your own check-in.' });
+    const t = now();
+    if (decision !== 'accept') {
+      await q("UPDATE attendance_attempts SET status='denied', decided_by=$4, decided_at=$5 WHERE username=$1 AND day=$2 AND action=$3 AND status='open'", [a.username, a.day, a.action, m.username, t]);
+      await auditFromReq(req, 'attendance_attempt_denied', `${m.name} denied the ${a.action === 'in' ? 'check-in' : 'check-out'} of ${a.username} on ${a.day} at ${istHM(a.at)}`);
+      await notify([a.username], m.username, 'attendance', `${m.name} did not accept your ${a.action === 'in' ? 'check-in' : 'check-out'} of ${istHM(a.at)}.`).catch(() => {});
+      return res.json({ ok: true });
+    }
+    const near = a.nearest || null;
+    if (a.action === 'in') {
+      const ins = await one(`INSERT INTO attendance_days(username, day, check_in_at, in_lat, in_lng, in_acc, in_place, in_away, in_photo, in_source, created_at, updated_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,false,$8,'hr',$9,$9) ON CONFLICT (username, day) DO UPDATE SET check_in_at=EXCLUDED.check_in_at, in_lat=EXCLUDED.in_lat, in_lng=EXCLUDED.in_lng,
+        in_acc=EXCLUDED.in_acc, in_place=EXCLUDED.in_place, in_away=false, in_photo=EXCLUDED.in_photo, in_source='hr', updated_at=EXCLUDED.updated_at
+        WHERE attendance_days.check_in_at IS NULL RETURNING check_in_at`, [a.username, a.day, a.at, a.lat, a.lng, a.acc, near, a.photo, t]);
+      if (!ins) return res.status(400).json({ error: 'Already checked in that day.' });
+    } else {
+      const rec = await one('SELECT * FROM attendance_days WHERE username=$1 AND day=$2', [a.username, a.day]);
+      if (!rec || !rec.check_in_at) return res.status(400).json({ error: 'There is no check-in that day — accept the check-in first.' });
+      if (rec.check_out_at) return res.status(400).json({ error: 'Already checked out that day.' });
+      if (a.at <= rec.check_in_at) return res.status(400).json({ error: 'This check-out is before the check-in.' });
+      const breaks = closeOpenBreak(rec.breaks, a.at, near);
+      await q("UPDATE attendance_days SET check_out_at=$3, out_lat=$4, out_lng=$5, out_acc=$6, out_place=$7, out_away=false, out_photo=$8, breaks=$9, out_source='hr', updated_at=$10 WHERE username=$1 AND day=$2 AND check_out_at IS NULL",
+        [a.username, a.day, a.at, a.lat, a.lng, a.acc, near, a.photo, JSON.stringify(breaks), t]);
+    }
+    await q("UPDATE attendance_attempts SET status='accepted', decided_by=$4, decided_at=$5 WHERE username=$1 AND day=$2 AND action=$3 AND status='open'", [a.username, a.day, a.action, m.username, t]);
+    await auditFromReq(req, 'attendance_attempt_accepted', `${m.name} accepted the ${a.action === 'in' ? 'check-in' : 'check-out'} of ${a.username} on ${a.day} at ${istHM(a.at)} (refused: ${String(a.reason).slice(0, 100)})`);
+    await notify([a.username], m.username, 'attendance', `${m.name} accepted your ${a.action === 'in' ? 'check-in' : 'check-out'} of ${istHM(a.at)}.`).catch(() => {});
+    res.json({ ok: true });
   });
   // HR / Admin correct a day
   app.post('/api/attendance/correct', auth(ALL_ROLES), async (req, res) => {
@@ -915,6 +997,7 @@ function mountPayroll(app, deps) {
   async function purgeOldPhotos(today) {
     if (photosPurgedFor === today) return 0;
     const r = await q('UPDATE attendance_days SET in_photo=NULL, out_photo=NULL WHERE day < $1 AND (in_photo IS NOT NULL OR out_photo IS NOT NULL)', [today]);
+    await q('UPDATE attendance_attempts SET photo=NULL WHERE day < $1 AND photo IS NOT NULL', [today]).catch(() => null);
     photosPurgedFor = today;
     return r.rowCount;
   }

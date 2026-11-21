@@ -512,6 +512,12 @@ async function init() {
   await ensureColumn('attendance_days', 'away_minutes', 'INTEGER');
   await ensureColumn('attendance_days', 'in_source', 'TEXT');
   await ensureColumn('attendance_days', 'out_source', 'TEXT');
+  // Check-ins / outs the app refused (weak GPS, outside a site…): HR sees why and can accept them.
+  await run(`CREATE TABLE IF NOT EXISTS attendance_attempts(
+    id SERIAL PRIMARY KEY, username TEXT NOT NULL, day TEXT NOT NULL, action TEXT NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL,
+    lat DOUBLE PRECISION, lng DOUBLE PRECISION, acc INTEGER, nearest TEXT, nearest_m INTEGER, photo TEXT, client TEXT,
+    status TEXT NOT NULL DEFAULT 'open', decided_by TEXT, decided_at TEXT)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_attendance_attempts_day ON attendance_attempts(day, username)');
   await ensureColumn('users', 'att_anywhere', 'BOOLEAN DEFAULT FALSE');
   await ensureColumn('users', 'last_active_at', 'TEXT');
   // Small company-wide settings (e.g. the common recovery PIN hash).

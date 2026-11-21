@@ -122,6 +122,32 @@ function mountLocation(app, deps) {
     };
   })();
 
+  // Map tiles: Google Maps (Map Tiles API) when GOOGLE_MAPS_API_KEY is set and MAP_PROVIDER is not 'osm';
+  // otherwise OpenStreetMap. Google needs a session token (valid ~2 weeks) — made once and kept for 12 days;
+  // if Google refuses, the map falls back to OpenStreetMap.
+  const OSM = { provider: 'osm', tileUrl: process.env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors' };
+  const gSessions = {}; let gFailedAt = 0;
+  async function googleSession(key, mapType) {
+    const c = gSessions[mapType];
+    if (c && c.until > Date.now()) return c.token;
+    if (Date.now() - gFailedAt < 10 * 60000) return null;
+    try {
+      const r = await fetch(`https://tile.googleapis.com/v1/createSession?key=${encodeURIComponent(key)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mapType, language: 'en-IN', region: 'IN', ...(mapType === 'satellite' ? { layerTypes: ['layerRoadmap'] } : {}) }), signal: AbortSignal.timeout(8000) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.session) throw new Error((j.error && j.error.message) || `HTTP ${r.status}`);
+      gSessions[mapType] = { token: j.session, until: Date.now() + 12 * 864e5 };
+      return j.session;
+    } catch (e) { gFailedAt = Date.now(); console.warn(JSON.stringify({ level: 'WARN', message: 'google_map_tiles_failed', error: String(e.message || e).slice(0, 200) })); return null; }
+  }
+  async function mapTiles() {
+    const key = process.env.GOOGLE_MAPS_API_KEY || '';
+    if (!key || String(process.env.MAP_PROVIDER || '').toLowerCase() === 'osm') return OSM;
+    const [road, sat] = await Promise.all([googleSession(key, 'roadmap'), googleSession(key, 'satellite')]);
+    if (!road) return OSM;
+    const url = (t) => `https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session=${encodeURIComponent(t)}&key=${encodeURIComponent(key)}`;
+    return { provider: 'google', tileUrl: url(road), satelliteUrl: sat ? url(sat) : null, attribution: 'Map data &copy; Google', maxZoom: 22 };
+  }
   // ================= employee =================
   router.get('/me', userAuth, ah(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -135,7 +161,7 @@ function mountLocation(app, deps) {
         viewers: { admin: true, directors: s.directorsCanView, teamLeads: s.teamLeadsCanView } },
       config: await service.clientConfig(),
       canViewOthers: isManager(scope), isAdmin: me.role === 'admin', canManagePlaces: me.role === 'admin' || me.role === 'director',
-      map: { tileUrl: process.env.MAP_TILE_URL || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: process.env.MAP_TILE_ATTRIBUTION || '&copy; OpenStreetMap contributors', search: geocoder.providerName(), searchLabels: geocoder.chain().map(p => geocoder.LABEL[p]) },
+      map: { ...(await mapTiles()), search: geocoder.providerName(), searchLabels: geocoder.chain().map(p => geocoder.LABEL[p]) },
       indoorEnabled: !!s.indoorEnabled,
     });
   }));

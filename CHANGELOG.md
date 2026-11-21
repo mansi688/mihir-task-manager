@@ -5,6 +5,30 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.70] — 2026-11-21 — Refused check-ins: HR accepts or denies when told; Google Maps view
+### Changed
+- Check-in / out stays automatic. A refused try is NOT sent to HR by itself any more — the person tells HR or Admin,
+  who open HR & Payroll → Today → "⚠ Could not check in / out" and **Accept** or **Deny** (the person is told either way).
+### Added
+- Locations → Live map: **Everyone / Google Maps / Satellite** switch. Google Maps and Satellite show Google's own map
+  around the person tapped in the list — no API key needed.
+
+## [v1.69] — 2026-11-21 — Refused check-ins go to HR; Google Maps
+### Added
+- Every check-in / check-out the app refuses (weak GPS, outside a site, no photo) is now kept with the reason, the
+  GPS accuracy, the distance to the nearest site and the live photo. HR & Payroll → Today shows them under
+  "⚠ Could not check in / out" with a 🗺 Google Maps link and the photo; HR or Admin taps **Accept** and the person
+  is marked in at the time they first tried (shown as "✅ accepted by HR"). HR gets one notification per person a day.
+- The person sees "HR can see this attempt with your photo and accept it" under the error.
+- The refusal reason is written to the server log (`attendance_refused`) so problems can be traced.
+- Locations → Live: a 🗺 Google Maps link on each person.
+- Locations maps use **Google Maps** (with a Map / Satellite switch) when `GOOGLE_MAPS_API_KEY` is set on Render
+  and the Map Tiles API is enabled for that key; otherwise OpenStreetMap as before. `MAP_PROVIDER=osm` forces OSM.
+### Database
+- New table `attendance_attempts` (photos cleared the next day, like attendance photos).
+### Environment
+- Optional: `GOOGLE_MAPS_API_KEY` (Google Cloud → Map Tiles API), `MAP_PROVIDER`.
+
 ## [v1.68] — 2026-11-21 — Download the Android app from the website
 ### Added
 - The MIHIR Android app can be downloaded at **mihir-task-manager.onrender.com/app/android**. A "📱 Download the
