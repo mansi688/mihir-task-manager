@@ -71,6 +71,8 @@ public class MainActivity extends Activity {
     static volatile boolean inForeground = false;
     private static final int AUDIO_PERMISSION_REQUEST = 1004;
     private android.webkit.PermissionRequest pendingAudioRequest = null;
+    private static final int CAMERA_PERMISSION_REQUEST = 1006;
+    private android.webkit.PermissionRequest pendingCameraRequest = null;
     private static final int NOTIFICATION_PERMISSION_REQUEST = 1003;
     private static final int LOCATION_PERMISSION_REQUEST = 1005;
     private String pendingLocationConfig = null;
@@ -169,8 +171,21 @@ public class MainActivity extends Activity {
                 runOnUiThread(new Runnable() { @Override public void run() {
                     String origin = request.getOrigin() == null ? "" : request.getOrigin().toString();
                     boolean ours = siteUrl != null && origin.startsWith(Uri.parse(siteUrl).getScheme() + "://" + Uri.parse(siteUrl).getHost());
-                    boolean wantsAudio = java.util.Arrays.asList(request.getResources()).contains(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE);
-                    if (!ours || !wantsAudio) { request.deny(); return; }
+                    java.util.List<String> res = java.util.Arrays.asList(request.getResources());
+                    boolean wantsAudio = res.contains(android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE);
+                    boolean wantsVideo = res.contains(android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE);
+                    if (!ours || (!wantsAudio && !wantsVideo)) { request.deny(); return; }
+                    if (wantsVideo && !wantsAudio) {
+                        // Live check-in photo: ask Android for CAMERA once, then grant ONLY video capture, ONLY to our site.
+                        if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission("android.permission.CAMERA") != PackageManager.PERMISSION_GRANTED) {
+                            pendingCameraRequest = request;
+                            requestPermissions(new String[]{"android.permission.CAMERA"}, CAMERA_PERMISSION_REQUEST);
+                        } else {
+                            request.grant(new String[]{android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                        }
+                        return;
+                    }
+                    if (!wantsAudio) { request.deny(); return; }
                     if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission("android.permission.RECORD_AUDIO") != PackageManager.PERMISSION_GRANTED) {
                         pendingAudioRequest = request;
                         requestPermissions(new String[]{"android.permission.RECORD_AUDIO"}, AUDIO_PERMISSION_REQUEST);
@@ -236,6 +251,8 @@ public class MainActivity extends Activity {
     // ---------- downloads (called from the site) ----------
     private class Bridge {
         @JavascriptInterface public boolean isApp() { return true; }
+        // v1.7+: the app can open the camera for the live check-in photo (the website uses this to hide the "update the app" hint).
+        @JavascriptInterface public boolean cameraReady() { return true; }
         // Called by the website after login: store the notifications-only device token and start
         // the background check. Asks for notification permission once on Android 13+.
         @JavascriptInterface public void setDeviceSession(String deviceToken, String username, String latestId) {
@@ -431,6 +448,12 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "Location permission is needed for work-session tracking. You can allow it in Settings → Apps → MIHIR Tasks → Permissions.", Toast.LENGTH_LONG).show();
                 tellPage("denied");
             }
+            return;
+        }
+        if (code == CAMERA_PERMISSION_REQUEST && pendingCameraRequest != null) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) pendingCameraRequest.grant(new String[]{android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+            else { pendingCameraRequest.deny(); Toast.makeText(this, "Camera permission is needed for the check-in photo. Allow it in Settings → Apps → MIHIR Tasks → Permissions.", Toast.LENGTH_LONG).show(); }
+            pendingCameraRequest = null;
             return;
         }
         if (code == AUDIO_PERMISSION_REQUEST && pendingAudioRequest != null) {

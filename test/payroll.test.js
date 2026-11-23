@@ -51,39 +51,49 @@ test('attendance, leave and a month of payroll', async (t) => {
     await raw.end();
   });
 
-  await t.test('only inside a site; breaks of up to an hour; exempt people check in anywhere', async () => {
+  await t.test('check in / out any time from anywhere (flagged, noted); breaks of up to an hour in total; photo only at check-in', async () => {
     const raw = await getRawClient();
     await raw.query("INSERT INTO geofences(name, kind, center_lat, center_lng, radius_m) VALUES('Test site','site',18.6,73.77,150)");
-    await raw.end();
     const site = { lat: 18.6003, lng: 73.7701, acc: 10 }, far = { lat: 18.65, lng: 73.80, acc: 10 };
     const w = await createMember(baseUrl, admin, 'pay.loc', 'Loc Worker', 'Execution Department');
-    const out = await P(w, '/api/attendance/check-in', { ...far, photo: SELFIE });
-    assert.equal(out.status, 400); assert.equal(out.data.outside, true); assert.match(out.data.error, /Test site/);
-    assert.equal((await P(w, '/api/attendance/check-in', { photo: SELFIE })).status, 400, 'location needed');
-    assert.equal((await P(w, '/api/attendance/check-in', { ...site, photo: SELFIE })).status, 200);
+    // a visit to another place / head office: allowed, flagged, with the person's note
+    const first = await P(w, '/api/attendance/check-in', { ...far, photo: SELFIE, note: 'Head office visit' });
+    assert.equal(first.status, 200, JSON.stringify(first.data)); assert.equal(first.data.away, true);
+    assert.equal((await P(w, '/api/attendance/check-in', { ...site, photo: SELFIE })).status, 400, 'already checked in');
+    let me = (await G(w, '/api/attendance/me')).data;
+    assert.equal(me.todayRec.inAway, true); assert.equal(me.todayRec.inNote, 'Head office visit');
+    // being away is NOT deducted from the hours: tracked "away" minutes are only information
+    await raw.query("UPDATE attendance_days SET away_minutes = 400 WHERE username='pay.loc'");
     assert.equal((await P(w, '/api/attendance/break-end', site)).status, 400, 'not on a break');
-    assert.equal((await P(w, '/api/attendance/break-start', far)).status, 200, 'a break can start anywhere');
+    const bs = await P(w, '/api/attendance/break-start', far);
+    assert.equal(bs.status, 200, 'a break can start anywhere'); assert.equal(bs.data.leftMin, 60); assert.ok(bs.data.backBy);
     assert.equal((await P(w, '/api/attendance/break-start', far)).status, 400, 'one break at a time');
-    assert.equal((await P(w, '/api/attendance/break-end', far)).status, 400, 'come back inside the site');
-    const back = await P(w, '/api/attendance/break-end', site);
-    assert.equal(back.status, 200); assert.equal(back.data.allowanceMin, 60);
-    assert.equal((await P(w, '/api/attendance/check-out', { ...far, photo: SELFIE })).status, 400, 'check out inside the site');
-    assert.equal((await P(w, '/api/attendance/check-out', { ...site, photo: SELFIE })).status, 200);
-    const me = (await G(w, '/api/attendance/me')).data;
-    assert.equal(me.todayRec.breaks.length, 1); assert.equal(me.locationRule.required, true);
-    // exempt person
-    const d = await createMember(baseUrl, admin, 'pay.driver', 'Driver', 'Driver Department');
-    assert.equal((await P(d, '/api/attendance/check-in', { ...far, photo: SELFIE })).status, 400);
-    assert.equal((await P(emp, '/api/attendance/anywhere/pay.driver', { anywhere: true })).status, 403);
-    assert.equal((await P(hr, '/api/attendance/anywhere/pay.driver', { anywhere: true })).status, 200);
-    const ok = await P(d, '/api/attendance/check-in', { ...far, photo: SELFIE });
-    assert.equal(ok.status, 200); assert.equal(ok.data.away, true, 'still flagged as not at a site');
-    assert.ok((await G(hr, '/api/payroll/settings')).data.anywhere.some(a => a.username === 'pay.driver'));
-    // the rule can be switched off
-    assert.equal((await P(hr, '/api/payroll/settings', { locationRequired: false })).status, 200);
+    me = (await G(w, '/api/attendance/me')).data;
+    assert.equal(me.todayRec.onBreak, true); assert.ok(me.todayRec.breakBackByIso);
+    const back = await P(w, '/api/attendance/break-end', far);
+    assert.equal(back.status, 200, 'back from break is noted wherever the phone is'); assert.equal(back.data.allowanceMin, 60);
+    // check-out: no photo needed, from anywhere
+    const out = await P(w, '/api/attendance/check-out', { ...far });
+    assert.equal(out.status, 200, JSON.stringify(out.data));
+    assert.equal((await raw.query("SELECT out_photo FROM attendance_days WHERE username='pay.loc'")).rows[0].out_photo, null);
+    me = (await G(w, '/api/attendance/me')).data;
+    assert.equal(me.todayRec.breaks.length, 1);
+    // checking in again the same day (a trip for material) continues the day; the gap is kept as a break
+    const again = await P(w, '/api/attendance/check-in', { ...site, photo: SELFIE });
+    assert.equal(again.status, 200); assert.equal(again.data.resumed, true);
+    assert.equal((await G(w, '/api/attendance/me')).data.todayRec.out, '');
+    await P(w, '/api/attendance/check-out', { ...site });
+    // the old rules are gone: nobody is refused for where they are, and "anywhere" is no longer needed
     const x = await createMember(baseUrl, admin, 'pay.x', 'X', 'Execution Department');
     assert.equal((await P(x, '/api/attendance/check-in', { ...far, photo: SELFIE })).status, 200);
-    assert.equal((await P(hr, '/api/payroll/settings', { locationRequired: true })).status, 200);
+    assert.equal((await P(x, '/api/attendance/check-out', { acc: 9999 })).status, 200, 'even with no usable GPS');
+    // away minutes do not reduce a day: 09:30–18:30 with 400 "away" minutes is still a full day
+    const isoA = (hm) => new Date(`2026-10-12T${hm}:00+05:30`).toISOString();
+    await raw.query(`INSERT INTO attendance_days(username, day, check_in_at, check_out_at, away_minutes, created_at) VALUES('pay.loc','2026-10-12',$1,$2,400,$1)`, [isoA('09:30'), isoA('18:30')]);
+    const reg0 = (await G(hr, '/api/attendance/register?month=2026-10')).data.people.find(p => p.username === 'pay.loc');
+    const d12 = reg0.days.find(d => d.day === '2026-10-12');
+    assert.equal(d12.status, 'P'); assert.equal(d12.worked, 540); assert.equal(d12.awayMin, 400);
+    await raw.end();
     // 5 Oct: 09:30–18:30 with a 2½-hour break → 1½ hours over the allowance are not work → 7½ h = half day
     const r2c = await getRawClient();
     const iso = (hm) => new Date(`2026-10-05T${hm}:00+05:30`).toISOString();

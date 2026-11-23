@@ -24,8 +24,8 @@ plan) · [LOCATION_INDOOR.md](LOCATION_INDOOR.md) (beacons, UWB, floor plans).
    a permanent notification ("Sharing location — work session on", with a Stop button) is shown the
    whole time; on iPhone the blue location indicator is shown; in a browser a green "📍 Tracking on"
    pill sits in the top bar.
-3. Sessions also stop automatically after the maximum length (default 14 h) or outside the allowed
-   hours (default 06:00–22:00 IST), and the employee is notified.
+3. Sessions also stop automatically after the maximum length (default 16 h) or outside the allowed
+   hours (default: any time — night work is normal), and the employee is notified.
 4. On the same page the employee sees their own day (route, places, distance), **who looked at
    their location** (every view by someone else is logged), can **download all their location
    data** (JSON), and can **withdraw consent** (stops tracking immediately).

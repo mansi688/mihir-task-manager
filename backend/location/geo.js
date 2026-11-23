@@ -132,6 +132,28 @@ function cleanTrack(points, { walkMps = 4, maxSpeedMps = 70 } = {}) {
   return out;
 }
 
+
+// Fixes that could not physically have happened (a phone "teleporting" 300 m in 5 seconds because of a weak GPS /
+// network fix) are removed before places, check-in/out decisions or the drawn route are worked out. A fix is a
+// jump when covering the distance — less both fixes' error radius — would need more than maxSpeedMps (default
+// 40 m/s = 144 km/h). If several fixes in a row "jump", the phone really did move (e.g. a fast road) and they are kept.
+function dropImpossibleJumps(points, prev = null, { maxSpeedMps = 40, maxDropsInRow = 3 } = {}) {
+  if (!Array.isArray(points) || !points.length) return points || [];
+  const T = (p) => new Date(p.recorded_at || p.t).getTime() / 1000;
+  const A = (p) => Math.max(0, Number(p.accuracy_m != null ? p.accuracy_m : p.acc) || 0);
+  const out = [];
+  let last = prev || null, drops = 0;
+  for (const p of points) {
+    if (last) {
+      const dt = T(p) - T(last);
+      const d = distanceM(last.lat, last.lng, p.lat, p.lng) - A(last) - A(p);
+      if (dt > 0 && d > 60 && d / dt > maxSpeedMps && drops < maxDropsInRow) { drops++; continue; }
+    }
+    drops = 0; out.push(p); last = p;
+  }
+  return out;
+}
+
 // Total path length, skipping jumps that are physically implausible (GPS glitches).
 function routeDistanceM(points, maxSpeedMps = 70) {
   let total = 0;
@@ -191,5 +213,5 @@ function estimateBlePosition(sightings, anchors, { metersPerPx = null, minRssi =
 
 module.exports = {
   distanceM, validLatLng, pointInPolygon, distanceToPolygonM, geofenceDistanceM, classifyAgainstGeofence,
-  simplifyRoute, routeDistanceM, cleanTrack, pointInPixelPolygon, estimateBlePosition,
+  simplifyRoute, routeDistanceM, cleanTrack, dropImpossibleJumps, pointInPixelPolygon, estimateBlePosition,
 };

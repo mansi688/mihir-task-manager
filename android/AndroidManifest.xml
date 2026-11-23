@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.mihir.taskmanager"
-    android:versionCode="6"
-    android:versionName="1.5">
+    android:versionCode="8"
+    android:versionName="1.7">
 
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="34" />
 
@@ -11,6 +11,10 @@
     <!-- Phone notifications (Android 13+ asks the person once) and keeping the check scheduled after a restart. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Voice tasks and meeting recording (asked only when you first use them). -->
+    <!-- Live photo at attendance check-in (front-page camera) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.front" android:required="false" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />

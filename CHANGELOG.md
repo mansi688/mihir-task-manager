@@ -5,6 +5,37 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.73] — 2026-11-23 — Attendance: sites, night work, breaks, camera, accurate tracking
+### Fixed
+- **Half day for visits** — time away from a site (another site, the head office, a shop for material) was deducted from
+  the hours. It never is now: only breaks beyond the allowance reduce hours.
+- **Absent after a full day** — leaving a site used to start an automatic "break" and the 5-minute sweep then checked
+  people out at that moment. Leaving a site is now neither a break nor a check-out.
+- **Live photo not opening** — the Android app had no camera permission. App 1.7 asks for it; if the camera still
+  cannot open, a "Open the phone camera" button takes the photo instead. A running camera also survives page redraws.
+- **Tracking lines / "checked out while on site"** — GPS jumps (a fix hundreds of metres away seconds later) are
+  ignored for arrivals, departures, distance and the drawn route; leaving a site needs 3 fixes outside over at least
+  3 minutes.
+### Changed
+- Check-in and check-out work **any time, from anywhere**; the time, place and an optional note are recorded, and being
+  away from a site is flagged 📍. Check-in can be done again the same day (the gap is kept as a break).
+- **Live photo only at check-in** (none at check-out / automatic). Photos are deleted at **12:00 the next day**.
+- **One work session**: it can run across midnight and across sites (night work). Closed after 16 hours (setting).
+- **Breaks**: 1 hour a day in total, any time, anywhere. A reminder (notification) comes 10 and 2 minutes before it
+  ends; if the person is not back, they are checked out at the moment the break time ended. Hours worked so far still
+  count (8 h = full day, 4 h = half day) — nobody is marked absent for the check-out itself.
+- **Automatic check-out**: after the full day's hours, once the person has left every site (and not arrived at another
+  within 20 min) the session is completed at the time they left. Switch in HR → Rules.
+- Location tracking: sessions may run at any hour (default window removed) and up to 16 h.
+### Added
+- Front page: **My work today** card — Check in / Check out, break, **Start work session** and location status, with
+  shift, late badge, effective / gross hours and time logs (clock in/out, photo, map pins, location punches).
+- HR → Rules: auto check-out after a full day, break reminder minutes, maximum session hours.
+### Database / environment
+- Migration 008 (adds `geofence_visits.outside_since`; old tracking defaults 06:00–22:00 / 14 h become any time / 16 h
+  — custom values are kept). Columns `attendance_days.in_note/out_note` are added on start. No new environment variables.
+- Rollback: Render → previous deploy (all changes are additive). Android: install app 1.7 over 1.6.
+
 ## [v1.72] — 2026-11-21 — Android app 1.6: Google location for tracking and check-in
 ### Changed
 - **MIHIR Android app 1.6** (versionCode 7, same signing key — installs over 1.5, people stay logged in):

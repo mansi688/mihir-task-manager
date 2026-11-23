@@ -642,6 +642,21 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    version: '008',
+    name: 'attendance_sessions_and_accurate_exit',
+    sql: `
+      -- A confirmed departure needs the phone to stay outside for a few minutes, not just a few fixes (GPS drift).
+      ALTER TABLE geofence_visits ADD COLUMN IF NOT EXISTS outside_since TIMESTAMPTZ;
+
+      -- Work sessions may run at any hour and up to 16 hours (night work). Only the OLD defaults are replaced —
+      -- a limit Admin set on purpose is left alone.
+      UPDATE location_settings SET settings = settings || '{"allowedHours": null}'::jsonb
+        WHERE id = 1 AND settings->'allowedHours'->>'start' = '06:00' AND settings->'allowedHours'->>'end' = '22:00';
+      UPDATE location_settings SET settings = settings || '{"maxSessionHours": 16}'::jsonb
+        WHERE id = 1 AND settings->>'maxSessionHours' = '14';
+    `,
+  },
 ];
 
 // Each pending migration runs in its own transaction holding a TRANSACTION-level lock (pg_advisory_xact_lock),

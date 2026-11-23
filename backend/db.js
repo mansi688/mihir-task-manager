@@ -512,6 +512,9 @@ async function init() {
   await ensureColumn('attendance_days', 'away_minutes', 'INTEGER');
   await ensureColumn('attendance_days', 'in_source', 'TEXT');
   await ensureColumn('attendance_days', 'out_source', 'TEXT');
+  // What the person wrote at check-in / check-out (e.g. "visiting Amara site", "material collection").
+  await ensureColumn('attendance_days', 'in_note', 'TEXT');
+  await ensureColumn('attendance_days', 'out_note', 'TEXT');
   // Check-ins / outs the app refused (weak GPS, outside a site…): HR sees why and can accept them.
   await run(`CREATE TABLE IF NOT EXISTS attendance_attempts(
     id SERIAL PRIMARY KEY, username TEXT NOT NULL, day TEXT NOT NULL, action TEXT NOT NULL, at TEXT NOT NULL, reason TEXT NOT NULL,

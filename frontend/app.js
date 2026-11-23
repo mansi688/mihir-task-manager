@@ -5568,6 +5568,7 @@ function renderTodayFeed() {
     .sort((a, b) => String(a.deadline || '9999').localeCompare(String(b.deadline || '9999')));
   const ongoingShown = ongoingTagged.slice(0, 25);
   return `
+  ${typeof attFrontCardHTML === 'function' ? attFrontCardHTML() : ''}
   ${monthEndReminderHTML()}
   <div class="card">
     <div class="card-title">Today — ${esc(todayStr)}</div>
@@ -7300,6 +7301,7 @@ function renderInner() {
   if (ui.adminTab === 'accountsdept' && typeof bindAccountsDeptView === 'function') bindAccountsDeptView();
   if (ui.adminTab === 'dpr' && typeof bindDprView === 'function') bindDprView();
   if (ui.adminTab === 'attendance' && typeof bindAttendanceView === 'function') bindAttendanceView();
+  else if (showingToday && typeof attBindPunch === 'function') attBindPunch();
   if (ui.adminTab === 'updates' && typeof bindUpdatesView === 'function') bindUpdatesView();
   if (ui.adminTab === 'activity' && typeof bindActivityView === 'function') bindActivityView();
   if (ui.adminTab === 'payroll' && typeof bindHrPayrollView === 'function') bindHrPayrollView();

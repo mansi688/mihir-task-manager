@@ -7,6 +7,7 @@ const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 const MAX_POINTS_PER_UPLOAD = 500;
 const MAX_ACCEPTED_ACCURACY_M = 1000; // anything worse is not a position, it's a guess
 const CLOCK_SKEW_MS = 2 * 60 * 1000;
+const EXIT_CONFIRM_MIN = 3; // a confirmed stay ends only after the phone has stayed outside for this long (and 3 fixes)
 
 const DEFAULT_POLICY_TEXT = [
   'MIHIR Task Manager records your location ONLY while you have a work session switched on ("Start work") — never outside it.',
@@ -25,8 +26,8 @@ const DEFAULT_SETTINGS = {
   distanceFilterM: 20,
   uploadEverySec: 60,
   maxAccuracyM: 100,          // fixes worse than this are stored but never decide arrivals/departures
-  maxSessionHours: 14,
-  allowedHours: { start: '06:00', end: '22:00' }, // IST; null = any time
+  maxSessionHours: 16,
+  allowedHours: null,         // IST window {start,end}; null = any time (night work is normal on sites)
   trackedDepartments: [],     // [] = every department may use tracking
   teamLeadsCanView: true,
   directorsCanView: true,
@@ -240,7 +241,9 @@ function createLocationService({ pool, db, log = () => {} }) {
   // processed (a late offline batch still fills in the route, but can't rewrite past arrivals).
   async function afterInsert(session, points, settings) {
     const watermark = session.last_point_at ? new Date(session.last_point_at).getTime() : 0;
-    const fresh = points.filter(p => new Date(p.recorded_at).getTime() > watermark);
+    // GPS glitches ("teleports") never move the live position, the distance, or an arrival / departure.
+    const prevFix = session.last_lat != null ? { lat: session.last_lat, lng: session.last_lng, recorded_at: session.last_point_at, accuracy_m: session.last_accuracy_m } : null;
+    const fresh = geo.dropImpossibleJumps(points.filter(p => new Date(p.recorded_at).getTime() > watermark), prevFix);
     // Distance: the same cleaning as the drawn route (standing-still jitter and spikes do not add kilometres).
     const prev = session.last_lat != null ? [{ lat: session.last_lat, lng: session.last_lng, recorded_at: session.last_point_at, accuracy_m: session.last_accuracy_m }] : [];
     const goodFresh = fresh.filter(p => p.accuracy_m == null || p.accuracy_m <= settings.maxAccuracyM);
@@ -285,8 +288,8 @@ function createLocationService({ pool, db, log = () => {} }) {
               }
             }
           } else if (t > new Date(v.last_inside_at)) {
-            v.last_inside_at = t; v.outside_streak = 0;
-            await q('UPDATE geofence_visits SET last_inside_at = $2, outside_streak = 0 WHERE id = $1', [v.id, t]);
+            v.last_inside_at = t; v.outside_streak = 0; v.outside_since = null;
+            await q('UPDATE geofence_visits SET last_inside_at = $2, outside_streak = 0, outside_since = NULL WHERE id = $1', [v.id, t]);
             if (!v.confirmed_at && (t - new Date(v.arrived_at)) / 1000 >= g.min_dwell_seconds) {
               v.confirmed_at = t;
               await q('UPDATE geofence_visits SET confirmed_at = $2 WHERE id = $1', [v.id, t]);
@@ -295,16 +298,19 @@ function createLocationService({ pool, db, log = () => {} }) {
           }
         } else if (state === 'outside' && v) {
           v.outside_streak = (v.outside_streak || 0) + 1;
-          // A drive-by (not yet confirmed) ends after 2 fixes outside; a confirmed stay needs 3 in a row, so a
-          // phone that hops out of the site and back for a fix or two (GPS jitter) does not count as leaving.
-          if (v.outside_streak >= (v.confirmed_at ? 3 : 2)) {
+          if (!v.outside_since) v.outside_since = t;
+          const outsideMin = (t - new Date(v.outside_since)) / 60000;
+          // A drive-by (not yet confirmed) ends after 2 fixes outside. A confirmed stay ends only when the phone has been
+          // clearly outside for 3 fixes in a row AND for at least EXIT_CONFIRM_MIN minutes — so a weak fix or two, or a
+          // short walk past the fence, never "checks someone out" while they are on site.
+          if (v.confirmed_at ? (v.outside_streak >= 3 && outsideMin >= EXIT_CONFIRM_MIN) : v.outside_streak >= 2) {
             open.delete(String(g.id));
             if (!v.confirmed_at) { await q('DELETE FROM geofence_visits WHERE id = $1', [v.id]); continue; } // drive-by
             const dur = Math.max(0, Math.round((new Date(v.last_inside_at) - new Date(v.arrived_at)) / 1000));
             await q(`UPDATE geofence_visits SET departed_at = last_inside_at, duration_s = $2, outside_streak = $3, end_reason = 'left' WHERE id = $1`, [v.id, dur, v.outside_streak]);
             await onDeparture(session, g, { ...v, duration_s: dur });
           } else {
-            await q('UPDATE geofence_visits SET outside_streak = $2 WHERE id = $1', [v.id, v.outside_streak]);
+            await q('UPDATE geofence_visits SET outside_streak = $2, outside_since = $3 WHERE id = $1', [v.id, v.outside_streak, v.outside_since]);
           }
         }
       }
@@ -483,7 +489,8 @@ function createLocationService({ pool, db, log = () => {} }) {
       if (dt > 0 && dt < 600 && (good[i].is_moving || (good[i].speed_mps || 0) > 1)) movingS += dt;
     }
     // Standing-still jitter and GPS spikes are taken out of the drawn route and the distance.
-    const clean = geo.cleanTrack(good);
+    const steady = geo.dropImpossibleJumps(good);
+    const clean = geo.cleanTrack(steady);
     const route = raw ? good : geo.simplifyRoute(clean, 6);
     return {
       points: route.map(p => ({ t: p.recorded_at, lat: p.lat, lng: p.lng, acc: p.accuracy_m, spd: p.speed_mps, hdg: p.heading, bat: p.battery, moving: p.is_moving, s: p.session_id })),

@@ -103,13 +103,15 @@ test('employee location tracking', async (t) => {
     assert.deepEqual(link.map(l => [l.task_id, l.how]), [[taskId, 'project']]);
     const note = (await G('/api/notifications', ravi)).data.items.find(n => n.type === 'location');
     assert.match(note.message, /You're at Tower B site — 1 open task here/);
-    // Uncertain GPS near the edge changes nothing; three clear outside fixes in a row = departure (two could be jitter).
+    // Uncertain GPS near the edge changes nothing; three clear outside fixes in a row, over at least 3 minutes = departure (two fixes, or a quick spike, could be jitter).
     tt += 9 * 60000;
     await upload(baseUrl, uploadToken, { points: [fix(at(170), tt, { acc: 40 })] });
     assert.equal((await raw.query('SELECT departed_at FROM geofence_visits')).rows[0].departed_at, null);
     await upload(baseUrl, uploadToken, { points: [fix(at(800), tt + 60000), fix(at(900), tt + 120000)] });
     assert.equal((await raw.query('SELECT departed_at FROM geofence_visits')).rows[0].departed_at, null, 'two fixes outside could be GPS jitter');
     await upload(baseUrl, uploadToken, { points: [fix(at(950), tt + 180000)] });
+    assert.equal((await raw.query('SELECT departed_at FROM geofence_visits')).rows[0].departed_at, null, 'three fixes in two minutes is still not a departure — the phone must stay outside for 3 minutes');
+    await upload(baseUrl, uploadToken, { points: [fix(at(960), tt + 260000)] });
     const done = (await raw.query('SELECT * FROM geofence_visits')).rows[0];
     assert.ok(done.departed_at); assert.equal(done.duration_s, 8 * 60);
   });
@@ -161,6 +163,9 @@ test('employee location tracking', async (t) => {
     await P('/api/location/alert-rules', admin, { name: 'Speed', kind: 'speeding', threshold: 60, recipients: ['asha'] });
     await P('/api/location/alert-rules', admin, { name: 'Lost', kind: 'signal_lost', threshold: 15, recipients: ['asha'], notifyEmployee: true });
     await api(baseUrl, `/api/location/places/${placeId}`, { method: 'PUT', token: admin, body: { minDwellSeconds: 60 } });
+    // The previous test left the phone ~3 km away only seconds ago; showing up at the site 30 s later would be a GPS
+    // jump (rightly ignored), so forget the last position first.
+    await raw.query('UPDATE location_sessions SET last_lat = NULL, last_lng = NULL WHERE id = $1', [sessionId]);
     const tt = Date.now() - 150000;
     await upload(baseUrl, uploadToken, { points: [fix(at(10), tt), fix(at(15), tt + 20000)] }); // 20 s < 60 s minimum stay → not yet
     assert.equal((await G('/api/notifications', asha)).data.items.filter(n => n.type === 'location_alert').length, 0);
@@ -168,9 +173,10 @@ test('employee location tracking', async (t) => {
     const ashaNotes = async () => (await G('/api/notifications', asha)).data.items.filter(n => n.type === 'location_alert').map(n => n.message);
     assert.ok((await ashaNotes()).some(m => /Ravi Kumar arrived at Tower B site/.test(m)), JSON.stringify(await ashaNotes()));
     const before = (await ashaNotes()).length;
-    await upload(baseUrl, uploadToken, { points: [fix(at(2000), Date.now() - 50000, { spd: 25 }), fix(at(2500), Date.now() - 40000, { spd: 10 })] });
+    await raw.query('UPDATE location_sessions SET last_lat = NULL, last_lng = NULL WHERE id = $1', [sessionId]); // the drive starts well away from the site
+    await upload(baseUrl, uploadToken, { points: [fix(at(2000), Date.now() - 50000, { spd: 25 }), fix(at(2250), Date.now() - 40000, { spd: 10 })] });
     assert.equal((await ashaNotes()).length, before, 'one fast fix is GPS noise');
-    await upload(baseUrl, uploadToken, { points: [fix(at(3000), Date.now() - 30000, { spd: 25 }), fix(at(3500), Date.now() - 20000, { spd: 24 })] });
+    await upload(baseUrl, uploadToken, { points: [fix(at(2500), Date.now() - 30000, { spd: 25 }), fix(at(2750), Date.now() - 20000, { spd: 24 })] });
     assert.ok((await ashaNotes()).some(m => /travelling at 86 km\/h/.test(m)));
     await raw.query("UPDATE location_sessions SET last_received_at = now() - interval '30 minutes' WHERE id = $1", [sessionId]);
     const app = require('../backend/server');
@@ -215,12 +221,12 @@ test('employee location tracking', async (t) => {
   await t.test('sessions stop automatically after the maximum length', async () => {
     await P('/api/location/consent', asha, { policyVersion: 2 });
     const r = await P('/api/location/sessions/start', asha, { platform: 'web' });
-    await raw.query("UPDATE location_sessions SET started_at = now() - interval '15 hours' WHERE id = $1", [r.data.session.id]);
+    await raw.query("UPDATE location_sessions SET started_at = now() - interval '17 hours' WHERE id = $1", [r.data.session.id]);
     const app = require('../backend/server');
     await app.jobs.enqueue('LOCATION_MONITOR', {}, { key: `test-monitor2-${Date.now()}` });
     await app.jobs.tick();
     assert.equal((await G('/api/location/me', asha)).data.activeSession, null);
-    assert.ok((await G('/api/notifications', asha)).data.items.some(n => /stopped automatically after 14 hours/.test(n.message)));
+    assert.ok((await G('/api/notifications', asha)).data.items.some(n => /stopped automatically after 16 hours/.test(n.message)));
   });
 
   await t.test('reports, export, retention and deletion', async () => {
