@@ -522,6 +522,13 @@ async function init() {
     status TEXT NOT NULL DEFAULT 'open', decided_by TEXT, decided_at TEXT)`);
   await run('CREATE INDEX IF NOT EXISTS idx_attendance_attempts_day ON attendance_attempts(day, username)');
   await ensureColumn('users', 'att_anywhere', 'BOOLEAN DEFAULT FALSE');
+  // People: birthday / joining date (entered by HR) and attendance requests ("Raise Request").
+  await ensureColumn('users', 'dob', 'TEXT');
+  await ensureColumn('users', 'join_date', 'TEXT');
+  await run(`CREATE TABLE IF NOT EXISTS attendance_requests(
+    id SERIAL PRIMARY KEY, username TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL, in_time TEXT, out_time TEXT, out_next_day BOOLEAN DEFAULT FALSE,
+    reason TEXT, status TEXT NOT NULL DEFAULT 'pending', decided_by TEXT, decided_by_name TEXT, decided_at TEXT, decision_note TEXT, created_at TEXT NOT NULL)`);
+  await run('CREATE INDEX IF NOT EXISTS idx_attendance_requests ON attendance_requests(status, username)');
   await ensureColumn('users', 'last_active_at', 'TEXT');
   // Small company-wide settings (e.g. the common recovery PIN hash).
   await run('CREATE TABLE IF NOT EXISTS company_settings(key TEXT PRIMARY KEY, value TEXT, updated_by TEXT, updated_at TEXT)');
@@ -744,6 +751,8 @@ module.exports = {
   getChatVersion() { return chatVersion; },
   bumpDataVersion() { dataVersion++; taskVersion++; },
   onWrite(fn) { writeListeners.push(fn); },
+  // For modules that write to the users table through the pool directly (backend/people.js).
+  invalidateUserCache() { usersVersion++; userRowCache.clear(); userListCache = null; },
   getQueryCount() { return queryCount; },
 
   // ---- users ----

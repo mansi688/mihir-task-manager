@@ -807,6 +807,8 @@ function renderSidebar() {
   // Everyone: their own attendance (check in / out, leave, payslips) — first in "You".
   if (typeof renderAttendanceView === 'function') { const you = groups.find(g => g.group === 'You'); const item = { key: 'attendance', label: 'My Attendance', icon: 'clock', badge: () => 0 };
     if (you) you.items = [item, ...you.items.filter(i => i.key !== 'attendance')]; else groups.push({ group: 'You', items: [item] }); }
+  // Everyone: People directory (birthdays, who's out, attendance requests for HR).
+  if (typeof renderPeopleView === 'function') { const ov = groups.find(g => g.group === 'You') || groups[0]; if (ov && !ov.items.some(i => i.key === 'people')) ov.items = ov.items.concat({ key: 'people', label: 'People', icon: 'users', badge: () => 0 }); }
   // Everyone: Updates — what changed in the app, version by version (badge = versions since the last visit).
   if (typeof renderUpdatesView === 'function' && pageAllowed('updates')) { const item = { key: 'updates', label: 'Updates', icon: 'sparkle', badge: () => updNewCount() };
     const ov = groups.find(g => g.group === 'Overview') || groups[0];
@@ -5569,6 +5571,7 @@ function renderTodayFeed() {
   const ongoingShown = ongoingTagged.slice(0, 25);
   return `
   ${typeof attFrontCardHTML === 'function' ? attFrontCardHTML() : ''}
+  ${typeof peopleFrontHTML === 'function' ? peopleFrontHTML() : ''}
   ${monthEndReminderHTML()}
   <div class="card">
     <div class="card-title">Today — ${esc(todayStr)}</div>
@@ -7252,6 +7255,7 @@ function renderInner() {
   else if (ui.adminTab === 'accountsdept' && typeof renderAccountsDeptView === 'function') body = renderAccountsDeptView();
   else if (ui.adminTab === 'dpr' && typeof renderDprView === 'function' && dprTabVisible()) body = renderDprView();
   else if (ui.adminTab === 'attendance' && typeof renderAttendanceView === 'function') body = renderAttendanceView();
+  else if (ui.adminTab === 'people' && typeof renderPeopleView === 'function') body = renderPeopleView();
   else if (ui.adminTab === 'updates' && typeof renderUpdatesView === 'function' && pageAllowed('updates')) body = renderUpdatesView();
   else if (ui.adminTab === 'activity' && typeof renderActivityView === 'function' && actTabVisible()) body = renderActivityView();
   else if (ui.adminTab === 'payroll' && typeof renderHrPayrollView === 'function' && hrTabVisible()) body = renderHrPayrollView();

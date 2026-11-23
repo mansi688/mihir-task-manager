@@ -4301,6 +4301,8 @@ const payables = mountPayables(app, { db, auth, ALL_ROLES, auditFromReq, collect
 const { mountCompliance } = require('./compliance');
 const { mountPayroll } = require('./payroll');
 const payroll = mountPayroll(app, { db, auth, ALL_ROLES, auditFromReq, str });
+const { mountPeople } = require('./people');
+const people = mountPeople(app, { db, auth, ALL_ROLES, auditFromReq, str });
 const { mountActivity } = require('./activity');
 mountActivity(app, { db, auth, ALL_ROLES });
 const { mountUpdates } = require('./updates');
@@ -4319,6 +4321,7 @@ const location = mountLocation(app, {
 });
 // Automatic check-in / check-out from location tracking (backend/payroll.js).
 payroll.attachLocation(location.service, jobs);
+people.attachJobs(jobs); // birthdays / anniversaries (backend/people.js)
 // Leaflet (map library) served from our own origin — no third-party script CDN.
 app.use('/vendor/leaflet', express.static(path.join(__dirname, '..', 'node_modules', 'leaflet', 'dist'), { maxAge: '7d' }));
 

@@ -5,6 +5,21 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.74] — 2026-11-23 — People: birthdays, anniversaries, who's out, Raise Request (Keka-style)
+### Added
+- **People page** (nav → You → People) — directory with search; HR/admin can edit date of birth, joining date,
+  designation and phone inline, or bulk-import dates from CSV (dd-mm-yyyy or yyyy-mm-dd).
+- **Celebrations** — birthdays and work anniversaries (next 30 days) on the Today page; a daily greeting
+  notification goes out after 08:00 IST. Birth year and exact joining date are visible to HR/admin only.
+- **Who's out today** — people on approved leave, upcoming leave, holidays and weekly offs on the Today page.
+- **Raise Request** (attendance regularization) — employee asks for a corrected in/out time with a reason
+  (up to 45 days back, one pending per day); HR/admin approve or reject; approving sets that day's manual in/out times.
+### Database / environment
+- New columns `users.dob`, `users.join_date` and table `attendance_requests`, created at startup (additive, no migration).
+  No new environment variables.
+### Rollback
+- Roll back the deploy; the new columns/table are unused by older versions.
+
 ## [v1.73] — 2026-11-23 — Attendance: sites, night work, breaks, camera, accurate tracking
 ### Fixed
 - **Half day for visits** — time away from a site (another site, the head office, a shop for material) was deducted from

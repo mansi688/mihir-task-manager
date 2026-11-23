@@ -1977,3 +1977,15 @@ input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !importan
 .keka-right{margin-left:auto;display:flex;gap:10px;align-items:center;}
 .keka-pin{font-size:22px;text-decoration:none;}
 .keka-thumb{width:34px;height:42px;border-radius:8px;object-fit:cover;}
+
+/* People page and front-page celebrations */
+.pp-front{border-left:4px solid #7c3aed;}
+.pp-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px;}
+.pp-row{display:flex;gap:10px;align-items:center;padding:5px 0;}
+.pp-av{width:34px;height:34px;border-radius:50%;background:#ede9fe;color:#5b21b6;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex:none;}
+.pp-av.big{width:46px;height:46px;font-size:17px;}
+.pp-holiday{background:#ecfdf5;color:#047857;border-radius:10px;padding:8px 10px;margin-bottom:6px;font-size:14px;}
+.pp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-top:12px;}
+.pp-person{display:flex;gap:12px;padding:12px;border:1px solid #e5e9f0;border-radius:14px;background:#fff;}
+.pp-info{min-width:0;flex:1;} .pp-edit label{display:block;font-size:12px;margin-top:6px;}
+.pp-chips{display:flex;flex-wrap:wrap;gap:6px;}

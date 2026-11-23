@@ -182,7 +182,8 @@ function renderAttendanceView() {
     <div class="card-title">Payslips</div>
     ${(d.payslips || []).length ? `<div class="att-list">${d.payslips.map(p => `<div class="att-list-row"><div><b>${attEsc(p.label)}</b> <span class="small muted">net ${inr(p.net)}</span></div><button class="btn btn-sm" data-slip="${attEsc(p.period)}:${attEsc(d.me.username)}">View payslip</button></div>`).join('')}</div>` : '<div class="small muted">Your payslips appear here once the month is paid.</div>'}
   </div>
-  ${payslipModalHTML()}${attCameraHTML()}`;
+  ${typeof ppMyRequestsHTML === 'function' ? ppMyRequestsHTML() : ''}
+  ${payslipModalHTML()}${attCameraHTML()}${typeof ppReqModalHTML === 'function' ? ppReqModalHTML() : ''}`;
 }
 // ---- Clock-in card in the style of a clock-in app: shift, late badge, clock in / out, effective & gross hours.
 const attFmtH = (m) => `${Math.floor((m || 0) / 60)}h ${String((m || 0) % 60)}m`;
@@ -255,6 +256,7 @@ function attTodayCardHTML(d, p, front) {
     ${oldApp}
     ${!(t && t.onBreak) ? `<div class="att-punch">
       <button type="button" class="btn btn-primary att-punch-btn ${p && p.busy ? 'disabled' : ''}" data-att-act="punch" ${p && p.busy ? 'disabled' : ''}>${p && p.busy ? '⏳ ' + attEsc(p.msg || 'Working…') : open ? '🏁 Check out' : t && t.out ? '📷 Check in again' : '📷 Check in'}</button>
+      ${typeof ppReqModalHTML === 'function' ? '<button type="button" class="btn btn-sm" data-pp-act="req-open">📝 Raise Request</button>' : ''}
       <input type="text" id="att-note" maxlength="200" class="att-note" placeholder="Where / why? (optional) — e.g. visiting Amara site, collecting material" value="${attEsc((attState().note) || '')}">
       <div class="small muted">${!open && R.selfieRequired ? 'Check-in opens the camera for a live photo (not from the gallery; kept until 12 noon the next day). ' : ''}Your GPS position is noted — an accurate fix is not needed to check in or out.${open ? ' Check-out needs no photo.' : ''}${R.autoAttendance ? ` You are also checked in automatically when location sees you on a site, and checked out automatically once you have worked ${R.fullDayHours} h and left the site.` : ''}</div>
     </div>` : ''}
@@ -268,7 +270,7 @@ function attFrontCardHTML() {
   attFrontRenderedAt = Date.now();
   if (!attMe) { setTimeout(() => attLoad(), 0); return '<div class="card att-front"><div class="small muted">Loading attendance…</div></div>'; }
   if (attMe.error || !attMe.todayRec && !attMe.rules) return '';
-  return attTodayCardHTML(attMe, attState().punch, true) + attCameraHTML();
+  return attTodayCardHTML(attMe, attState().punch, true) + attCameraHTML() + (typeof ppReqModalHTML === 'function' ? ppReqModalHTML() : '');
 }
 // ---------- live selfie camera (no gallery / file picker)
 let attCamStream = null;
