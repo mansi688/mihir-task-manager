@@ -40,7 +40,7 @@ const DEFAULTS = {
   shiftStart: '09:30', shiftEnd: '18:30', graceMin: 15, fullDayHours: 8, halfDayHours: 4, weeklyOff: [0],
   lateMarksPerHalfDay: 3, otAfterMin: 30, otMultiplier: 1, paidLeavePerYear: 18, selfieRequired: true,
   locationRequired: true, breakAllowanceMin: 60, autoAttendance: true, gpsMaxAccM: 100, checkoutAfterShiftMin: 30, siteTransferMin: 20,
-  maxSessionHours: 16, breakRemindMin: 10, autoOutAfterFullDay: true,
+  maxSessionHours: 16, breakRemindMin: 10, autoOutAfterFullDay: true, autoOutMode: 'leave',
   pfPercent: 12, pfWageCeiling: 15000, pfOnFullBasic: false, employerPfPercent: 12,
   esiEmployeePercent: 0.75, esiEmployerPercent: 3.25, esiGrossLimit: 21000,
 };
@@ -293,6 +293,36 @@ function mountPayroll(app, deps) {
     return rec;
   }
   const breaksOf = (rec) => (Array.isArray(rec && rec.breaks) ? rec.breaks : []);
+  // Automatic check-out: 'leave' = every time the person leaves all sites (any time of day; coming back is a new
+  // check-in), 'fullday' = only once the full day's hours are worked, 'off' = never.
+  const outMode = (S) => S.autoOutMode || (S.autoOutAfterFullDay === false ? 'off' : 'leave');
+  // Every check-in → check-out pair of a day with timestamps, place, how it happened and its length; the gaps between
+  // them (checked out and back, or a break). Corrected days (HR set the in / out time) are one pair.
+  function segmentsOf(rec, nowIso) {
+    if (!rec || !(rec.manual_in || rec.check_in_at)) return { pairs: [], gaps: [] };
+    const nowT = nowIso || new Date().toISOString();
+    const mins = (a, b) => Math.max(0, Math.round((Date.parse(b) - Date.parse(a)) / 60000));
+    const srcName = (x) => x === 'auto' ? 'auto' : x === 'hr' ? 'hr' : x === 'break' ? 'break' : x === 'corrected' ? 'corrected' : x ? 'phone' : '';
+    if (rec.manual_in || rec.manual_out) {
+      const i = rec.manual_in || rec.check_in_at, o = rec.manual_out || rec.check_out_at || null;
+      return { pairs: [{ inIso: i, in: istHM(i), inHow: 'corrected', inPlace: rec.in_place || '', outIso: o, out: o ? istHM(o) : '', outHow: o ? 'corrected' : '', outPlace: o ? rec.out_place || '' : '', min: mins(i, o || nowT), open: !o }], gaps: [] };
+    }
+    const pairs = [], gaps = [];
+    let cur = { inIso: rec.check_in_at, inHow: srcName(rec.in_source || 'manual'), inPlace: rec.in_place || '' };
+    const brs = breaksOf(rec).filter(b => b.start).slice().sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+    for (const b of brs) {
+      if (!cur) break;
+      if (Date.parse(b.start) < Date.parse(cur.inIso)) continue;
+      pairs.push({ ...cur, in: istHM(cur.inIso), outIso: b.start, out: istHM(b.start), outHow: b.gap ? srcName(b.out_src || 'manual') : 'break', outPlace: b.gap ? (b.out_place || '') : '', min: mins(cur.inIso, b.start) });
+      gaps.push({ fromIso: b.start, from: istHM(b.start), toIso: b.end || null, to: b.end ? istHM(b.end) : '', min: mins(b.start, b.end || rec.check_out_at || nowT), kind: b.gap ? 'out' : 'break' });
+      cur = b.end ? { inIso: b.end, inHow: b.gap ? srcName(b.in_src || 'manual') : 'break', inPlace: b.gap ? (b.in_place || '') : (b.back_place || '') } : null;
+    }
+    if (cur) {
+      const o = rec.check_out_at || null;
+      pairs.push({ ...cur, in: istHM(cur.inIso), outIso: o, out: o ? istHM(o) : '', outHow: o ? srcName(rec.out_source || 'manual') : '', outPlace: o ? rec.out_place || '' : '', min: mins(cur.inIso, o || nowT), open: !o });
+    }
+    return { pairs, gaps };
+  }
   // Break time already used by the CLOSED breaks of a record, and what is left of the day's allowance.
   const closedBreakMin = (rec) => Math.round(breaksOf(rec).filter(b => b.end).reduce((m, b) => m + Math.max(0, (Date.parse(b.end) - Date.parse(b.start)) / 60000), 0));
   const breakLeftMin = (rec, S) => Math.max(0, Number(S.breakAllowanceMin || 0) - closedBreakMin(rec));
@@ -330,7 +360,7 @@ function mountPayroll(app, deps) {
       if (rec && rec.check_in_at) {
         // Back again after checking out earlier today (e.g. a trip for material): the session continues; the gap is
         // kept as a break so it is not counted as worked time beyond the break allowance.
-        const gap = breaksOf(rec).concat([{ start: rec.check_out_at, end: t, gap: true }]);
+        const gap = breaksOf(rec).concat([{ start: rec.check_out_at, end: t, gap: true, out_src: rec.out_source || 'manual', out_place: rec.out_place || null, in_src: 'manual', in_place: where.place || null }]);
         const re = await q('UPDATE attendance_days SET check_out_at=NULL, out_source=NULL, out_place=NULL, out_away=NULL, out_note=NULL, breaks=$3, updated_at=$4 WHERE username=$1 AND day=$2 AND check_out_at IS NOT NULL RETURNING day',
           [username, day, JSON.stringify(gap), t]);
         if (!re.rows[0]) return res.status(400).json({ error: 'You are already checked in today.' });
@@ -412,24 +442,13 @@ function mountPayroll(app, deps) {
     const S = mo.settings;
     const brs = rec && Array.isArray(rec.breaks) ? rec.breaks : [];
     const ob = brs.find(b => !b.end);
-    // Time logs (like a clock-in app): the clock-in / out with place, photo and map, and the location punches the work
-    // session recorded (one every ~15 minutes) with the site they were at — plus gaps where no location arrived.
+    // Time logs (like a clock-in app): every check-in / check-out of the day with place, photo and map.
     let timeline = null;
     if (rec && rec.check_in_at) {
       const nowIso = new Date().toISOString(), endIso = rec.check_out_at || nowIso;
       const map = (la, ln) => la != null && ln != null ? `https://www.google.com/maps?q=${la},${ln}` : null;
-      const pts = await rows('SELECT recorded_at, lat, lng, accuracy_m FROM location_points WHERE username=$1 AND recorded_at BETWEEN $2 AND $3 ORDER BY recorded_at', [m.username, rec.check_in_at, endIso]).catch(() => []);
-      const punches = []; let lastT = 0, missed = 0, prevT = Date.parse(rec.check_in_at);
-      for (const pt of pts) {
-        const tt = new Date(pt.recorded_at).getTime();
-        if (tt - prevT > 25 * 60000) missed++;
-        prevT = tt;
-        if (tt - lastT < 14 * 60000) continue;
-        lastT = tt;
-        const w = placeFor(Number(pt.lat), Number(pt.lng), Number(pt.accuracy_m || 0), placeList, 25);
-        punches.push({ at: istHM(new Date(tt).toISOString()), place: w.place || (w.away && placeList.length ? 'Not at a site' : ''), lat: Number(pt.lat), lng: Number(pt.lng), map: map(pt.lat, pt.lng) });
-      }
-      if (!rec.check_out_at && Date.now() - prevT > 25 * 60000 && pts.length) missed++;
+      // Only check-in / check-out are shown — where the phone went in between is not tracked (attendance only).
+      const punches = [], missed = 0;
       const spanMin = Math.max(0, Math.round((Date.parse(endIso) - Date.parse(rec.check_in_at)) / 60000));
       const brMin = breakMinutes(brs, rec.check_out_at || null);
       timeline = { punches: punches.slice(-40), missedChecks: missed, grossMin: spanMin, effectiveMin: Math.max(0, spanMin - Math.max(0, brMin - Number(S.breakAllowanceMin || 0))),
@@ -446,7 +465,7 @@ function mountPayroll(app, deps) {
         onBreak: !!ob, breakSince: ob ? istHM(ob.start) : '', breakStartIso: ob ? ob.start : null, breakBackByIso: deadline, breakBackBy: deadline ? istHM(deadline) : '', breakLeftMin: left,
         breakUsedMin: breakMinutes(brs, null), breaks: brs.filter(b => !b.gap).map(b => ({ start: istHM(b.start), end: b.end ? istHM(b.end) : '' })) } : null,
       locationRule: { required: !!S.locationRequired && !(anywhere && anywhere.att_anywhere), anywhere: !!(anywhere && anywhere.att_anywhere), places: placeList.map(p => p.name) },
-      rules: { shiftStart: S.shiftStart, shiftEnd: S.shiftEnd, graceMin: S.graceMin, fullDayHours: S.fullDayHours, halfDayHours: S.halfDayHours, selfieRequired: !!S.selfieRequired, weeklyOff: S.weeklyOff, lateMarksPerHalfDay: S.lateMarksPerHalfDay, breakAllowanceMin: Number(S.breakAllowanceMin || 0), autoAttendance: !!S.autoAttendance, checkoutAfterShiftMin: Number(S.checkoutAfterShiftMin || 30), gpsMaxAccM: Number(S.gpsMaxAccM || 100), maxSessionHours: Number(S.maxSessionHours || 16), breakRemindMin: Number(S.breakRemindMin || 10), autoOutAfterFullDay: S.autoOutAfterFullDay !== false },
+      rules: { shiftStart: S.shiftStart, shiftEnd: S.shiftEnd, graceMin: S.graceMin, fullDayHours: S.fullDayHours, halfDayHours: S.halfDayHours, selfieRequired: !!S.selfieRequired, weeklyOff: S.weeklyOff, lateMarksPerHalfDay: S.lateMarksPerHalfDay, breakAllowanceMin: Number(S.breakAllowanceMin || 0), autoAttendance: !!S.autoAttendance, checkoutAfterShiftMin: Number(S.checkoutAfterShiftMin || 30), gpsMaxAccM: Number(S.gpsMaxAccM || 100), maxSessionHours: Number(S.maxSessionHours || 16), breakRemindMin: Number(S.breakRemindMin || 10), autoOutAfterFullDay: S.autoOutAfterFullDay !== false, autoOutMode: outMode(S) },
       days: list, summary: summarise(list.filter(d => d.day <= today), S), holidays: mo.holidays,
       leave: { balance, requests },
       payslips: slips.filter(p => p.status === 'paid').map(p => ({ period: p.period, net: Number(p.net), label: monthLabel(p.period) })),
@@ -466,6 +485,40 @@ function mountPayroll(app, deps) {
     res.json(out);
   });
   // HR view: everyone today
+  // Time log: for each person and day, every check-in → check-out pair with timestamps and length, the gaps between
+  // them, the total time checked in and the hours counted for pay. HR / Admin / Accounts see everyone; others themselves.
+  app.get('/api/attendance/timelog', auth(ALL_ROLES), async (req, res) => {
+    const m = await me(req.user);
+    const today = istDay();
+    const to = validDay(req.query.to) || today, from = validDay(req.query.from) || to;
+    if (from > to) return res.status(400).json({ error: 'The start date is after the end date.' });
+    const days = []; for (let d = from; d <= to && days.length <= 62; d = istDay(new Date(Date.parse(d + 'T12:00:00Z') + 864e5))) days.push(d);
+    if (days.length > 62) return res.status(400).json({ error: 'Pick at most 62 days.' });
+    const all = await db.listUsers();
+    const users = m.canSeeAttendance ? all : all.filter(u => u.username === m.username);
+    const recs = await rows(`SELECT * FROM attendance_days WHERE day BETWEEN $1 AND $2 ${m.canSeeAttendance ? '' : 'AND username=$3'} AND (check_in_at IS NOT NULL OR manual_in IS NOT NULL)`,
+      m.canSeeAttendance ? [from, to] : [from, to, m.username]);
+    const byKey = Object.fromEntries(recs.map(r => [`${r.username}|${r.day}`, r]));
+    const who = users.filter(u => recs.some(r => r.username === u.username));
+    const mo = who.length ? await monthFor(who.map(u => u.username), from.slice(0, 7), days) : { days: {} };
+    const nowIso = new Date().toISOString();
+    const list = [];
+    for (const u of who) for (const d of days) {
+      const rec = byKey[`${u.username}|${d}`]; if (!rec) continue;
+      const ev = (mo.days[u.username] || []).find(x => x.day === d) || {};
+      const { pairs, gaps } = segmentsOf(rec, nowIso);
+      const inMin = pairs.reduce((a, p) => a + p.min, 0);
+      list.push({ username: u.username, name: u.name, team: u.team || '', day: d, status: ev.status || '', pairs, gaps,
+        firstIn: pairs.length ? pairs[0].in : '', lastOut: pairs.length && !pairs[pairs.length - 1].open ? pairs[pairs.length - 1].out : '',
+        checkedInMin: inMin, outMin: gaps.filter(g => g.kind === 'out').reduce((a, g) => a + g.min, 0), breakMin: gaps.filter(g => g.kind === 'break').reduce((a, g) => a + g.min, 0),
+        spanMin: pairs.length ? Math.max(0, Math.round((Date.parse(pairs[pairs.length - 1].outIso || nowIso) - Date.parse(pairs[0].inIso)) / 60000)) : 0,
+        workedMin: ev.worked != null ? ev.worked : null, open: pairs.some(p => p.open) });
+    }
+    list.sort((a, b) => a.day === b.day ? a.name.localeCompare(b.name) : b.day.localeCompare(a.day));
+    const per = {};
+    for (const r of list) { const p = per[r.username] || (per[r.username] = { username: r.username, name: r.name, team: r.team, days: 0, pairs: 0, checkedInMin: 0, workedMin: 0 }); p.days++; p.pairs += r.pairs.length; p.checkedInMin += r.checkedInMin; p.workedMin += r.workedMin || 0; }
+    res.json({ from, to, all: m.canSeeAttendance, list, people: Object.values(per).sort((a, b) => a.name.localeCompare(b.name)) });
+  });
   app.get('/api/attendance/today', auth(ALL_ROLES), async (req, res) => {
     const m = await me(req.user);
     if (!m.canSeeAttendance) return res.status(403).json({ error: 'Only Admin, HR and Accounts see everyone\'s attendance.' });
@@ -669,6 +722,7 @@ function mountPayroll(app, deps) {
     if (b.autoAttendance != null) next.autoAttendance = !!b.autoAttendance;
     if (b.selfieRequired != null) next.selfieRequired = !!b.selfieRequired;
     if (b.autoOutAfterFullDay != null) next.autoOutAfterFullDay = !!b.autoOutAfterFullDay;
+    if (b.autoOutMode != null) { if (!['leave', 'fullday', 'off'].includes(b.autoOutMode)) return res.status(400).json({ error: 'Unknown automatic check-out rule.' }); next.autoOutMode = b.autoOutMode; }
     if (b.checkoutAfterShiftMin != null) next.checkoutAfterShiftMin = Math.max(0, Math.min(240, Math.round(Number(b.checkoutAfterShiftMin) || 0)));
     if (b.siteTransferMin != null) next.siteTransferMin = Math.max(0, Math.min(120, Math.round(Number(b.siteTransferMin) || 0)));
     if (b.gpsMaxAccM != null) next.gpsMaxAccM = Math.max(20, Math.min(200, Math.round(Number(b.gpsMaxAccM) || 100)));
@@ -975,6 +1029,17 @@ function mountPayroll(app, deps) {
       return up.rows[0] ? 'back' : null;
     }
     const day = istDay(at);
+    // Checked out earlier today (left the site) and now arrived at a site again → checked in again; the time away is
+    // kept as the gap between the two check-in / check-out pairs.
+    const done = await one('SELECT * FROM attendance_days WHERE username=$1 AND day=$2 AND check_in_at IS NOT NULL AND check_out_at IS NOT NULL', [username, day]);
+    if (done) {
+      if (outMode(S) !== 'leave' || Date.parse(at) <= Date.parse(done.check_out_at) || done.manual_out) return null;
+      const gap = breaksOf(done).concat([{ start: done.check_out_at, end: at, gap: true, out_src: done.out_source || 'manual', out_place: done.out_place || null, in_src: 'auto', in_place: g.name }]);
+      const re = await q("UPDATE attendance_days SET check_out_at=NULL, out_source=NULL, out_place=NULL, out_away=NULL, out_note=NULL, breaks=$3, updated_at=$4 WHERE username=$1 AND day=$2 AND check_out_at=$5 RETURNING day",
+        [username, day, JSON.stringify(gap), now(), done.check_out_at]);
+      if (re.rows[0]) { await db.createNotification({ username, type: 'attendance', message: `✅ Checked in again automatically at ${istHM(at)} — ${g.name}.`, task_id: null }); return 'in'; }
+      return null;
+    }
     const ins = await q(`INSERT INTO attendance_days(username, day, check_in_at, in_lat, in_lng, in_place, in_away, in_source, created_at, updated_at)
       VALUES($1,$2,$3,$4,$5,$6,false,'auto',$7,$7) ON CONFLICT (username, day) DO UPDATE SET check_in_at=EXCLUDED.check_in_at, in_lat=EXCLUDED.in_lat,
         in_lng=EXCLUDED.in_lng, in_place=EXCLUDED.in_place, in_away=false, in_source='auto', updated_at=EXCLUDED.updated_at
@@ -1020,18 +1085,22 @@ function mountPayroll(app, deps) {
   // 8 hours worked, then out of every site's radius (and not arrived at another within siteTransferMin) → the work
   // session is complete: checked out at the time the person left.
   async function fullDayExit(rec, S, nowDate) {
-    if (S.autoOutAfterFullDay === false) return false;
+    const mode = outMode(S);
+    if (mode === 'off') return false;
+    // the latest (re)start of this session: its check-in, or coming back after a check-out earlier today
+    const restarts = breaksOf(rec).filter(b => b.gap && b.end).map(b => b.end);
+    const since = [rec.check_in_at, ...restarts].sort().pop();
     if (await stillInsideSomewhere(rec.username)) return false;
     let v = null;
     try {
       v = await one(`SELECT v.last_inside_at, g.name FROM geofence_visits v JOIN geofences g ON g.id = v.geofence_id
-        WHERE v.username=$1 AND v.confirmed_at IS NOT NULL AND v.end_reason='left' AND v.last_inside_at >= $2 ORDER BY v.last_inside_at DESC LIMIT 1`, [rec.username, rec.check_in_at]);
+        WHERE v.username=$1 AND v.confirmed_at IS NOT NULL AND v.end_reason='left' AND v.last_inside_at >= $2 ORDER BY v.last_inside_at DESC LIMIT 1`, [rec.username, since]);
     } catch (e) { v = null; }
     if (!v) return false;
     const leftAt = new Date(v.last_inside_at).toISOString();
     if (nowDate - Date.parse(leftAt) < Number(S.siteTransferMin || 0) * 60000) return false; // may be walking to another site
-    if (workedMinutesAt(rec, leftAt, S) < Number(S.fullDayHours || 8) * 60) return false;
-    return autoCheckOut(rec.username, rec.day, leftAt, v.name, 'full day worked and left the site');
+    if (mode === 'fullday' && workedMinutesAt(rec, leftAt, S) < Number(S.fullDayHours || 8) * 60) return false;
+    return autoCheckOut(rec.username, rec.day, leftAt, v.name, mode === 'fullday' ? 'full day worked and left the site' : 'left the site');
   }
   // The hook of a departure: the check-out itself waits for siteTransferMin (done by the sweep) unless that is 0.
   async function autoLeave(username, g, visit) {

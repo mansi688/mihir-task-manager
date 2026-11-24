@@ -34,8 +34,9 @@ test('employee location tracking', async (t) => {
     assert.equal((await P('/api/location/sessions/start', ravi, {})).status, 404);
     assert.equal((await G('/api/location/live', admin)).status, 404);
     process.env.ENABLE_LOCATION_TRACKING = 'true';
+    // These tests cover full tracking (every position kept); attendance-only mode is tested in attendance-timelog.
     // Tests must not depend on the time of day they run at.
-    assert.equal((await api(baseUrl, '/api/location/settings', { method: 'PUT', token: admin, body: { allowedHours: null } })).status, 200);
+    assert.equal((await api(baseUrl, '/api/location/settings', { method: 'PUT', token: admin, body: { allowedHours: null, attendanceOnly: false } })).status, 200);
   });
 
   let sessionId, uploadToken, t0;

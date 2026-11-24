@@ -277,6 +277,10 @@ if (!JWT_SECRET || JWT_SECRET === 'replace-with-a-long-random-string') {
   process.exit(1);
 }
 
+// Tokens: HS256 only (a token claiming another algorithm, e.g. "none", is refused).
+const JWT_VERIFY = { algorithms: ['HS256'] };
+const DUMMY_HASH = bcrypt.hashSync(require('crypto').randomBytes(16).toString('hex'), 10);
+if (String(JWT_SECRET).length < 32) console.warn('WARNING: JWT_SECRET is short — use at least 32 random characters (Render → Environment).');
 const MAX_FILE_CHARS = 28_000_000; // ~20MB after base64 overhead
 // A dedicated, much larger cap for the "Ask for Drawing" task flow only — CAD/drawing files
 // (DWG, RVT, SKP, DGN, STEP/STP, IGES/IGS, 3DM, PLN, and similar) routinely run well past the
@@ -318,23 +322,50 @@ app.use((req, res, next) => {
   if (len <= 1024 * 1024) return smallJson(req, res, next);
   const header = String(req.headers.authorization || '');
   let ok = false;
-  if (header.startsWith('Bearer ')) { try { const p = jwt.verify(header.slice(7), JWT_SECRET); ok = p && !p.scope; } catch (e) { ok = false; } }
+  if (header.startsWith('Bearer ')) { try { const p = jwt.verify(header.slice(7), JWT_SECRET, JWT_VERIFY); ok = p && !p.scope; } catch (e) { ok = false; } }
   if (!ok) return res.status(413).json({ error: 'That upload is too large. Log in again and retry.' });
   return largeJson(req, res, next);
 });
-// Baseline security headers — conservative choices that don't require auditing the frontend's
-// inline scripts/styles (a strict Content-Security-Policy was deliberately NOT added here without
-// that audit, since it could silently break this app's vanilla-JS rendering; that's flagged as a
-// real follow-up item in PRODUCTION_AUDIT.md rather than shipped untested).
+// Security headers. The page has no inline scripts or inline event handlers (boot.js holds what used to be inline),
+// so the Content-Security-Policy only lets scripts from this site run: an injected <script> or onerror="" in any
+// text (a task title, a chat message, a file name) cannot run even if escaping were ever missed somewhere.
+// Styles allow inline (the app sets style="" attributes); images allow https map tiles; frames only Google Maps.
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' data: blob:",
+  "connect-src 'self'",
+  "worker-src 'self' blob:",
+  "frame-src https://maps.google.com https://www.google.com",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
 app.use((req, res, next) => {
+  const https = req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+  // Plain http on the live site → the https address (passwords never travel unencrypted)
+  if (!https && process.env.NODE_ENV === 'production' && process.env.FORCE_HTTPS !== 'false' && req.method === 'GET' && req.headers.host && !/^(localhost|127\.)/.test(req.headers.host)) {
+    return res.redirect(301, `https://${req.headers.host}${req.originalUrl}`);
+  }
+  res.setHeader('Content-Security-Policy', CSP + (https ? '; upgrade-insecure-requests' : ''));
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
+  res.setHeader('X-DNS-Prefetch-Control', 'off');
   // Microphone/camera allowed for THIS site only (voice tasks, meeting recording, site photos);
   // blocked for anything embedded. (Was microphone=() — which silently broke voice recording.)
   // Geolocation for THIS site only: the opt-in "Start work" location tracking (docs/LOCATION_TRACKING.md).
-  res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(self), microphone=(self)');
-  if (process.env.NODE_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(self), microphone=(self), payment=(), usb=(), interest-cohort=()');
+  if (https || process.env.NODE_ENV === 'production') res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains');
+  // API answers (personal data) are never kept by shared caches / proxies
+  if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
   next();
 });
 // Remember when each person last used the app (User Activity report).
@@ -606,7 +637,7 @@ async function releaseDependentsOf(closedTask) {
     }
   }
 }
-function sign(payload, expiresIn) { return jwt.sign(payload, JWT_SECRET, { expiresIn: expiresIn || '12h' }); }
+function sign(payload, expiresIn) { return jwt.sign(payload, JWT_SECRET, { expiresIn: expiresIn || '12h', algorithm: 'HS256' }); }
 
 const ALL_ROLES = ['admin', 'member', 'director'];
 // The firm's projects — a new task must pick one.
@@ -675,7 +706,7 @@ function auth(roles) {
     const token = header.startsWith('Bearer ') ? header.slice(7) : null;
     if (!token) return res.status(401).json({ error: 'Not logged in.' });
     let payload;
-    try { payload = jwt.verify(token, JWT_SECRET); } catch (e) { return res.status(401).json({ error: 'Session expired — please log in again.' }); }
+    try { payload = jwt.verify(token, JWT_SECRET, JWT_VERIFY); } catch (e) { return res.status(401).json({ error: 'Session expired — please log in again.' }); }
     // Narrow tokens are never logins: phone-app device tokens can ONLY read notifications, and
     // location upload tokens ('loc') can ONLY add points to one work session. Any scoped token is refused.
     if (payload.scope) return res.status(401).json({ error: 'Not logged in.' });
@@ -703,7 +734,7 @@ app.get('/api/device/notifications', async (req, res) => {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Device ') ? header.slice(7) : null;
   let payload;
-  try { payload = token && jwt.verify(token, JWT_SECRET); } catch (e) { payload = null; }
+  try { payload = token && jwt.verify(token, JWT_SECRET, JWT_VERIFY); } catch (e) { payload = null; }
   if (!payload || payload.scope !== 'device') return res.status(401).json({ error: 'Device not registered.' });
   const user = await db.getUser(payload.username);
   if (!user || (user.token_version || 0) !== (payload.tv || 0)) return res.status(401).json({ error: 'Device signed out.' });
@@ -1010,21 +1041,35 @@ app.post('/api/auth/login', loginRateLimiter, async (req, res) => {
   // took login from p50=4.4s / p99=8.8s under 100 concurrent requests down to real parallel
   // throughput (see LOAD_TEST_RESULTS.md for the re-measured numbers).
   // A space copied along with a temporary password (WhatsApp, notes) must not lock the person out.
-  let passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : false;
+  // An unknown username takes as long as a wrong password (no way to find out which usernames exist by timing).
+  let passwordMatches = user ? await bcrypt.compare(password, user.password_hash) : (await bcrypt.compare(password, DUMMY_HASH), false);
   if (user && !passwordMatches && password.trim() !== password && password.trim()) passwordMatches = await bcrypt.compare(password.trim(), user.password_hash);
   if (!user || !passwordMatches) {
     if (user) {
-      await db.recordFailedLogin(user.username);
-      const justLocked = await db.getUserFresh(user.username);
-      if (justLocked && justLocked.locked_until) {
-        await auditFromReq(req, 'account_locked', `Account locked for 3 minutes after 5 failed login attempts.`, { username: user.username, name: user.name });
+      const f = await db.recordFailedLogin(user.username) || {};
+      if (f.lockedMin) {
+        await auditFromReq(req, 'account_locked', `Account locked for ${f.lockedMin} minutes after ${f.count} wrong passwords in a row (from ${clientIp(req)}).`, { username: user.username, name: user.name });
+        // from the 10th wrong password: the person and every admin are told — someone may be guessing
+        if (f.count >= 10) {
+          await db.createNotification({ username: user.username, type: 'security', message: `🔒 ${f.count} wrong passwords were tried on your account — it is locked for ${f.lockedMin} minutes. If this was not you, tell Admin.`, task_id: null }).catch(() => {});
+          for (const a of (await db.listUsers()).filter(u => u.role === 'admin' && u.username !== user.username)) await db.createNotification({ username: a.username, type: 'security', message: `🔒 ${user.name} (${user.username}): ${f.count} wrong passwords in a row from ${clientIp(req)} — locked for ${f.lockedMin} min.`, task_id: null }).catch(() => {});
+        }
       }
     }
     return res.status(401).json({ error: 'Invalid username or password.' });
   }
   await db.clearFailedLogins(user.username);
   const sid = genId('SESS');
+  // Admin accounts can do anything — a sign-in from a browser / phone never used before is reported to that admin.
+  let newDevice = false;
+  if (user.role === 'admin') {
+    try { newDevice = !(await db.pool.query('SELECT 1 FROM sessions WHERE username=$1 AND device IS NOT DISTINCT FROM $2 LIMIT 1', [user.username, req.headers['user-agent'] || null])).rows[0]; } catch (e) { newDevice = false; }
+  }
   await db.createSession({ id: sid, username: user.username, device: req.headers['user-agent'], ip: clientIp(req) });
+  if (newDevice) {
+    await db.createNotification({ username: user.username, type: 'security', message: `🔐 New sign-in to your admin account from a new device (${str(req.headers['user-agent']).slice(0, 80) || 'unknown'}, ${clientIp(req)}). If this was not you, change your password and use "Log out everywhere".`, task_id: null }).catch(() => {});
+    await auditFromReq(req, 'admin_new_device', `Admin sign-in from a new device: ${str(req.headers['user-agent']).slice(0, 120)}`, { username: user.username, name: user.name }).catch(() => {});
+  }
   // One login = one audit entry. (A front-end bug used to send the same login several times per
   // key press; an old cached copy of the page could still do so until it reloads.)
   if (!(await db.hasRecentAudit(user.username, 'login', clientIp(req), str(req.headers['user-agent']).slice(0, 300), 10))) {
@@ -1059,6 +1104,18 @@ function otpRateLimited(username) {
 // My Profile). "Forgot password?" on the login page takes username + PIN + a new password. 5 wrong PINs lock the
 // PIN for 15 minutes. Without a PIN, the person's team lead (or Admin) resets the password.
 const pinTries = new Map(); // username -> { n, until }
+const companyPinFails = []; let companyPinPausedUntil = 0;
+function companyPinPaused() { return companyPinPausedUntil > Date.now(); }
+async function companyPinFailed(req, user) {
+  const nowMs = Date.now();
+  companyPinFails.push(nowMs);
+  while (companyPinFails.length && nowMs - companyPinFails[0] > 3600000) companyPinFails.shift();
+  if (companyPinFails.length >= 20 && !companyPinPaused()) {
+    companyPinPausedUntil = nowMs + 3600000; companyPinFails.length = 0;
+    await auditFromReq(req, 'company_pin_paused', `Company recovery PIN switched off for 1 hour: 20 wrong PINs within an hour (last on ${user.username}, from ${clientIp(req)}).`).catch(() => {});
+    for (const a of (await db.listUsers()).filter(u => u.role === 'admin')) await db.createNotification({ username: a.username, type: 'security', message: `🚨 Someone tried 20 wrong recovery PINs within an hour (last on ${user.name}, from ${clientIp(req)}). The company PIN is switched off for 1 hour — consider changing it.`, task_id: null }).catch(() => {});
+  }
+}
 function pinLocked(username) { const t = pinTries.get(username); return t && t.until && t.until > Date.now() ? t.until : 0; }
 function pinFailed(username) { const t = pinTries.get(username) || { n: 0 }; t.n++; if (t.n >= 5) { t.until = Date.now() + 15 * 60000; t.n = 0; } pinTries.set(username, t); }
 const PIN_RE = /^\d{4,6}$/;
@@ -1096,7 +1153,8 @@ app.post('/api/admin/company-pin', auth(['admin']), async (req, res) => {
   await auditFromReq(req, 'company_pin_set', 'Set the company recovery PIN.');
   res.json({ ok: true, set: true });
 });
-app.post('/api/auth/forgot-password', loginRateLimiter, async (req, res) => {
+const recoveryRateLimiter = makeRateLimiter(30, 15 * 60 * 1000); // PIN guesses: 30 per IP per 15 minutes (people forget a password rarely)
+app.post('/api/auth/forgot-password', loginRateLimiter, recoveryRateLimiter, async (req, res) => {
   const username = str((req.body || {}).username).trim();
   const pin = str((req.body || {}).pin).trim();
   const newPassword = str((req.body || {}).newPassword).trim();
@@ -1112,8 +1170,15 @@ app.post('/api/auth/forgot-password', loginRateLimiter, async (req, res) => {
   }
   if (!pin) return res.status(400).json({ error: 'Enter your recovery PIN.' });
   const ownOk = !!user.recovery_pin_hash && bcrypt.compareSync(pin, user.recovery_pin_hash);
-  const companyOk = !ownOk && !!companyHash && bcrypt.compareSync(pin, companyHash);
-  if (!ownOk && !companyOk) { pinFailed(user.username); return res.status(400).json({ error: 'Username or recovery PIN is wrong.' }); }
+  // The company PIN opens every account (not Admin's), so it is guarded across ALL accounts: 20 wrong PINs company-wide
+  // within an hour and it stops working for an hour (people's own PINs still work) and every admin is told.
+  const companyUsable = !!companyHash && !companyPinPaused();
+  const companyOk = !ownOk && companyUsable && bcrypt.compareSync(pin, companyHash);
+  if (!ownOk && !companyOk) {
+    pinFailed(user.username);
+    if (companyHash) await companyPinFailed(req, user);
+    return res.status(400).json({ error: 'Username or recovery PIN is wrong.' });
+  }
   const pwErr1 = validatePasswordStrength(newPassword); if (pwErr1) return res.status(400).json({ error: pwErr1 });
   await db.setPassword(user.username, bcrypt.hashSync(newPassword, 10));
   await db.forcePasswordUnlock(user.username);
@@ -1233,6 +1298,75 @@ app.post('/api/users', auth(['admin']), async (req, res) => {
   await db.createUser({ username, password_hash: bcrypt.hashSync(password, 10), role, name, team, designation, must_change_password: true });
   await auditFromReq(req, 'account_created', `Created account "${username}" (${name}), role: ${role}`);
   res.json({ ok: true, username });
+});
+// One-time hand-overs requested by the management (run once on start, recorded in company_settings):
+//   Yuvraj Patil left → his open work goes to Tanishq (tanishq.m, Purchase Manager).
+async function oneTimeHandOvers() {
+  const key = 'handover_yuvraj_patil_to_tanishq';
+  if (await db.pool.query('SELECT 1 FROM company_settings WHERE key=$1', [key]).then(r => r.rows[0])) return;
+  // matched by NAME (the person), never by username alone; the known usernames only break a tie
+  const from = (await db.pool.query(`SELECT username FROM users WHERE lower(name) LIKE 'yuvraj%' AND lower(name) LIKE '%patil%'`)).rows;
+  const to = (await db.pool.query(`SELECT username FROM users WHERE lower(name) LIKE 'tanishq%'`)).rows;
+  const uniq = (rows, exact) => { const u = [...new Set(rows.map(r => r.username))]; return u.length > 1 && u.includes(exact) ? [exact] : u; };
+  const f = uniq(from, 'yuvraj.p'), t = uniq(to, 'tanishq.m');
+  if (f.length !== 1 || t.length !== 1) { if (f.length || t.length) log('WARN', 'one-time hand-over skipped: not exactly one match', { from: f, to: t }); return; }
+  const r = await db.handOverOpenWork(f[0], t[0], 'Admin');
+  await db.pool.query("INSERT INTO company_settings(key, value, updated_by, updated_at) VALUES($1,$2,'system',$3) ON CONFLICT (key) DO NOTHING", [key, JSON.stringify({ from: f[0], to: t[0], ...r }), new Date().toISOString()]);
+  await db.pool.query('INSERT INTO audit_log(created_at, actor_username, actor_name, action, details) VALUES($1,$2,$2,$3,$4)', [new Date().toISOString(), 'system', 'work_handed_over', `One-time: ${r.fromName} (${f[0]}) left — open work handed over to ${r.toName} (${t[0]}): ${r.tagged} tagged task(s), ${r.created} owned task(s), ${r.followups} follow-up(s), ${r.approvals} approval(s).`]).catch(() => null);
+  log('INFO', 'one-time hand-over done', { from: f[0], to: t[0], ...r });
+}
+// Someone left: hand over everything still open (tagged tasks, tasks they own, follow-ups, pending approvals).
+app.post('/api/users/:username/hand-over', auth(['admin']), async (req, res) => {
+  const to = str((req.body || {}).to).trim().toLowerCase();
+  if (!to) return res.status(400).json({ error: 'Pick who takes over the work.' });
+  try {
+    const r = await db.handOverOpenWork(req.params.username, to, req.user.name || req.user.username);
+    await auditFromReq(req, 'work_handed_over', `Handed over ${r.fromName} (${req.params.username})'s open work to ${r.toName} (${to}): ${r.tagged} tagged task(s), ${r.created} owned task(s), ${r.followups} follow-up(s), ${r.approvals} approval(s).`);
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// Import accounts from Excel / CSV (Admin). preview → shows every row and its problems; import → creates the good rows.
+const accountImport = require('./account-import');
+app.get('/api/users/import/template', auth(['admin']), async (req, res) => {
+  const buf = await accountImport.buildAccountTemplate();
+  res.json({ name: 'accounts-import-template.xlsx', data: 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + buf.toString('base64') });
+});
+// Export accounts to Excel (Admin): everyone, or only the usernames the page is showing (search / department filter).
+app.post('/api/users/export', auth(['admin']), async (req, res) => {
+  const only = Array.isArray((req.body || {}).usernames) ? (req.body.usernames).map(x => str(x)).slice(0, 5000) : null;
+  const r = await db.pool.query(`SELECT username, role, name, email, phone, team, designation, is_team_lead, must_change_password, created_at, dob, join_date, last_active_at,
+    (recovery_pin_hash IS NOT NULL) AS has_pin FROM users ${only ? 'WHERE username = ANY($1::text[])' : ''} ORDER BY name`, only ? [only] : []);
+  const buf = await accountImport.buildAccountExport(r.rows);
+  await auditFromReq(req, 'accounts_exported', `Exported ${r.rows.length} account(s) to Excel.`);
+  res.json({ name: `accounts_${new Date().toISOString().slice(0, 10)}.xlsx`, count: r.rows.length, data: 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + buf.toString('base64') });
+});
+async function planAccounts(body) {
+  const existing = (await db.listUsers()).map(u => u.username);
+  return accountImport.planAccountImport(body || {}, { existingUsernames: existing, validatePassword: validatePasswordStrength, roles: ALL_ROLES });
+}
+const accountRowOut = (r, showPw) => ({ row: r.row, name: r.name, username: r.username, role: r.role, team: r.team, designation: r.designation, phone: r.phone, email: r.email, dob: r.dob, join_date: r.join_date,
+  generatedUsername: !!r.generatedUsername, generatedPassword: !!r.generatedPassword, password: showPw && r.generatedPassword ? r.password : undefined, errors: r.errors });
+app.post('/api/users/import/preview', auth(['admin']), async (req, res) => {
+  try {
+    const p = await planAccounts(req.body);
+    res.json({ total: p.rows.length, valid: p.rows.filter(r => !r.errors.length).length, columns: p.columns, unknownColumns: p.unknown, rows: p.rows.map(r => accountRowOut(r, false)) });
+  } catch (e) { if (e.isImportError) return res.status(400).json({ error: e.message }); throw e; }
+});
+app.post('/api/users/import', auth(['admin']), async (req, res) => {
+  let p;
+  try { p = await planAccounts(req.body); } catch (e) { if (e.isImportError) return res.status(400).json({ error: e.message }); throw e; }
+  const good = p.rows.filter(r => !r.errors.length);
+  if (!good.length) return res.status(400).json({ error: 'None of the rows can be imported — fix the problems shown in the preview.' });
+  const created = [];
+  for (const r of good) {
+    if (await db.getUser(r.username)) { r.errors.push('Username was taken meanwhile.'); continue; }
+    await db.createUser({ username: r.username, password_hash: await bcrypt.hash(r.password, 10), role: r.role, name: r.name, team: r.team, designation: r.designation, must_change_password: true });
+    await db.pool.query('UPDATE users SET phone=COALESCE($2, phone), email=COALESCE($3, email), dob=COALESCE($4, dob), join_date=COALESCE($5, join_date) WHERE username=$1',
+      [r.username, r.phone, r.email, r.dob, r.join_date]).catch(() => null);
+    created.push(r);
+  }
+  await auditFromReq(req, 'accounts_imported', `Imported ${created.length} account(s) from "${str((req.body || {}).fileName).slice(0, 80)}": ${created.map(r => r.username).join(', ').slice(0, 900)}`);
+  res.json({ created: created.length, skipped: p.rows.length - created.length, rows: created.map(r => accountRowOut(r, true)), problems: p.rows.filter(r => r.errors.length).map(r => accountRowOut(r, false)) });
 });
 app.post('/api/users/:username/team', auth(['admin']), async (req, res) => {
   if (!await db.getUser(req.params.username)) return res.status(404).json({ error: 'User not found.' });
@@ -4347,6 +4481,7 @@ if (require.main === module) {
     // accounts seeded) before the server starts accepting real traffic — otherwise the very
     // first request could race against table-creation still in progress.
     await db.init();
+    await oneTimeHandOvers().catch(e => log('WARN', 'one-time hand-over failed', { error: e.message }));
     const server = app.listen(PORT, () => console.log(`MIHIR Task Manager server running on http://localhost:${PORT}`));
     if (process.env.DISABLE_JOB_WORKER !== 'true') {
       setInterval(() => jobs.tick(), JOB_TICK_MS).unref();
@@ -4370,3 +4505,4 @@ if (require.main === module) {
 }
 module.exports = app;
 module.exports.jobs = jobs;
+module.exports.oneTimeHandOvers = oneTimeHandOvers;

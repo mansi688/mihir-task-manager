@@ -34,7 +34,7 @@ test('automatic check-in / out from location tracking', async (t) => {
   assert.equal((await P('/api/location/places', admin, { name: 'Tower A site', kind: 'site', lat: SITE.lat, lng: SITE.lng, radiusM: 150, minDwellSeconds: 300 })).status, 200);
   // The site across the road (e.g. Amara ↔ WBB): people walk over for material.
   assert.equal((await P('/api/location/places', admin, { name: 'Store site', kind: 'site', lat: STORE.lat, lng: STORE.lng, radiusM: 120, minDwellSeconds: 300 })).status, 200);
-  assert.equal((await P('/api/payroll/settings', admin, { autoAttendance: true, fullDayHours: 8, siteTransferMin: 20 })).status, 200);
+  assert.equal((await P('/api/payroll/settings', admin, { autoAttendance: true, fullDayHours: 8, siteTransferMin: 20, autoOutMode: 'fullday' })).status, 200);
 
   async function startTracking(username, name) {
     const tok = await createMember(baseUrl, admin, username, name, 'Execution Department');

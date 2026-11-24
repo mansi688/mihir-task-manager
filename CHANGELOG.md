@@ -5,6 +5,50 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.76] — 2026-11-24 — Export accounts to Excel
+### Added
+- Accounts → Existing Accounts → **⬇ Export to Excel**: the accounts listed (everyone, or only what the search /
+  department filter shows) with name, username, role, department, designation, phone, email, date of birth, joining
+  date, team lead, recovery PIN set, must change password, created and last active. The first columns have the same
+  headings as the import template, so the file can be edited and imported again. Passwords are never exported.
+  Each export is written to the audit log.
+### Database / environment
+- None.
+
+## [v1.75] — 2026-11-24 — Time log, attendance only, account import, hand-over, tighter security
+### Added
+- **HR & Payroll → Time log** — for every person and day: each check-in → check-out with its time, how it happened
+  (🛰 automatic, 📱 phone, ✅/✏️ HR) and the site, how long each lasted, the gaps (out / ☕ break), the total checked in,
+  first in – last out and the hours counted for pay. Today / Yesterday / This week / This month or any dates (up to
+  62 days), totals per person for a range, and ⬇ Excel (CSV) with one row per check-in. People see only their own.
+- **One search bar for all HR & Payroll tabs** (also searches leave and advances).
+- **Today's chips are filters** — tap Checked in / Not in / Late / Not at a site / On leave to list only those people.
+- **Automatic check-out any time** (HR → Rules → "Automatic check-out"): *every time they leave all sites* (new default;
+  coming back to a site checks them in again automatically, each pair is kept), *only after a full day*, or *never*.
+  A walk to another site within the transfer time (20 min) is not a check-out. On a break nobody is checked out.
+- **Attendance only** (Locations → Privacy & policy, on by default): positions away from every site are used once to
+  notice leaving / arriving and are **never saved or shown** — no route, no live dot, no distance; the live list shows
+  "Away from sites". The "My work today" card shows only check-ins and check-outs (no location punches).
+- **Import accounts from Excel / CSV** (Accounts): template, preview with every problem per row, only Name required —
+  usernames and temporary passwords are made when empty (downloadable once as a CSV); first login forces a new password.
+- **Hand over open work** (Accounts): moves a leaver's open tagged tasks (with level, deadline, progress), open tasks
+  they created, follow-ups and pending approvals to another person; closed tasks keep their history.
+- **One-time hand-over on deploy: Yuvraj Patil → Tanishq** (matched by name; recorded so it runs once; skipped and
+  logged if the names are not found exactly once — then use the Accounts card).
+### Security
+- **Content-Security-Policy**: only the app's own scripts can run (inline scripts moved to `boot.js`, no inline event
+  handlers) — injected code in any text cannot execute. Plus COOP, CORP, no-store on every API answer, HSTS 2 years,
+  http → https redirect in production (`FORCE_HTTPS=false` turns it off).
+- Login tokens: HS256 only (forged / "none" tokens refused); warning if `JWT_SECRET` is shorter than 32 characters.
+- Wrong passwords lock the account longer each time (5 → 3 min, 10 → 15 min, 15+ → 1 hour); from the 10th the
+  person and all admins are told. Unknown usernames take as long as wrong passwords (no username guessing by timing).
+- Company recovery PIN: 20 wrong PINs company-wide within an hour switch it off for an hour and alert admins;
+  forgot-password limited to 30 tries per IP per 15 minutes.
+- Admin sign-in from a new device → notification to that admin + audit entry.
+### Database / environment
+- No migrations; settings keys `autoOutMode` (payroll) and `attendanceOnly` (location) with defaults. Optional env
+  `FORCE_HTTPS`. Rollback: previous deploy (nothing removed).
+
 ## [v1.74] — 2026-11-23 — People: birthdays, anniversaries, who's out, Raise Request (Keka-style)
 ### Added
 - **People page** (nav → You → People) — directory with search; HR/admin can edit date of birth, joining date,

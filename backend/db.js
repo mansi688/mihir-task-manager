@@ -771,8 +771,12 @@ module.exports = {
     const user = await get('SELECT failed_login_count FROM users WHERE username=?', [username]);
     if (!user) return;
     const count = (user.failed_login_count || 0) + 1;
-    const lockedUntil = count >= 5 ? new Date(Date.now() + 3 * 60 * 1000).toISOString() : null;
-    await run('UPDATE users SET failed_login_count=?, locked_until=? WHERE username=?', [count, lockedUntil, username]);
+    // Every 5th wrong password in a row locks the account, longer each time: 3 min → 15 min → 1 hour (and stays 1 hour).
+    const mins = count % 5 !== 0 ? 0 : count <= 5 ? 3 : count <= 10 ? 15 : 60;
+    const lockedUntil = mins ? new Date(Date.now() + mins * 60 * 1000).toISOString() : null;
+    if (lockedUntil) await run('UPDATE users SET failed_login_count=?, locked_until=? WHERE username=?', [count, lockedUntil, username]);
+    else await run('UPDATE users SET failed_login_count=? WHERE username=?', [count, username]);
+    return { count, lockedMin: mins };
   },
   async clearFailedLogins(username) { await run('UPDATE users SET failed_login_count=0, locked_until=NULL WHERE username=?', [username]); },
   async bumpTokenVersion(username) { await run('UPDATE users SET token_version=COALESCE(token_version,0)+1 WHERE username=?', [username]); },
@@ -826,6 +830,36 @@ module.exports = {
       drawings: await n('SELECT COUNT(*) c FROM drawings WHERE uploaded_by_username=?', [username]),
       notifications: await n('SELECT COUNT(*) c FROM notifications WHERE username=?', [username]),
     };
+  },
+  // Hands over everything still OPEN from one person to another (someone who left): their place on open tasks (as
+  // tagged person, keeping level / deadline / progress), the open tasks they created (decisions now come to the new
+  // person), their follow-ups on open tasks and their pending approval reviews. Closed tasks keep their history.
+  // One transaction. Returns the counts.
+  async handOverOpenWork(from, to, actorName) {
+    if (from === to) throw new Error('Pick a different person.');
+    return runInTransaction(async (tx) => {
+      const target = await tx.get('SELECT username, name, team FROM users WHERE username=?', [to]);
+      const source = await tx.get('SELECT username, name FROM users WHERE username=?', [from]);
+      if (!target || !source) throw new Error('Person not found.');
+      const openIds = "SELECT id FROM tasks WHERE status='open'";
+      // tagged on a task where the new person is already tagged → the new person's own place stays
+      const dupA = await tx.run(`DELETE FROM task_assignees a WHERE a.username=? AND a.task_id IN (${openIds}) AND a.completed_at IS NULL
+        AND EXISTS (SELECT 1 FROM task_assignees b WHERE b.task_id=a.task_id AND b.username=?)`, [from, to]);
+      const movA = await tx.run(`UPDATE task_assignees SET username=?, team=? WHERE username=? AND task_id IN (${openIds}) AND completed_at IS NULL`, [to, target.team || null, from]);
+      const created = await tx.run(`UPDATE tasks SET created_by=?, created_by_username=? WHERE created_by_username=? AND status='open'`, [target.name, to, from]);
+      await tx.run(`DELETE FROM task_followups f WHERE f.username=? AND f.task_id IN (${openIds})
+        AND (EXISTS (SELECT 1 FROM task_followups g WHERE g.task_id=f.task_id AND g.username=?) OR EXISTS (SELECT 1 FROM task_assignees a WHERE a.task_id=f.task_id AND a.username=?))`, [from, to, to]);
+      const fol = await tx.run(`UPDATE task_followups SET username=? WHERE username=? AND task_id IN (${openIds})`, [to, from]);
+      let rev = { rowCount: 0 };
+      try {
+        await tx.run(`DELETE FROM approval_reviewers r WHERE r.username=? AND r.decision IS NULL AND EXISTS (SELECT 1 FROM approval_reviewers o WHERE o.request_id=r.request_id AND o.username=?)`, [from, to]);
+        rev = await tx.run(`UPDATE approval_reviewers SET username=? WHERE username=? AND decision IS NULL AND request_id IN (SELECT id FROM approval_requests WHERE status='pending')`, [to, from]);
+      } catch (e) { if (!/does not exist/.test(e.message)) throw e; }
+      const res = { tagged: (movA.rowCount || 0) + (dupA.rowCount || 0), created: created.rowCount || 0, followups: fol.rowCount || 0, approvals: rev.rowCount || 0, fromName: source.name, toName: target.name };
+      const total = res.tagged + res.created + res.followups + res.approvals;
+      if (total) await module.exports.createNotification({ username: to, type: 'handover', message: `📦 ${source.name}'s open work was handed over to you${actorName ? ` by ${actorName}` : ''}: ${res.tagged} task(s) you are now tagged on, ${res.created} task(s) you now own, ${res.followups} follow-up(s)${res.approvals ? `, ${res.approvals} approval(s)` : ''}.`, task_id: null }, tx);
+      return res;
+    });
   },
   // Permanently removes an account AND everything tied to it, in one transaction (all or
   // nothing — a failure halfway can never leave half-deleted data behind):

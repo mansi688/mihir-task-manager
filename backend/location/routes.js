@@ -102,7 +102,7 @@ function mountLocation(app, deps) {
       });
     }
     let payload;
-    try { payload = jwt.verify(header.slice(9), JWT_SECRET); } catch (e) { return res.status(401).json({ error: 'Upload token expired.', sessionActive: false }); }
+    try { payload = jwt.verify(header.slice(9), JWT_SECRET, { algorithms: ['HS256'] }); } catch (e) { return res.status(401).json({ error: 'Upload token expired.', sessionActive: false }); }
     if (payload.scope !== 'loc') return res.status(401).json({ error: 'Not an upload token.' });
     const user = await db.getUser(payload.username);
     if (!user || (user.token_version || 0) !== (payload.tv || 0)) return res.status(401).json({ error: 'Signed out — tracking stopped.', sessionActive: false });
@@ -158,7 +158,7 @@ function mountLocation(app, deps) {
     res.json({
       enabled: true, consent, eligible: el, activeSession: active,
       policy: { version: s.policyVersion, text: s.policyText, retentionDays: s.retention.pointsDays, allowedHours: s.allowedHours, maxSessionHours: s.maxSessionHours,
-        viewers: { admin: true, directors: s.directorsCanView, teamLeads: s.teamLeadsCanView } },
+        viewers: { admin: true, directors: s.directorsCanView, teamLeads: s.teamLeadsCanView }, attendanceOnly: s.attendanceOnly !== false },
       config: await service.clientConfig(),
       canViewOthers: isManager(scope), isAdmin: me.role === 'admin', canManagePlaces: me.role === 'admin' || me.role === 'director',
       map: { ...(await mapTiles()), search: geocoder.providerName(), searchLabels: geocoder.chain().map(p => geocoder.LABEL[p]) },
@@ -258,7 +258,7 @@ function mountLocation(app, deps) {
       // old points is still "no recent fix" — we don't know where they are now.
       const ageMin = r.last_point_at ? (now - new Date(r.last_point_at)) / 60000 : null;
       let status = 'waiting';
-      if (r.last_point_at) status = ageMin > s.signalLostMin ? 'lost' : ageMin > s.staleAfterMin ? 'stale' : (r.current_geofence_id ? 'at_place' : (r.last_is_moving || (r.last_speed_mps || 0) > 1 ? 'moving' : 'stationary'));
+      if (r.last_point_at) status = ageMin > s.signalLostMin ? 'lost' : ageMin > s.staleAfterMin ? 'stale' : (r.current_geofence_id ? 'at_place' : r.last_lat == null ? 'away' : (r.last_is_moving || (r.last_speed_mps || 0) > 1 ? 'moving' : 'stationary'));
       return { username: r.username, name: u.name || r.username, team: u.team || null, sessionId: r.id, startedAt: r.started_at, platform: r.platform,
         lat: r.last_lat, lng: r.last_lng, accuracyM: r.last_accuracy_m, speedKmh: r.last_speed_mps != null ? Math.round(r.last_speed_mps * 36) / 10 : null,
         battery: r.last_battery, lastPointAt: r.last_point_at, lastReceivedAt: r.last_received_at, place: r.current_geofence_id ? { id: r.current_geofence_id, name: r.place_name, kind: r.place_kind } : null,
@@ -520,7 +520,7 @@ function mountLocation(app, deps) {
       else throw Object.assign(new Error('Working hours must look like 07:00 – 21:00.'), { status: 400 });
     }
     if (b.trackedDepartments !== undefined) patch.trackedDepartments = Array.isArray(b.trackedDepartments) ? b.trackedDepartments.map(x => str(x, 100)).filter(Boolean) : [];
-    for (const k of ['teamLeadsCanView', 'directorsCanView', 'indoorEnabled']) if (b[k] !== undefined) patch[k] = !!b[k];
+    for (const k of ['teamLeadsCanView', 'directorsCanView', 'indoorEnabled', 'attendanceOnly']) if (b[k] !== undefined) patch[k] = !!b[k];
     if (b.retention !== undefined) {
       patch.retention = {};
       for (const [k, lo, hi] of [['pointsDays', 1, 3650], ['visitsDays', 1, 3650], ['indoorDays', 1, 3650], ['accessLogDays', 90, 3650], ['alertDays', 7, 3650]]) {

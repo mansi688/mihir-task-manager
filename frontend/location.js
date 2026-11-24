@@ -41,7 +41,7 @@
   const KIND_LABEL = { office: '🏢 Office', site: '🏗️ Site', warehouse: '📦 Warehouse', supplier: '🚚 Supplier', client: '🤝 Client', other: '📍 Other' };
   const STATUS = {
     at_place: { label: 'At a place', color: '#1f9d55' }, moving: { label: 'Moving', color: '#2d5fa8' }, stationary: { label: 'Stopped', color: '#7c5cff' },
-    stale: { label: 'No recent fix', color: '#d68c14' }, lost: { label: 'Signal lost', color: '#d64545' }, waiting: { label: 'Waiting for GPS', color: '#888' },
+    away: { label: 'Away from sites', color: '#5f6b7a' }, stale: { label: 'No recent fix', color: '#d68c14' }, lost: { label: 'Signal lost', color: '#d64545' }, waiting: { label: 'Waiting for GPS', color: '#888' },
   };
   const RULE_LABEL = { arrive: 'Arrives at a place', depart: 'Leaves a place', restricted_entry: 'Enters a restricted place / zone', signal_lost: 'Signal lost (no location for N min)', speeding: 'Speeding (km/h)', overtime: 'Session longer than N hours' };
   // Why a phone stopped sending positions (red = nothing for 20+ minutes, orange = 10+).
@@ -755,6 +755,7 @@
       <label>Departments that use tracking <span class="muted small">(none selected = all)</span></label>
       <select id="loc-s-deps" multiple size="5">${teams.map(t => `<option ${s.trackedDepartments.includes(t) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
       <label style="display:flex;gap:6px;font-weight:500;"><input type="checkbox" id="loc-s-dir" style="width:auto;" ${s.directorsCanView ? 'checked' : ''}> Directors can see their departments</label>
+      <label style="display:flex;gap:6px;font-weight:500;"><input type="checkbox" id="loc-s-att" style="width:auto;" ${s.attendanceOnly !== false ? 'checked' : ''}> Attendance only — record check-in / check-out at sites; never save or show where people go away from sites</label>
       <label style="display:flex;gap:6px;font-weight:500;"><input type="checkbox" id="loc-s-tl" style="width:auto;" ${s.teamLeadsCanView ? 'checked' : ''}> Team leads can see their department</label>
       <label style="display:flex;gap:6px;font-weight:500;"><input type="checkbox" id="loc-s-indoor" style="width:auto;" ${s.indoorEnabled ? 'checked' : ''}> Indoor positioning (beacons / UWB) is installed and switched on</label>
     </div>
@@ -1150,7 +1151,7 @@
       const body = {
         policyText: v('loc-s-policy'), allowedHours: st && en ? { start: st, end: en } : null, maxSessionHours: n('loc-s-maxh'),
         trackedDepartments: Array.from((document.getElementById('loc-s-deps') || { selectedOptions: [] }).selectedOptions).map(o => o.value),
-        directorsCanView: !!(document.getElementById('loc-s-dir') || {}).checked, teamLeadsCanView: !!(document.getElementById('loc-s-tl') || {}).checked, indoorEnabled: !!(document.getElementById('loc-s-indoor') || {}).checked,
+        directorsCanView: !!(document.getElementById('loc-s-dir') || {}).checked, teamLeadsCanView: !!(document.getElementById('loc-s-tl') || {}).checked, attendanceOnly: !!(document.getElementById('loc-s-att') || {}).checked, indoorEnabled: !!(document.getElementById('loc-s-indoor') || {}).checked,
         movingIntervalSec: n('loc-s-mov'), stationaryIntervalSec: n('loc-s-stat'), distanceFilterM: n('loc-s-dist'), uploadEverySec: n('loc-s-up'), maxAccuracyM: n('loc-s-acc'), signalLostMin: n('loc-s-lost'),
         retention: { pointsDays: n('loc-s-rp'), visitsDays: n('loc-s-rv'), indoorDays: n('loc-s-ri'), accessLogDays: n('loc-s-ra') },
       };

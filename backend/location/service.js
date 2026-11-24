@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS = {
   trackedDepartments: [],     // [] = every department may use tracking
   teamLeadsCanView: true,
   directorsCanView: true,
+  attendanceOnly: true,       // only check-in / check-out: positions away from every site are used, never stored or shown
   staleAfterMin: 10,
   signalLostMin: 20,
   indoorEnabled: false,
@@ -216,10 +217,18 @@ function createLocationService({ pool, db, log = () => {} }) {
       good.push({ ...p, t, bat: p.bat != null && p.bat > 1 ? p.bat / 100 : p.bat });
     }
     good.sort((a, b) => a.t - b.t);
+    // Attendance-only (the default): where people go between sites is nobody's business. A position outside every
+    // site still decides arrivals / departures (check-in / check-out), but is not saved and never shown.
+    let toStore = good, offSite = [];
+    if (settings.attendanceOnly !== false) {
+      const places = await activePlaces();
+      const onSite = (p) => places.some(g => geo.classifyAgainstGeofence(g, p.lat, p.lng, p.acc) !== 'outside');
+      toStore = []; for (const p of good) (onSite(p) ? toStore : offSite).push(p);
+    }
     let inserted = [];
-    if (good.length) {
+    if (toStore.length) {
       const cols = { ids: [], t: [], lat: [], lng: [], acc: [], alt: [], spd: [], hdg: [], bat: [], mov: [], src: [] };
-      for (const p of good) {
+      for (const p of toStore) {
         cols.ids.push(p.id); cols.t.push(p.t.toISOString()); cols.lat.push(p.lat); cols.lng.push(p.lng); cols.acc.push(p.acc); cols.alt.push(p.alt);
         cols.spd.push(p.spd != null && p.spd >= 0 ? p.spd : null); cols.hdg.push(p.hdg != null && p.hdg >= 0 ? p.hdg : null); cols.bat.push(p.bat); cols.mov.push(p.moving); cols.src.push(p.src);
       }
@@ -232,9 +241,12 @@ function createLocationService({ pool, db, log = () => {} }) {
       [session.id, session.username, cols.ids, cols.t, cols.lat, cols.lng, cols.acc, cols.alt, cols.spd, cols.hdg, cols.bat, cols.mov, cols.src]);
       inserted = r.rows.sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
     }
-    const duplicates = good.length - inserted.length;
-    if (inserted.length) await afterInsert(session, inserted, settings);
-    return { accepted: inserted.length, duplicates, rejected };
+    const duplicates = toStore.length - inserted.length;
+    // off-site positions: used once (the watermark in afterInsert skips any already processed), never stored
+    const used = offSite.map(p => ({ id: null, client_point_id: p.id, recorded_at: p.t, lat: p.lat, lng: p.lng, accuracy_m: p.acc, speed_mps: p.spd, battery: p.bat, is_moving: p.moving, offSite: true }));
+    const all = inserted.concat(used).sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
+    if (all.length) await afterInsert(session, all, settings);
+    return { accepted: inserted.length + used.length, duplicates, rejected };
   }
 
   // Updates the session summary and runs places/alerts on points NEWER than what was already
@@ -250,9 +262,11 @@ function createLocationService({ pool, db, log = () => {} }) {
     const distance = goodFresh.length ? geo.routeDistanceM(geo.cleanTrack([...prev, ...goodFresh])) : 0;
     const last = fresh[fresh.length - 1];
     if (last) {
+      // away from every site in attendance-only mode: the live position is not kept (only "seen at" time)
+      const hide = !!last.offSite;
       await q(`UPDATE location_sessions SET last_point_at = $2, last_received_at = now(), last_lat = $3, last_lng = $4, last_accuracy_m = $5,
           last_speed_mps = $6, last_battery = COALESCE($7, last_battery), last_is_moving = $8, points_count = points_count + $9, distance_m = distance_m + $10
-        WHERE id = $1`, [session.id, last.recorded_at, last.lat, last.lng, last.accuracy_m, last.speed_mps, last.battery, last.is_moving, points.length, distance]);
+        WHERE id = $1`, [session.id, last.recorded_at, hide ? null : last.lat, hide ? null : last.lng, hide ? null : last.accuracy_m, hide ? null : last.speed_mps, last.battery, hide ? null : last.is_moving, points.length, settings.attendanceOnly !== false ? 0 : distance]);
     } else {
       await q('UPDATE location_sessions SET last_received_at = now(), points_count = points_count + $2 WHERE id = $1', [session.id, points.length]);
     }

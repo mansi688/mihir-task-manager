@@ -100,7 +100,7 @@ function estViewerHTML() {
   return `<div class="est-viewer" data-est-act="view-close-bg">
     <div class="est-viewer-box" data-est-act="view-stay">
       <div class="est-viewer-bar"><b>${estEsc(v.name || '')}</b>${v.canDownload ? `<button class="btn btn-sm" data-est-download="${v.id}">⬇ Download</button>` : '<span class="small muted">View only</span>'}<button class="btn btn-sm" data-est-act="view-close">Close</button></div>
-      <div class="est-viewer-body" oncontextmenu="return false;">
+      <div class="est-viewer-body" data-no-context>
         ${v.loading ? '<div class="small muted" style="padding:20px;">Opening…</div>'
           : v.kind === 'image' ? `<img src="${v.data}" alt="" draggable="false" class="est-view-img">`
           : v.kind === 'pdf' ? `<div data-morph-skip id="est-pdf-holder" class="est-pdf"></div>`
@@ -542,8 +542,9 @@ function estPrint(html, title) {
     body{font-family:Arial,sans-serif;font-size:12px;color:#111;margin:24px;} h1{font-size:18px;margin:0 0 4px;} .muted{color:#555;}
     table{width:100%;border-collapse:collapse;margin-top:10px;} th,td{border:1px solid #999;padding:5px 6px;text-align:left;} th{background:#eee;} .r{text-align:right;}
     .grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;margin-top:10px;} .sig{display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px;margin-top:48px;} .sig div{border-top:1px solid #333;padding-top:6px;text-align:center;}
-    @media print{button{display:none;}}</style></head><body>${html}<script>window.onload=function(){window.print();}<\/script></body></html>`);
+    @media print{button{display:none;}}</style></head><body>${html}</body></html>`);
   w.document.close();
+  setTimeout(() => { try { w.focus(); w.print(); } catch (e) { /* closed */ } }, 400);
 }
 function estPrintJmr(j) {
   estPrint(`<h1>Joint Measurement Record — ${estEsc(j.ref)}</h1><div class="muted">${estEsc(j.project)}${j.location ? ' · ' + estEsc(j.location) : ''} · ${estChip(j.status).replace(/<[^>]+>/g, '')}</div>
@@ -824,3 +825,6 @@ function bindAccOverview() {
       ...appr.map(j => [j.contractor, j.ref, j.project, j.work_item, j.boq_item, j.ra_bill_no, j.unit, j.total_qty, j.rate, j.amount, j.decided_by_name, (j.decided_at || '').slice(0, 10)])], 'approved-jmr-for-billing.csv');
   });
 }
+
+// right-click blocked on the drawing viewer (was an inline oncontextmenu="")
+document.addEventListener('contextmenu', (e) => { if (e.target.closest && e.target.closest('[data-no-context]')) e.preventDefault(); });

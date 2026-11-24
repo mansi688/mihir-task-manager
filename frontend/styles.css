@@ -1989,3 +1989,14 @@ input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !importan
 .pp-person{display:flex;gap:12px;padding:12px;border:1px solid #e5e9f0;border-radius:14px;background:#fff;}
 .pp-info{min-width:0;flex:1;} .pp-edit label{display:block;font-size:12px;margin-top:6px;}
 .pp-chips{display:flex;flex-wrap:wrap;gap:6px;}
+/* HR Today: status chips are filters */
+.att-chip-btn { cursor: pointer; font: inherit; border: 1px solid var(--border, #ddd); background: var(--surface-2, #f3f1ec); }
+.att-chip-btn[class*="st-"] { border-color: transparent; }
+.att-chip-btn:hover { filter: brightness(0.96); }
+.att-chip-btn.on { outline: 2px solid #2d5fa8; outline-offset: 1px; }
+/* HR → Time log */
+.tl-table td { vertical-align: top; }
+.tl-pair { white-space: nowrap; padding: 2px 0; }
+.tl-pair.open { color: #1f7a3f; }
+.tl-gap { color: #8a6d1f; padding: 0 0 2px 14px; }
+.dpr-table tr.acc-imp-bad td { background: #fff1ee !important; }

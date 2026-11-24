@@ -272,7 +272,7 @@ const ICONS = {
 function icon(name, size) {
   return `<svg viewBox="0 0 24 24" width="${size || 17}" height="${size || 17}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
 }
-function falconMark() { return `<img src="/logo.png" alt="Logo" style="width:100%;height:100%;object-fit:contain;padding:4px;" onerror="this.style.display='none'">`; }
+function falconMark() { return `<img src="/logo.png" alt="Logo" style="width:100%;height:100%;object-fit:contain;padding:4px;" data-hide-on-error>`; }
 function themeToggleHTML() {
   return `
   <div class="theme-toggle">
@@ -1834,7 +1834,7 @@ function renderSuggestionsView() {
 // Voice / message panel on My Tasks
 function assistantButtonsHTML() {
   if (!appFeatures.voiceTasks && !appFeatures.aiTaskExtraction) return '';
-  return `${appFeatures.assistant ? '<button class="btn btn-sm btn-primary" onclick="window.openAssistant && window.openAssistant()">🎙 Ask the assistant</button>' : ''}${appFeatures.voiceTasks ? '<button class="btn btn-sm" data-act="open-voice">🎤 Create Task by Voice</button>' : ''}${appFeatures.aiTaskExtraction ? '<button class="btn btn-sm" data-act="open-paste">📋 Tasks from a message</button><button class="btn btn-sm" data-act="open-file">📎 Tasks from a document or photo</button>' : ''}`;
+  return `${appFeatures.assistant ? '<button class="btn btn-sm btn-primary" data-open-assistant>🎙 Ask the assistant</button>' : ''}${appFeatures.voiceTasks ? '<button class="btn btn-sm" data-act="open-voice">🎤 Create Task by Voice</button>' : ''}${appFeatures.aiTaskExtraction ? '<button class="btn btn-sm" data-act="open-paste">📋 Tasks from a message</button><button class="btn btn-sm" data-act="open-file">📎 Tasks from a document or photo</button>' : ''}`;
 }
 function assistantPanelHTML() {
   if (!ui.assistantPanel) return '';
@@ -6871,6 +6871,99 @@ function accountsShown() {
   return userDirectory.filter(u => (!ui.accountsDeptFilter || u.team === ui.accountsDeptFilter)
     && (!words.length || words.every(w => `${u.name} ${u.username} ${u.team || ''} ${u.designation || ''} ${u.phone || ''} ${u.email || ''} ${u.role || ''}`.toLowerCase().includes(w))));
 }
+// ---- Import accounts from Excel / CSV ----
+function accImportCardHTML() {
+  const x = ui.accImport || {};
+  const pv = x.preview, done = x.result;
+  return `<div class="card" id="acc-import-card">
+    <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div><div class="card-title" style="margin:0;">Import accounts from Excel</div>
+      <div class="small muted">One person per row. Only <b>Name</b> is required — a username and a temporary password are made when left empty, and everyone changes the password at the first login.</div></div>
+      <button type="button" class="btn btn-sm" data-accimp="template">⬇ Template (.xlsx)</button></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+      <input type="file" id="acc-imp-file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" style="width:auto;">
+      ${x.busy ? '<span class="small muted">Reading…</span>' : ''}
+    </div>
+    ${x.error ? `<div class="err" style="margin-top:6px;">${esc(x.error)}</div>` : ''}
+    ${pv && !done ? `<div style="margin-top:10px;"><b>${pv.valid}</b> of ${pv.total} ready${pv.total - pv.valid ? ` · <span class="dlv-warn-text">${pv.total - pv.valid} with a problem (skipped)</span>` : ''}${pv.unknownColumns.length ? `<div class="small muted">Ignored columns: ${esc(pv.unknownColumns.join(', '))}</div>` : ''}
+      <div class="dpr-table-wrap" style="max-height:360px;overflow:auto;"><table class="dpr-table"><thead><tr><th>Row</th><th>Name</th><th>Username</th><th>Role</th><th>Department</th><th>Designation</th><th>Phone</th><th>Problem</th></tr></thead><tbody>
+      ${pv.rows.map(r => `<tr${r.errors.length ? ' class="acc-imp-bad"' : ''}><td>${r.row}</td><td>${esc(r.name)}</td><td class="mono">${esc(r.username)}${r.generatedUsername ? ' <span class="small muted">(made)</span>' : ''}</td><td>${esc(r.role)}</td><td>${esc(r.team || '')}</td><td>${esc(r.designation || '')}</td><td>${esc(r.phone || '')}</td><td class="small" style="color:var(--danger)">${esc(r.errors.join(' '))}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div style="display:flex;gap:8px;margin-top:8px;"><button type="button" class="btn btn-primary btn-sm" data-accimp="go" ${pv.valid ? '' : 'disabled'}>Create ${pv.valid} account${pv.valid === 1 ? '' : 's'}</button><button type="button" class="btn btn-sm" data-accimp="cancel">Cancel</button></div></div>` : ''}
+    ${done ? `<div style="margin-top:10px;" class="ok-text">✅ Created <b>${done.created}</b> account${done.created === 1 ? '' : 's'}${done.skipped ? `, skipped ${done.skipped}` : ''}.</div>
+      <div class="small muted">Share each person's username and temporary password privately. Download the list now — the generated passwords are not shown again.</div>
+      <div style="display:flex;gap:8px;margin-top:6px;"><button type="button" class="btn btn-primary btn-sm" data-accimp="creds">⬇ Usernames & passwords (CSV)</button><button type="button" class="btn btn-sm" data-accimp="cancel">Done</button></div>` : ''}
+  </div>`;
+}
+// ---- Someone left: hand over their open work ----
+function handOverCardHTML() {
+  const h = ui.handOver || {};
+  const people = (userDirectory || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  const opt = (sel) => `<option value="">— pick —</option>${people.map(u => `<option value="${esc(u.username)}" ${sel === u.username ? 'selected' : ''}>${esc(u.name)} · ${esc(u.username)}${u.team ? ` · ${esc(u.team)}` : ''}</option>`).join('')}`;
+  return `<div class="card"><div class="card-title">Someone left? Hand over their open work</div>
+    <div class="small muted">Moves everything still open — tasks they are tagged on (with level, deadline and progress), open tasks they created, their follow-ups and pending approvals — to another person. Closed tasks keep their history.</div>
+    <div class="row" style="align-items:flex-end;margin-top:6px;">
+      <div class="col"><label>From (left the company)</label><select id="ho-from">${opt(h.from)}</select></div>
+      <div class="col"><label>To (takes over)</label><select id="ho-to">${opt(h.to)}</select></div>
+      <div class="col" style="flex:0;"><button type="button" class="btn btn-primary btn-sm" data-handover="go">Hand over</button></div>
+    </div>
+    ${h.result ? `<div class="ok-text" style="margin-top:6px;">✅ ${esc(h.result.fromName)} → ${esc(h.result.toName)}: ${h.result.tagged} tagged task(s), ${h.result.created} owned task(s), ${h.result.followups} follow-up(s), ${h.result.approvals} approval(s).</div>` : ''}
+    ${h.error ? `<div class="err" style="margin-top:6px;">${esc(h.error)}</div>` : ''}</div>`;
+}
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest && e.target.closest('[data-handover]'); if (!b) return;
+  const from = (document.getElementById('ho-from') || {}).value, to = (document.getElementById('ho-to') || {}).value;
+  ui.handOver = { from, to };
+  if (!from || !to) { ui.handOver.error = 'Pick both people.'; render(); return; }
+  if (from === to) { ui.handOver.error = 'Pick two different people.'; render(); return; }
+  const fn = (userDirectory.find(u => u.username === from) || {}).name || from, tn = (userDirectory.find(u => u.username === to) || {}).name || to;
+  if (!confirm(`Move all of ${fn}'s open work to ${tn}? This cannot be undone automatically.`)) return;
+  b.disabled = true;
+  try { const r = await api(`/api/users/${encodeURIComponent(from)}/hand-over`, { method: 'POST', body: JSON.stringify({ to }) }); ui.handOver = { result: r }; await refreshData(); }
+  catch (err) { ui.handOver = { from, to, error: err.message }; }
+  render();
+});
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest && e.target.closest('[data-accexport]'); if (!b) return;
+  const shown = accountsShown();
+  const filtered = shown.length !== userDirectory.length;
+  b.disabled = true;
+  try {
+    const r = await api('/api/users/export', { method: 'POST', body: JSON.stringify(filtered ? { usernames: shown.map(u => u.username) } : {}), timeoutMs: 120000 });
+    accImportDownload(r.name, r.data); setBanner(`Exported ${r.count} account${r.count === 1 ? '' : 's'} to Excel.`, 'ok');
+  } catch (err) { setBanner(err.message); }
+  b.disabled = false; render();
+});
+function accImportDownload(name, dataUrl) { const a = document.createElement('a'); a.href = dataUrl; a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 300); }
+document.addEventListener('change', (e) => {
+  if (!e.target || e.target.id !== 'acc-imp-file') return;
+  const f = e.target.files && e.target.files[0]; if (!f) return;
+  ui.accImport = { busy: true, fileName: f.name }; render();
+  const rd = new FileReader();
+  rd.onload = async () => {
+    try { const pv = await api('/api/users/import/preview', { method: 'POST', body: JSON.stringify({ file: rd.result, fileName: f.name }), timeoutMs: 180000 }); ui.accImport = { fileName: f.name, file: rd.result, preview: pv }; }
+    catch (err) { ui.accImport = { fileName: f.name, error: err.message }; }
+    render();
+  };
+  rd.onerror = () => { ui.accImport = { error: 'The file could not be read.' }; render(); };
+  rd.readAsDataURL(f);
+});
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest && e.target.closest('[data-accimp]'); if (!b) return;
+  const x = ui.accImport || {}; const act = b.dataset.accimp;
+  if (act === 'template') { try { const t = await api('/api/users/import/template'); accImportDownload(t.name, t.data); } catch (err) { setBanner(err.message); render(); } return; }
+  if (act === 'cancel') { ui.accImport = null; render(); return; }
+  if (act === 'go') {
+    b.disabled = true;
+    try { const r = await api('/api/users/import', { method: 'POST', body: JSON.stringify({ file: x.file, fileName: x.fileName }), timeoutMs: 180000 }); ui.accImport = { result: r }; await refreshData(); }
+    catch (err) { ui.accImport = { ...x, error: err.message }; }
+    render(); return;
+  }
+  if (act === 'creds' && x.result) {
+    const q = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const lines = [['Name', 'Username', 'Temporary password', 'Department', 'Designation', 'Phone'].map(q).join(',')].concat(x.result.rows.map(r => [r.name, r.username, r.password || '(as given in the file)', r.team || '', r.designation || '', r.phone || ''].map(q).join(',')));
+    accImportDownload(`new-accounts_${new Date().toISOString().slice(0, 10)}.csv`, 'data:text/csv;charset=utf-8,' + encodeURIComponent('\ufeff' + lines.join('\r\n')));
+  }
+});
 function renderAccountsView() {
   return `${loginDetailsCardHTML()}${companyPinCardHTML()}
   <div class="card">
@@ -6907,6 +7000,8 @@ function renderAccountsView() {
     </div>
     <button class="btn btn-primary btn-sm" style="margin-top:8px;" data-act="submit-new-account">Create Account</button>
   </div>
+  ${accImportCardHTML()}
+  ${handOverCardHTML()}
   <div class="card">
     <div class="flex-between">
       <div class="card-title" style="margin:0;">Existing Accounts <span class="small muted">(${accountsShown().length} of ${userDirectory.length})</span></div>
@@ -6915,7 +7010,8 @@ function renderAccountsView() {
       <select id="accounts-dept-filter" style="width:auto;">
         <option value="">All Departments</option>
         ${teamsList.map(t => `<option value="${esc(t)}" ${ui.accountsDeptFilter === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}
-      </select></div>
+      </select>
+      <button type="button" class="btn btn-sm" data-accexport title="Download the accounts listed below as an Excel file (no passwords)">⬇ Export to Excel</button></div>
     </div>
     <p class="small muted">Click a name or username to edit it. Team Lead grants no special power over closing tasks — it currently only lets someone add new members to their own team from "My Team". Director accounts see only their own department's Performance/Peak-Hours by default — grant additional departments below their row.</p>
     <table><tr><th>Name</th><th>Username</th><th>Role</th><th>Team</th><th>Designation</th><th>Team Lead</th><th></th></tr>
@@ -7214,7 +7310,7 @@ function renderCore() {
   } catch (e) {
     console.error('Render failed:', e);
     const app = document.getElementById('app');
-    if (app) app.innerHTML = `<div style="max-width:480px;margin:80px auto;text-align:center;"><div style="font-weight:700;margin-bottom:8px;">Something went wrong displaying this page.</div><div class="small muted" style="margin-bottom:16px;">${esc(e.message || 'Unknown error')}</div><button class="btn btn-primary" onclick="location.reload()">Reload</button></div>`;
+    if (app) app.innerHTML = `<div style="max-width:480px;margin:80px auto;text-align:center;"><div style="font-weight:700;margin-bottom:8px;">Something went wrong displaying this page.</div><div class="small muted" style="margin-bottom:16px;">${esc(e.message || 'Unknown error')}</div><button class="btn btn-primary" data-reload-page>Reload</button></div>`;
   }
 }
 function renderInner() {
@@ -7966,3 +8062,11 @@ setInterval(() => { if (ui && ui.adminTab === 'chat') syncTick(false); }, 4000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) syncTick(true); });
 window.addEventListener('focus', () => syncTick(true));
 window.addEventListener('online', () => syncTick(true));
+
+// Buttons that used inline onclick="" (not allowed by the Content-Security-Policy)
+document.addEventListener('click', (e) => {
+  const t = e.target.closest && e.target.closest('[data-open-assistant],[data-reload-page]');
+  if (!t) return;
+  if (t.hasAttribute('data-reload-page')) { location.reload(); return; }
+  if (window.openAssistant) window.openAssistant();
+});

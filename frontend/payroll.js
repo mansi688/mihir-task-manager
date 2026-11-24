@@ -12,7 +12,7 @@ let hrData = {}; // per HR sub-tab: { key, data }
 const ATT_CODE = { P: 'P', H: '½', A: 'A', L: 'L', LH: 'L½', U: 'U', WO: 'WO', HO: 'HO', F: '' };
 const ATT_LABEL = { P: 'Present', H: 'Half day', A: 'Absent', L: 'Paid leave', LH: 'Half day leave', U: 'Unpaid leave', WO: 'Weekly off', HO: 'Holiday', F: 'Coming' };
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const HR_TABS = [['today', 'Today'], ['register', 'Register'], ['leave', 'Leave'], ['salaries', 'Salaries'], ['advances', 'Advances'], ['payroll', 'Payroll'], ['rules', 'Rules & holidays']];
+const HR_TABS = [['today', 'Today'], ['timelog', 'Time log'], ['register', 'Register'], ['leave', 'Leave'], ['salaries', 'Salaries'], ['advances', 'Advances'], ['payroll', 'Payroll'], ['rules', 'Rules & holidays']];
 function attEsc(s) { return typeof esc === 'function' ? esc(s) : String(s == null ? '' : s); }
 function inr(n) { if (n == null || n === '') return '—'; const v = Number(n); return '₹' + v.toLocaleString('en-IN', { minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2 }); }
 function attToday() { return typeof istDayKey === 'function' ? istDayKey(new Date().toISOString()) : new Date().toISOString().slice(0, 10); }
@@ -469,7 +469,8 @@ function bindAttendanceView() {
 // ---------- HR & Payroll
 async function hrLoad(tab, force) {
   const s = hrState();
-  const url = { today: `/api/attendance/today?day=${s.day}`, register: `/api/attendance/register?month=${s.month}`, leave: '/api/leave', salaries: '/api/payroll/salaries', advances: '/api/payroll/advances',
+  if (!s.tlFrom) { s.tlFrom = attToday(); s.tlTo = attToday(); }
+  const url = { today: `/api/attendance/today?day=${s.day}`, timelog: `/api/attendance/timelog?from=${s.tlFrom}&to=${s.tlTo}`, register: `/api/attendance/register?month=${s.month}`, leave: '/api/leave', salaries: '/api/payroll/salaries', advances: '/api/payroll/advances',
     payroll: `/api/payroll/runs/${s.payMonth}`, rules: `/api/payroll/settings?year=${s.month.slice(0, 4)}` }[tab];
   if (!url) return;
   const cur = hrData[tab];
@@ -480,9 +481,58 @@ async function hrLoad(tab, force) {
   if (ui.adminTab === 'payroll') render();
 }
 function hrNeed(tab) { setTimeout(() => hrLoad(tab), 0); const d = hrData[tab]; return d && (d.data || d.error) ? d : null; }
+function hrTextFilter(list, text) {
+  const words = String(hrState().q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  return words.length ? list.filter(r => { const t = String(text(r) || '').toLowerCase(); return words.every(w => t.includes(w)); }) : list;
+}
 function hrPeopleFilter(list) {
   const words = String(hrState().q || '').toLowerCase().split(/\s+/).filter(Boolean);
   return words.length ? list.filter(p => words.every(w => `${p.name} ${p.username} ${p.team || ''}`.toLowerCase().includes(w))) : list;
+}
+// ---- Time log: every check-in → check-out pair with timestamps, its length, and the day's totals ----
+const tlDur = (m) => m == null ? '—' : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
+const TL_HOW = { auto: '🛰', phone: '📱', hr: '✅', corrected: '✏️', break: '☕' };
+const TL_HOW_TXT = { auto: 'automatic (arrived at / left a site)', phone: 'tapped on the phone', hr: 'accepted by HR', corrected: 'corrected by HR', break: 'break' };
+function tlAddDays(d, n) { return new Date(Date.parse(`${d}T12:00:00+05:30`) + n * 864e5).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }); }
+function hrTimeLogHTML() {
+  const s = hrState(); const d = hrNeed('timelog'); const l = hrLoadingHTML(d);
+  const t = attToday(), monday = tlAddDays(t, -((new Date(`${t}T12:00:00+05:30`).getDay() + 6) % 7));
+  const quick = [['Today', t, t], ['Yesterday', tlAddDays(t, -1), tlAddDays(t, -1)], ['This week', monday, t], ['This month', `${t.slice(0, 8)}01`, t]];
+  const head = `<div class="card"><div class="flex-between" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+      <div><div class="card-title" style="margin:0;">Time log</div><div class="small muted">Every check-in and check-out with its time, how long each lasted, and the total.</div></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;">
+        ${quick.map(([lbl, f, to]) => `<button type="button" class="btn btn-sm ${s.tlFrom === f && s.tlTo === to ? 'btn-primary' : ''}" data-tl-range="${f}|${to}">${lbl}</button>`).join('')}
+        <label class="small">From<input type="date" id="tl-from" value="${attEsc(s.tlFrom)}" max="${t}" style="width:auto;margin:0;"></label>
+        <label class="small">To<input type="date" id="tl-to" value="${attEsc(s.tlTo)}" max="${t}" style="width:auto;margin:0;"></label>
+        ${d && d.data && d.data.list.length ? '<button type="button" class="btn btn-sm" data-tl-csv>⬇ Excel (CSV)</button>' : ''}
+      </div></div>
+      <div class="small muted" style="margin-top:6px;">${Object.entries(TL_HOW).map(([k, v]) => `${v} ${TL_HOW_TXT[k]}`).join(' · ')}</div></div>`;
+  if (l) return head + l;
+  const x = d.data;
+  const rows = hrTextFilter(x.list, r => `${r.name} ${r.username} ${r.team}`);
+  const people = hrTextFilter(x.people, r => `${r.name} ${r.username} ${r.team}`);
+  const pairHTML = (p) => `<div class="tl-pair${p.open ? ' open' : ''}"><span class="mono" title="${attEsc(TL_HOW_TXT[p.inHow] || '')}">${TL_HOW[p.inHow] || ''} ${attEsc(p.in)}</span> → <span class="mono" title="${attEsc(TL_HOW_TXT[p.outHow] || '')}">${p.open ? '<i>still in</i>' : `${TL_HOW[p.outHow] || ''} ${attEsc(p.out)}`}</span> <b>${tlDur(p.min)}</b>${p.inPlace || p.outPlace ? `<span class="small muted"> · ${attEsc([p.inPlace, p.outPlace && p.outPlace !== p.inPlace ? p.outPlace : ''].filter(Boolean).join(' → '))}</span>` : ''}</div>`;
+  const gapHTML = (g) => `<div class="tl-gap small">${g.kind === 'break' ? '☕ break' : '↩ out'} ${attEsc(g.from)}–${attEsc(g.to || 'now')} · ${tlDur(g.min)}</div>`;
+  const multi = x.from !== x.to;
+  return head + `${multi && people.length ? `<div class="card"><div class="card-title">Totals ${attEsc(attDayLabel(x.from))} – ${attEsc(attDayLabel(x.to))}</div><div class="dpr-table-wrap"><table class="dpr-table"><thead><tr><th>Person</th><th class="num">Days</th><th class="num">Check-ins</th><th class="num">Total checked in</th><th class="num">Counted for pay</th></tr></thead><tbody>
+      ${people.map(p => `<tr><td><b>${attEsc(p.name)}</b><div class="small muted">${attEsc(p.username)}${p.team ? ` · ${attEsc(p.team)}` : ''}</div></td><td class="num">${p.days}</td><td class="num">${p.pairs}</td><td class="num"><b>${tlDur(p.checkedInMin)}</b></td><td class="num">${tlDur(p.workedMin)}</td></tr>`).join('')}</tbody></table></div></div>` : ''}
+    <div class="card">${rows.length ? `<div class="dpr-table-wrap"><table class="dpr-table tl-table"><thead><tr><th>Person</th>${multi ? '<th>Day</th>' : ''}<th>Each check-in → check-out</th><th class="num">Total checked in</th><th class="num">Out / break</th><th class="num">First in – last out</th><th class="num">Counted for pay</th></tr></thead><tbody>
+      ${rows.map(r => `<tr><td><b>${attEsc(r.name)}</b><div class="small muted">${attEsc(r.username)}${r.team ? ` · ${attEsc(r.team)}` : ''}</div>${r.status ? `<span class="att-chip st-${attEsc(r.status)}">${attEsc(ATT_LABEL[r.status] || r.status)}</span>` : ''}</td>
+        ${multi ? `<td class="small">${attEsc(attDayLabel(r.day))}</td>` : ''}
+        <td>${r.pairs.map((p, i) => pairHTML(p) + (r.gaps[i] && i < r.pairs.length - 1 ? gapHTML(r.gaps[i]) : '')).join('')}</td>
+        <td class="num"><b>${tlDur(r.checkedInMin)}</b><div class="small muted">${r.pairs.length} check-in${r.pairs.length === 1 ? '' : 's'}</div></td>
+        <td class="num small">${r.outMin ? `out ${tlDur(r.outMin)}` : ''}${r.outMin && r.breakMin ? '<br>' : ''}${r.breakMin ? `☕ ${tlDur(r.breakMin)}` : ''}${!r.outMin && !r.breakMin ? '—' : ''}</td>
+        <td class="num small mono">${attEsc(r.firstIn)} – ${attEsc(r.lastOut || 'in')}<div class="muted">${tlDur(r.spanMin)}</div></td>
+        <td class="num">${tlDur(r.workedMin)}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">${x.list.length ? 'No one matches the search.' : 'No check-ins in these dates.'}</div>`}</div>`;
+}
+function hrTimeLogCsv() {
+  const d = hrData.timelog; if (!d || !d.data) return;
+  const x = d.data; const rows = hrTextFilter(x.list, r => `${r.name} ${r.username} ${r.team}`);
+  const q = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const out = [['Date', 'Name', 'Username', 'Department', 'Check-in #', 'Check-in', 'How in', 'Place in', 'Check-out', 'How out', 'Place out', 'Minutes', 'Duration', 'Day total checked in', 'Day counted for pay'].map(q).join(',')];
+  for (const r of rows) r.pairs.forEach((p, i) => out.push([r.day, r.name, r.username, r.team, i + 1, p.in, TL_HOW_TXT[p.inHow] || '', p.inPlace, p.open ? '' : p.out, p.open ? 'still in' : (TL_HOW_TXT[p.outHow] || ''), p.outPlace, p.min, tlDur(p.min), tlDur(r.checkedInMin), tlDur(r.workedMin)].map(q).join(',')));
+  const blob = new Blob(['\ufeff' + out.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `time-log_${x.from}_to_${x.to}.csv`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 function renderHrPayrollView() {
   const s = hrState(); const S = attSummary || {};
@@ -490,23 +540,35 @@ function renderHrPayrollView() {
   if (!tabs.some(([k]) => k === s.tab)) s.tab = tabs[0] ? tabs[0][0] : 'today';
   const badge = { leave: (S.pendingLeave || []).length, payroll: (S.payrollToApprove || []).length + (S.payrollToPay || []).length };
   let body = '';
-  try { body = ({ today: hrTodayHTML, register: hrRegisterHTML, leave: hrLeaveHTML, salaries: hrSalariesHTML, advances: hrAdvancesHTML, payroll: hrPayrollHTML, rules: hrRulesHTML }[s.tab] || (() => ''))(); }
+  try { body = ({ today: hrTodayHTML, timelog: hrTimeLogHTML, register: hrRegisterHTML, leave: hrLeaveHTML, salaries: hrSalariesHTML, advances: hrAdvancesHTML, payroll: hrPayrollHTML, rules: hrRulesHTML }[s.tab] || (() => ''))(); }
   catch (e) { body = `<div class="err">${attEsc(e.message)}</div>`; }
   return `<div class="card"><div class="card-title" style="margin:0;">HR & Payroll</div>
-    <div class="dpr-tabs">${tabs.map(([k, l]) => `<button type="button" class="${s.tab === k ? 'on' : ''}" data-hr-tab="${k}">${l}${badge[k] ? ` <span class="badge flag">${badge[k]}</span>` : ''}</button>`).join('')}</div></div>
+    <div class="dpr-tabs">${tabs.map(([k, l]) => `<button type="button" class="${s.tab === k ? 'on' : ''}" data-hr-tab="${k}">${l}${badge[k] ? ` <span class="badge flag">${badge[k]}</span>` : ''}</button>`).join('')}</div>
+    ${s.tab === 'rules' ? '' : `<div style="margin-top:8px;">${hrSearchHTML(HR_SEARCH_PH[s.tab])}</div>`}</div>
     ${body}${payslipModalHTML()}`;
 }
 const hrLoadingHTML = (d) => !d ? '<div class="card"><div class="empty">Loading…</div></div>' : d.error ? `<div class="card"><div class="err">${attEsc(d.error)}</div></div>` : null;
+const HR_SEARCH_PH = { today: 'Search name, username or department…', timelog: 'Search name, username or department…', register: 'Search name, username or department…', leave: 'Search leave by name, type or reason…', salaries: 'Search name, username or department…', advances: 'Search advances by name or note…', payroll: 'Search name, username or department…' };
 function hrSearchHTML(ph) { return `<input type="search" id="hr-q" value="${attEsc(hrState().q)}" placeholder="🔍 ${attEsc(ph || 'Search name, username or department…')}" autocomplete="off" data-no-spell style="margin:0 0 8px;">`; }
+// Today's chips are filters: tap one to list only those people, tap again (or "show everyone") for all.
+const HR_TODAY_FILTERS = [
+  ['all', 'Everyone', '', () => true],
+  ['in', 'Checked in', 'st-P', p => !!p.in],
+  ['notIn', 'Not in', 'st-A', p => !p.in && !['WO', 'HO', 'L', 'U'].includes(p.status)],
+  ['late', 'Late', '', p => !!p.late],
+  ['away', 'Not at a site', '', p => (p.flags || []).includes('not at a site')],
+  ['onLeave', 'On leave', 'st-L', p => ['L', 'U', 'LH'].includes(p.status)],
+];
 function hrTodayHTML() {
   const s = hrState(); const d = hrNeed('today'); const l = hrLoadingHTML(d); if (l) return l;
   const x = d.data; const t = x.totals;
-  const list = hrPeopleFilter(x.list);
+  const tf = (HR_TODAY_FILTERS.find(f => f[0] === s.todayFilter) || HR_TODAY_FILTERS[0])[3];
+  const list = hrPeopleFilter(x.list).filter(tf);
   return `<div class="card">
     <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">${attEsc(attDayLabel(x.day))}</div><input type="date" id="hr-day" value="${attEsc(s.day)}" max="${attToday()}" style="width:auto;margin:0;"></div>
-    <div class="att-chips"><span class="att-chip st-P">Checked in <b>${t.in}</b></span><span class="att-chip st-A">Not in <b>${t.notIn}</b></span><span class="att-chip">Late <b>${t.late}</b></span><span class="att-chip">Not at a site <b>${t.away}</b></span><span class="att-chip st-L">On leave <b>${t.onLeave}</b></span></div>
+    <div class="att-chips">${HR_TODAY_FILTERS.map(([k, label, cls]) => `<button type="button" class="att-chip ${cls} att-chip-btn ${s.todayFilter === k ? 'on' : ''}" data-hr-tf="${k}" title="${s.todayFilter === k ? 'Show everyone' : `Show only: ${label}`}">${label} <b>${t[k] != null ? t[k] : x.list.length}</b></button>`).join('')}</div>
+    ${s.todayFilter && s.todayFilter !== 'all' ? `<div class="small muted" style="margin:4px 0;">Showing <b>${attEsc((HR_TODAY_FILTERS.find(f => f[0] === s.todayFilter) || [])[1] || '')}</b> only · <a href="#" data-hr-tf="all">show everyone</a></div>` : ''}
     ${hrAttemptsHTML(x)}
-    ${hrSearchHTML()}
     <div class="dpr-table-wrap"><table class="dpr-table"><thead><tr><th>Person</th><th>Status</th><th>In</th><th>Out</th><th>Hours</th><th>Break / away</th><th>Where</th><th>How</th></tr></thead><tbody>
     ${list.map(p => `<tr><td><b>${attEsc(p.name)}</b><div class="small muted">${attEsc(p.username)} · ${attEsc(p.team)}</div></td>
       <td><span class="att-chip st-${p.status}">${attEsc(ATT_LABEL[p.status] || p.status)}</span>${p.late ? ` <span class="small dlv-warn-text">late ${p.late} min</span>` : ''}</td>
@@ -549,7 +611,6 @@ function hrRegisterHTML() {
     <div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div class="card-title" style="margin:0;">Register · ${attEsc(x.label)}</div>
       <div style="display:flex;gap:6px;"><button class="btn btn-sm" data-hr-month="-1">‹</button><button class="btn btn-sm" data-hr-month="1" ${s.month >= attMonthNow() ? 'disabled' : ''}>›</button></div></div>
     <div class="small muted" style="margin-bottom:6px;">${x.canEdit ? 'Tap a day to correct it.' : ''} P present · ½ half · A absent · L paid leave · U unpaid · WO weekly off · HO holiday · red dot late · 📍 not at a site · ✎ corrected</div>
-    ${hrSearchHTML()}
     ${e ? `<div class="att-form"><b>${attEsc(e.name)} · ${attEsc(attDayLabel(e.day))}</b> <span class="small muted">now: ${attEsc(ATT_LABEL[e.cur.status] || '')}${e.cur.in ? ` · in ${e.cur.in}` : ''}${e.cur.out ? ` · out ${e.cur.out}` : ''}${e.cur.note ? ` · “${attEsc(e.cur.note)}”` : ''}</span>
       <div class="row"><div class="col"><label>Set as</label><select id="hre-status"><option value="">Work it out from in / out</option>${['P', 'H', 'A', 'L', 'U', 'WO', 'HO'].map(k => `<option value="${k}" ${e.status === k ? 'selected' : ''}>${ATT_LABEL[k]}</option>`).join('')}</select></div>
         <div class="col"><label>In</label><input type="time" id="hre-in" value="${attEsc(e.in || '')}"></div><div class="col"><label>Out</label><input type="time" id="hre-out" value="${attEsc(e.out || '')}"></div>
@@ -565,7 +626,8 @@ function hrRegisterHTML() {
 }
 function hrLeaveHTML() {
   const d = hrNeed('leave'); const l = hrLoadingHTML(d); if (l) return l;
-  const x = d.data; const pend = x.list.filter(r => r.status === 'pending'), rest = x.list.filter(r => r.status !== 'pending');
+  const x = d.data; const all = hrTextFilter(x.list, r => `${personName(r.username)} ${r.username} ${r.kind} ${r.reason || ''} ${r.status}`);
+  const pend = all.filter(r => r.status === 'pending'), rest = all.filter(r => r.status !== 'pending');
   const row = (r) => `<div class="att-list-row"><div><b>${attEsc(personName(r.username))}</b> · ${r.kind === 'paid' ? 'Paid' : 'Unpaid'} · ${attEsc(attDayLabel(r.from_day))}${r.to_day !== r.from_day ? ` – ${attEsc(attDayLabel(r.to_day))}` : ''}${r.half_day ? ' (half day)' : ''} · ${Number(r.days)} day${Number(r.days) === 1 ? '' : 's'}
       <div class="small muted">${attEsc(r.reason || '')}${r.decision_note ? ` — ${attEsc(r.decided_by_name || '')}: “${attEsc(r.decision_note)}”` : ''}</div></div>
     ${r.status === 'pending' && x.canDecide ? `<div class="leave-dec"><input type="text" id="lvn-${r.id}" placeholder="Note (needed to reject)"><button class="btn btn-sm btn-primary" data-leave-decide="${r.id}|approve">✓ Approve</button><button class="btn btn-sm btn-danger" data-leave-decide="${r.id}|reject">✗ Reject</button></div>` : `<span class="bud-chip ${r.status === 'approved' ? 'good' : r.status === 'rejected' ? 'bad' : r.status === 'pending' ? 'warn' : ''}">${attEsc(r.status)}</span>`}</div>`;
@@ -593,7 +655,6 @@ function hrSalariesHTML() {
         <div class="col"><label>On payroll</label><select data-sal="active"><option value="true" ${e.active !== false ? 'selected' : ''}>Yes</option><option value="false" ${e.active === false ? 'selected' : ''}>No (left / on hold)</option></select></div></div>
       ${e.err ? `<div class="err">${attEsc(e.err)}</div>` : ''}
       <div style="margin-top:8px;display:flex;gap:8px;"><button class="btn btn-primary btn-sm" data-hr-act="sal-save">Save salary</button><button class="btn btn-sm" data-hr-act="sal-cancel">Cancel</button></div></div>` : ''}
-    ${hrSearchHTML()}
     <div class="dpr-table-wrap"><table class="dpr-table"><thead><tr><th>Person</th><th class="num">Gross / month</th><th>PF</th><th>ESI</th><th>PT</th><th>Bank</th><th></th></tr></thead><tbody>
     ${people.map(p => { const sl = p.salary; return `<tr class="${sl && !sl.active ? 'muted' : ''}"><td><b>${attEsc(p.name)}</b><div class="small muted">${attEsc(p.username)} · ${attEsc(p.team)}</div></td>
       <td class="num">${sl ? inr(sl.gross) : '<span class="muted">not set</span>'}</td><td>${sl ? (sl.pf_applicable ? 'Yes' : 'No') : ''}</td><td>${sl ? attEsc(sl.esi_mode) : ''}</td><td>${sl ? attEsc(sl.pt_slab) : ''}</td>
@@ -603,6 +664,7 @@ function hrSalariesHTML() {
 function hrAdvancesHTML() {
   const s = hrState(); const d = hrNeed('advances'); const l = hrLoadingHTML(d); if (l) return l;
   const x = d.data; const f = s.advForm;
+  const advList = hrTextFilter(x.list, a => `${personName(a.username)} ${a.username} ${a.reason || ''} ${a.status || ''}`);
   return `<div class="card"><div class="flex-between" style="gap:8px;flex-wrap:wrap;"><div><div class="card-title" style="margin:0;">Salary advances</div><div class="small muted">Recovered from salary each month, an instalment at a time, when the month is paid.</div></div>${x.canEdit && !f ? '<button class="btn btn-sm btn-primary" data-hr-act="adv-new">+ Advance</button>' : ''}</div>
     ${f ? `<div class="att-form"><div class="row">
       <div class="col"><label>Person *</label><select id="adv-user"><option value="">— pick —</option>${(userDirectory || []).slice().sort((a, b) => a.name.localeCompare(b.name)).map(u => `<option value="${attEsc(u.username)}" ${f.username === u.username ? 'selected' : ''}>${attEsc(u.name)} · ${attEsc(u.username)}</option>`).join('')}</select></div>
@@ -612,8 +674,8 @@ function hrAdvancesHTML() {
       <label>Reason</label><input type="text" id="adv-reason" value="${attEsc(f.reason || '')}">
       ${f.err ? `<div class="err">${attEsc(f.err)}</div>` : ''}
       <div style="margin-top:8px;display:flex;gap:8px;"><button class="btn btn-primary btn-sm" data-hr-act="adv-save">Save</button><button class="btn btn-sm" data-hr-act="adv-cancel">Cancel</button></div></div>` : ''}
-    ${x.list.length ? `<div class="dpr-table-wrap"><table class="dpr-table"><thead><tr><th>Person</th><th>Given</th><th class="num">Amount</th><th class="num">Per month</th><th class="num">Recovered</th><th class="num">Left</th><th>Status</th><th></th></tr></thead><tbody>
-      ${x.list.map(a => `<tr><td><b>${attEsc(personName(a.username))}</b><div class="small muted">${attEsc(a.reason || '')}</div></td><td>${attEsc(attDayLabel(a.given_on))}</td><td class="num">${inr(a.amount)}</td><td class="num">${inr(a.instalment)}</td><td class="num">${inr(a.recovered)}</td><td class="num"><b>${inr(Math.max(0, a.amount - a.recovered))}</b></td><td>${attEsc(a.status)}</td><td>${x.canEdit && a.status === 'open' ? `<button class="btn btn-sm" data-adv-close="${a.id}">Close</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="small muted">No advances.</div>'}</div>`;
+    ${advList.length ? `<div class="dpr-table-wrap"><table class="dpr-table"><thead><tr><th>Person</th><th>Given</th><th class="num">Amount</th><th class="num">Per month</th><th class="num">Recovered</th><th class="num">Left</th><th>Status</th><th></th></tr></thead><tbody>
+      ${advList.map(a => `<tr><td><b>${attEsc(personName(a.username))}</b><div class="small muted">${attEsc(a.reason || '')}</div></td><td>${attEsc(attDayLabel(a.given_on))}</td><td class="num">${inr(a.amount)}</td><td class="num">${inr(a.instalment)}</td><td class="num">${inr(a.recovered)}</td><td class="num"><b>${inr(Math.max(0, a.amount - a.recovered))}</b></td><td>${attEsc(a.status)}</td><td>${x.canEdit && a.status === 'open' ? `<button class="btn btn-sm" data-adv-close="${a.id}">Close</button>` : ''}</td></tr>`).join('')}</tbody></table></div>` : '<div class="small muted">No advances.</div>'}</div>`;
 }
 function hrPayrollHTML() {
   const s = hrState(); const d = hrNeed('payroll'); const l = hrLoadingHTML(d); if (l) return l;
@@ -643,7 +705,7 @@ function hrPayrollHTML() {
       <div class="row"><div class="col"><label>Other deduction ₹</label><input type="number" min="0" id="ple-dd" value="${attEsc(le.other_ded || '')}"></div><div class="col"><label>For</label><input type="text" id="ple-ddn" value="${attEsc(le.other_ded_note || '')}" placeholder="e.g. Canteen"></div></div>
       ${le.err ? `<div class="err">${attEsc(le.err)}</div>` : ''}
       <div style="margin-top:8px;display:flex;gap:8px;"><button class="btn btn-primary btn-sm" data-pay-act="line-save">Save and recalculate</button><button class="btn btn-sm" data-pay-act="line-cancel">Cancel</button></div></div>` : ''}
-    ${run ? `${hrSearchHTML()}<div class="dpr-table-wrap"><table class="dpr-table pay-table"><thead><tr><th>Person</th><th class="num">Paid / days</th><th class="num">Gross earned</th><th class="num">OT</th><th class="num">Other +</th><th class="num">PF</th><th class="num">ESI</th><th class="num">PT</th><th class="num">Advance</th><th class="num">Other −</th><th class="num">Net</th><th></th></tr></thead><tbody>
+    ${run ? `<div class="dpr-table-wrap"><table class="dpr-table pay-table"><thead><tr><th>Person</th><th class="num">Paid / days</th><th class="num">Gross earned</th><th class="num">OT</th><th class="num">Other +</th><th class="num">PF</th><th class="num">ESI</th><th class="num">PT</th><th class="num">Advance</th><th class="num">Other −</th><th class="num">Net</th><th></th></tr></thead><tbody>
       ${lines.map(p => `<tr><td><b>${attEsc(p.name)}</b><div class="small muted">${attEsc(p.team)}${p.lateMarks ? ` · ${p.lateMarks} late` : ''}${p.lopDays ? ` · LOP ${p.lopDays}` : ''}</div></td>
         <td class="num">${p.paidDays} / ${p.daysInMonth}</td><td class="num">${inr(p.earned.gross)}</td><td class="num">${p.otPay ? `${inr(p.otPay)}<div class="small muted">${p.otHours} h</div>` : ''}</td><td class="num">${p.otherEarn ? inr(p.otherEarn) : ''}</td>
         <td class="num">${p.pf ? inr(p.pf) : ''}</td><td class="num">${p.esi ? inr(p.esi) : ''}</td><td class="num">${p.pt ? inr(p.pt) : ''}</td><td class="num">${p.advance ? inr(p.advance) : ''}</td><td class="num">${p.otherDed ? inr(p.otherDed) : ''}</td>
@@ -663,7 +725,7 @@ function hrRulesHTML() {
       <div class="col"><label>Live photo at check-in (not at check-out)</label><select data-rule="selfieRequired" ${ed ? '' : 'disabled'}><option value="true" ${S.selfieRequired ? 'selected' : ''}>Required (deleted 12 noon next day)</option><option value="false" ${!S.selfieRequired ? 'selected' : ''}>Not needed</option></select></div>
       <div class="col"><label>Automatic check-in / out (location)</label><select data-rule="autoAttendance" ${ed ? '' : 'disabled'}><option value="true" ${S.autoAttendance !== false ? 'selected' : ''}>On</option><option value="false" ${S.autoAttendance === false ? 'selected' : ''}>Off</option></select></div></div>
     <div class="row">
-      <div class="col"><label>Full day worked, then left every site → check out automatically</label><select data-rule="autoOutAfterFullDay" ${ed ? '' : 'disabled'}><option value="true" ${S.autoOutAfterFullDay !== false ? 'selected' : ''}>Yes</option><option value="false" ${S.autoOutAfterFullDay === false ? 'selected' : ''}>No</option></select></div>
+      <div class="col"><label>Automatic check-out</label><select data-rule="autoOutMode" ${ed ? '' : 'disabled'}>${[['leave', 'Every time they leave all sites (coming back = check in again)'], ['fullday', 'Only after a full day is worked'], ['off', 'Never — they check out themselves']].map(([v, l]) => `<option value="${v}" ${(S.autoOutMode || 'leave') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       ${f('breakAllowanceMin', 'Break allowed a day (minutes, in total, any time)')}
       ${f('breakRemindMin', 'Break reminder before it ends (minutes)')}
     </div>
@@ -691,7 +753,13 @@ function bindHrPayrollView() {
   bindPayslipModal();
   const reload = (tab) => { hrLoad(tab || s.tab, true); };
   document.querySelectorAll('[data-hr-tab]').forEach(b => b.onclick = () => { s.tab = b.dataset.hrTab; s.edit = null; s.salEdit = null; s.lineEdit = null; render(); });
+  document.querySelectorAll('[data-hr-tf]').forEach(b => b.onclick = (e) => { e.preventDefault(); const k = b.dataset.hrTf; s.todayFilter = s.todayFilter === k ? 'all' : k; render(); });
   const q = document.getElementById('hr-q'); if (q) q.oninput = () => { s.q = q.value; const pos = q.selectionStart; render(); const n = document.getElementById('hr-q'); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) {} } };
+  document.querySelectorAll('[data-tl-range]').forEach(b => b.onclick = () => { const [f, t] = b.dataset.tlRange.split('|'); s.tlFrom = f; s.tlTo = t; render(); });
+  const tlf = document.getElementById('tl-from'), tlt = document.getElementById('tl-to');
+  if (tlf) tlf.onchange = () => { if (tlf.value) { s.tlFrom = tlf.value; if (s.tlTo < s.tlFrom) s.tlTo = s.tlFrom; render(); } };
+  if (tlt) tlt.onchange = () => { if (tlt.value) { s.tlTo = tlt.value; if (s.tlFrom > s.tlTo) s.tlFrom = s.tlTo; render(); } };
+  document.querySelectorAll('[data-tl-csv]').forEach(b => b.onclick = hrTimeLogCsv);
   const dayInp = document.getElementById('hr-day'); if (dayInp) dayInp.onchange = () => { if (dayInp.value) { s.day = dayInp.value; render(); } };
   document.querySelectorAll('[data-hr-month]').forEach(b => b.onclick = () => { s.month = attShiftMonth(s.month, Number(b.dataset.hrMonth)); s.edit = null; render(); });
   document.querySelectorAll('[data-hr-paymonth]').forEach(b => b.onclick = () => { s.payMonth = attShiftMonth(s.payMonth, Number(b.dataset.hrPaymonth)); s.lineEdit = null; render(); });
@@ -780,7 +848,7 @@ function bindHrPayrollView() {
   });
   document.querySelectorAll('[data-pay-export]').forEach(b => b.onclick = async () => { try { const r = await api(`/api/payroll/runs/${s.payMonth}/export${b.dataset.payExport === 'bank' ? '?kind=bank' : ''}`); downloadDataUrl(r.data, r.name); } catch (e) { setBanner(e.message); render(); } });
   // rules
-  document.querySelectorAll('[data-rule]').forEach(el => el.oninput = el.onchange = () => { ui.hrRules = { ...(ui.hrRules || {}), [el.dataset.rule]: el.tagName === 'SELECT' ? el.value === 'true' : el.value }; });
+  document.querySelectorAll('[data-rule]').forEach(el => el.oninput = el.onchange = () => { ui.hrRules = { ...(ui.hrRules || {}), [el.dataset.rule]: el.tagName === 'SELECT' ? (el.value === 'true' ? true : el.value === 'false' ? false : el.value) : el.value }; });
   document.querySelectorAll('[data-rule-off]').forEach(el => el.onchange = () => { const cur = new Set(((ui.hrRules || {}).weeklyOff) || (hrData.rules.data.settings.weeklyOff || [])); el.checked ? cur.add(Number(el.dataset.ruleOff)) : cur.delete(Number(el.dataset.ruleOff)); ui.hrRules = { ...(ui.hrRules || {}), weeklyOff: [...cur] }; });
   act('rules-save', async () => { try { await api('/api/payroll/settings', { method: 'POST', body: JSON.stringify(ui.hrRules || {}) }); ui.hrRules = null; setBanner('Rules saved.', 'ok'); reload('rules'); } catch (e) { setBanner(e.message); render(); } });
   const hd = document.getElementById('hol-day'), hn = document.getElementById('hol-name');
