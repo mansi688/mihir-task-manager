@@ -17,6 +17,7 @@ const ACT_LISTS = [
   { key: 'inactive', icon: '😴', label: 'Inactive', hint: 'Logged in within {d} days, but did no work in them — no task made, no update or file, nothing submitted or completed.' },
   { key: 'notask', icon: '✏️', label: 'Never created a task', hint: 'Has logged in, but has never created a task.' },
   { key: 'idle', icon: '⏳', label: 'Not working on assigned tasks', hint: 'Has open tasks assigned with no update, file or submission from them for {d}+ days.' },
+  { key: 'oldapp', icon: '📲', label: 'Old phone app', hint: 'Uses an older MIHIR Android app. The app shows them a big "Update app" button; if they cannot do it, help them once (3 taps). Everything else updates by itself.' },
 ];
 function actLabel(l, d) { return l.key === 'away' ? `Not logged in for ${d === 7 ? '1 week' : `${d} days`}` : l.label; }
 // Whole days by calendar day in India: since the last login (null = never), and inactive (since the last work; with
@@ -48,6 +49,7 @@ function actIn(p, key, d) {
   if (key === 'inactive') return p.logins > 0 && p.daysSinceLogin < d && (p.daysSinceWork == null || p.daysSinceWork >= d);
   if (key === 'notask') return p.logins > 0 && p.tasksCreated === 0;
   if (key === 'idle') return p.idleCount > 0;
+  if (key === 'oldapp') return !!p.oldApp;
   return false;
 }
 function actIstDay(ms) { return new Date(ms + 330 * 60000).toISOString().slice(0, 10); }
@@ -72,6 +74,7 @@ function actRows(key) {
     inactive: (a, b) => (b.daysSinceWork == null ? 1e9 : b.daysSinceWork) - (a.daysSinceWork == null ? 1e9 : a.daysSinceWork),
     notask: (a, b) => (a.daysSinceLogin || 0) - (b.daysSinceLogin || 0),
     idle: (a, b) => b.idleCount - a.idleCount,
+    oldapp: (a, b) => String(a.app).localeCompare(String(b.app)) || a.name.localeCompare(b.name),
   };
   return rows.sort(sorters[key]);
 }
@@ -88,8 +91,10 @@ function actColumns(key) {
   const counts = { h: 'Tasks made · updates · done', v: p => `${p.tasksCreated} · ${p.updates} · ${p.completed}`, csv: p => `${p.tasksCreated} / ${p.updates} / ${p.completed}` };
   const open = { h: 'Open tasks', v: p => String(p.openTasks), csv: p => p.openTasks, num: true };
   const idle = { h: 'Idle tasks', v: p => `<button type="button" class="btn btn-sm" data-act-open="${actEsc(p.username)}">${p.idleCount} of ${p.openTasks} ${actState().open[p.username] ? '▾' : '▸'}</button>`, csv: p => p.idleCount };
+  const appV = { h: 'Phone app', v: p => p.app ? (/^android-/.test(p.app) ? `MIHIR app v${actEsc(p.app.split('-')[1])}${p.oldApp ? ' <span class="act-d act-d-warn">old</span>' : ' ✓'}` : 'Browser') : '<span class="muted">—</span>', csv: p => p.app || '' };
   return {
-    all: [who, user, team, loginDays, inactDays, login, work, counts, open],
+    oldapp: [who, user, team, appV, login],
+    all: [who, user, team, loginDays, inactDays, login, work, counts, open, appV],
     never: [who, user, team, loginDays, inactDays, made, open],
     away: [who, user, team, loginDays, inactDays, login, work, open],
     inactive: [who, user, team, loginDays, inactDays, login, work, counts, open],

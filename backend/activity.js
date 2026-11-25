@@ -15,6 +15,10 @@ const NOT_WORK = ['login', 'logout', 'account_locked', 'password_changed', 'pass
   'recovery_pin_set', 'guide_completed', 'guide_skipped', 'guide_reset'];
 
 // Last time each person used the app — written at most every 5 minutes per person. Mounted before the routes.
+// The newest MIHIR Android app (versionCode in android/AndroidManifest.xml) — anyone below it has an old app.
+const LATEST_ANDROID = (() => {
+  try { return Number(/android:versionCode="(\d+)"/.exec(require('fs').readFileSync(require('path').join(__dirname, '..', 'android', 'AndroidManifest.xml'), 'utf8'))[1]); } catch (e) { return 0; }
+})();
 function trackActivity(app, db) {
   const touched = new Map();
   app.use('/api', (req, res, next) => {
@@ -22,9 +26,12 @@ function trackActivity(app, db) {
       const u = req.user && req.user.username;
       if (!u || res.statusCode >= 400) return;
       const now = Date.now();
-      if (now - (touched.get(u) || 0) < 5 * 60e3) return;
-      touched.set(u, now);
-      db.pool.query('UPDATE users SET last_active_at=$1 WHERE username=$2', [new Date(now).toISOString(), u]).catch(() => {});
+      // which app the person uses: "android-8" (MIHIR app, versionCode) / "web" — Admin sees who still has an old app
+      const appTag = String(req.headers['x-mihir-app'] || '').slice(0, 24).replace(/[^a-z0-9.-]/gi, '') || null;
+      const t = touched.get(u);
+      if (t && now - t.at < 5 * 60e3 && (!appTag || appTag === t.app)) return;
+      touched.set(u, { at: now, app: appTag || (t && t.app) || null });
+      db.pool.query('UPDATE users SET last_active_at=$1, app_client=COALESCE($3, app_client) WHERE username=$2', [new Date(now).toISOString(), u, appTag]).catch(() => {});
     });
     next();
   });
@@ -39,7 +46,7 @@ function mountActivity(app, { db, auth, ALL_ROLES }) {
     const cutoff = new Date(now - days * 864e5).toISOString();
     const q = async (sql, p) => (await db.pool.query(sql, p || [])).rows;
     const [users, logins, created, replies, files, done, submitted, audit, open] = await Promise.all([
-      q("SELECT username, name, team, role, designation, created_at, last_active_at FROM users WHERE role <> 'admin' ORDER BY name"),
+      q("SELECT username, name, team, role, designation, created_at, last_active_at, app_client FROM users WHERE role <> 'admin' ORDER BY name"),
       q('SELECT username u, MAX(created_at) last, COUNT(*)::int n FROM sessions GROUP BY username'),
       q('SELECT created_by_username u, MAX(created_at) last, COUNT(*)::int n FROM tasks WHERE created_by_username IS NOT NULL GROUP BY 1'),
       q('SELECT by_username u, MAX(created_at) last, COUNT(*)::int n FROM task_replies WHERE by_username IS NOT NULL GROUP BY 1'),
@@ -79,11 +86,12 @@ function mountActivity(app, { db, auth, ALL_ROLES }) {
         daysSinceLogin: daysSince(lastLogin), daysSinceActive: daysSince(lastActive), daysSinceWork: daysSince(lastWork),
         tasksCreated: (C.get(u.username) || {}).n || 0, updates: (R.get(u.username) || {}).n || 0, completed: (D.get(u.username) || {}).n || 0,
         openTasks: mine.length, idleTasks: idle.slice(0, 20), idleCount: idle.length,
+        app: u.app_client || null, oldApp: /^android-\d+$/.test(u.app_client || '') && Number(u.app_client.split('-')[1]) < LATEST_ANDROID,
       };
     });
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ days, generatedAt: new Date(now).toISOString(), people });
+    res.json({ days, generatedAt: new Date(now).toISOString(), people, latestAndroid: LATEST_ANDROID });
   });
 }
 
-module.exports = { mountActivity, trackActivity };
+module.exports = { LATEST_ANDROID, mountActivity, trackActivity };

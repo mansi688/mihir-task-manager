@@ -23,7 +23,7 @@ test('security hardening', async (t) => {
     const html = await page.text();
     assert.doesNotMatch(html, /<script>(?!<\/script>)/, 'no inline scripts in the page');
     assert.doesNotMatch(html, /\son(click|load|error)=/i, 'no inline event handlers');
-    assert.match(html, /<script src="\/boot.js"><\/script>/);
+    assert.match(html, /<script src="\/boot.js\?v=[0-9a-f]+"><\/script>/, "file addresses carry the version");
     const apiRes = await fetch(`${baseUrl}/api/auth/me`, { headers: { Authorization: `Bearer ${admin}` } });
     assert.equal(apiRes.headers.get('cache-control'), 'no-store');
     assert.equal(apiRes.headers.get('x-powered-by'), null);

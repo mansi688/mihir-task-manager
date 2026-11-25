@@ -2000,3 +2000,19 @@ input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !importan
 .tl-pair.open { color: #1f7a3f; }
 .tl-gap { color: #8a6d1f; padding: 0 0 2px 14px; }
 .dpr-table tr.acc-imp-bad td { background: #fff1ee !important; }
+/* MIHIR Android app: update prompt (big and simple — for people who don't use phones much) */
+.app-update-bar { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin: 0 0 12px; padding: 12px 14px; border-radius: 12px; background: #e9f7ee; border: 2px solid #2e9d5b; font-size: 15px; }
+.app-update-bar.open { display: block; }
+.app-update-title { font-weight: 700; font-size: 17px; margin-bottom: 6px; }
+.app-update-steps { list-style: none; padding: 0; margin: 0 0 10px; display: grid; gap: 6px; font-size: 15px; }
+.app-update-go { background: #1f8a4c; color: #fff; font-weight: 700; font-size: 16px; padding: 10px 18px; border-radius: 10px; border: 0; text-decoration: none; display: inline-block; }
+/* First steps after login: bubble + bouncing arrow over the button to tap */
+.att-coach { margin: 8px 0 2px; display: flex; flex-direction: column; align-items: flex-start; }
+.att-coach-bubble { background: #ff8a00; color: #fff; border-radius: 12px; padding: 10px 12px; font-size: 16px; line-height: 1.35; box-shadow: 0 4px 14px rgba(255,138,0,.35); max-width: 100%; }
+.att-coach-mr { font-size: 15px; opacity: .95; margin-top: 2px; }
+.att-coach-x { margin-top: 6px; background: rgba(255,255,255,.25); color: #fff; border: 1px solid rgba(255,255,255,.6); border-radius: 8px; padding: 2px 10px; font-size: 13px; cursor: pointer; }
+.att-coach-arrow { font-size: 34px; line-height: 1; color: #ff8a00; margin: 2px 0 0 26px; animation: attCoachBounce 0.9s ease-in-out infinite; }
+@keyframes attCoachBounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(8px); } }
+.att-coach-target { box-shadow: 0 0 0 4px rgba(255,138,0,.55); animation: attCoachPulse 1.4s ease-in-out infinite; }
+@keyframes attCoachPulse { 0%, 100% { box-shadow: 0 0 0 3px rgba(255,138,0,.55); } 50% { box-shadow: 0 0 0 9px rgba(255,138,0,.15); } }
+@media (prefers-reduced-motion: reduce) { .att-coach-arrow, .att-coach-target { animation: none; } }

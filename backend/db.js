@@ -522,6 +522,7 @@ async function init() {
     status TEXT NOT NULL DEFAULT 'open', decided_by TEXT, decided_at TEXT)`);
   await run('CREATE INDEX IF NOT EXISTS idx_attendance_attempts_day ON attendance_attempts(day, username)');
   await ensureColumn('users', 'att_anywhere', 'BOOLEAN DEFAULT FALSE');
+  await ensureColumn('users', 'app_client', 'TEXT'); // 'android-8' (MIHIR app versionCode) or 'web'
   // People: birthday / joining date (entered by HR) and attendance requests ("Raise Request").
   await ensureColumn('users', 'dob', 'TEXT');
   await ensureColumn('users', 'join_date', 'TEXT');

@@ -340,7 +340,7 @@ function newRequestKey() {
   return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 }
 async function api(path, opts = {}) {
-  const headers = { 'Content-Type': 'application/json' };
+  const headers = { 'Content-Type': 'application/json', 'X-Mihir-App': appClientTag() };
   if (token) headers['Authorization'] = 'Bearer ' + token;
   // Never wait forever: a request stuck behind a waking-up server would otherwise hold the whole
   // refresh cycle hostage. Long uploads/exports can pass a bigger opts.timeoutMs.
@@ -352,6 +352,9 @@ async function api(path, opts = {}) {
   } catch (e) {
     throw new Error(e && e.name === 'AbortError' ? 'The server is taking too long to answer — please try again in a moment.' : 'Can\'t reach the server — check your internet connection.');
   } finally { if (timer) clearTimeout(timer); }
+  // the server renews a login quietly while the app is used — keep the fresh token
+  const renewed = res.headers && res.headers.get && res.headers.get('X-Session-Token');
+  if (renewed && token && res.status < 400) { token = renewed; safeStorage.setItem('ls_token', token); }
   let data = {};
   try { data = await res.json(); } catch (e) { /* no body */ }
   if (res.status === 401 && token) {
@@ -1449,6 +1452,38 @@ function renderTopbarSlim() {
   </div>` : ''}
 `;
 }
+/* ---- MIHIR Android app version ----
+   Everything inside the app (pages, buttons, attendance, fixes) comes from the website and updates by itself. Only the
+   thin app shell (camera / location / notification code) needs installing again — Android never lets an app outside
+   the Play Store replace itself silently. Phones with an older shell get a big "Update app" button that opens the
+   phone's browser to download it (links inside the app did nothing on old versions), then 2 taps: Open → Update. */
+function appVersionCode() {
+  const b = window.AndroidBridge; if (!b) return 0;
+  try { if (typeof b.appVersionCode === 'function') return Number(b.appVersionCode()) || 0; } catch (e) { /* old bridge */ }
+  return typeof b.cameraReady === 'function' ? 8 : typeof b.currentFix === 'function' ? 7 : 6;
+}
+function appClientTag() { return window.AndroidBridge ? `android-${appVersionCode()}` : 'web'; }
+var latestAndroid = 0; // eslint-disable-line no-var
+// The download page opens in the phone's browser (Chrome downloads it); inside the app the same link would do nothing.
+function appUpdateHref() {
+  const u = new URL('/app/android', location.href);
+  return window.AndroidBridge ? `intent://${u.host}${u.pathname}#Intent;scheme=${u.protocol.replace(':', '')};action=android.intent.action.VIEW;end` : u.href;
+}
+function appUpdateBarHTML() {
+  if (!window.AndroidBridge || !latestAndroid || appVersionCode() >= latestAndroid) return '';
+  if (ui.appUpdateHelp) return `<div class="app-update-bar open"><div class="app-update-title">📲 Update the MIHIR app</div>
+    <ol class="app-update-steps"><li><b>1.</b> Tap the green button below. <span class="muted">/ खालचे हिरवे बटण दाबा.</span></li>
+      <li><b>2.</b> When it has downloaded, tap <b>Open</b>. <span class="muted">/ डाउनलोड झाल्यावर <b>Open</b> दाबा.</span></li>
+      <li><b>3.</b> Tap <b>Update</b> (or <b>Install</b>). If the phone asks, tap <b>Settings → Allow</b>, then <b>Update</b>. <span class="muted">/ <b>Update</b> दाबा.</span></li>
+      <li><b>4.</b> Open MIHIR again — you stay logged in. <span class="muted">/ परत MIHIR उघडा — लॉगिन राहते.</span></li></ol>
+    <a class="btn app-update-go" href="${esc(appUpdateHref())}">⬇ Download the update</a> <button type="button" class="btn btn-sm" data-app-update="close">Later</button></div>`;
+  return `<div class="app-update-bar"><span>📲 <b>New MIHIR app available</b> — camera and location work better. <span class="muted">नवीन अ‍ॅप उपलब्ध.</span></span>
+    <button type="button" class="btn app-update-go" data-app-update="open">Update app</button></div>`;
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('[data-app-update]'); if (!b) return;
+  ui.appUpdateHelp = b.dataset.appUpdate === 'open'; render();
+});
 function bannerHTML() {
   if (!ui.banner) return '';
   const color = ui.banner.kind === 'ok' ? 'var(--success)' : 'var(--danger)';
@@ -1608,6 +1643,8 @@ function bindForcedPasswordChange() {
   if (dismissLink) dismissLink.onclick = (e) => { e.preventDefault(); ui.showPasswordChangeModal = false; safeStorage.setItem('ls_pw_reminder_dismissed', 'true'); render(); };
 }
 function logout() {
+  // end this login on the server as well (fire and forget — logging out never waits for the network)
+  if (token) { try { fetch('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, keepalive: true }).catch(() => {}); } catch (e) { /* offline */ } }
   dropPushSubscription(token);
   token = null; session = null;
   dataLoadedOnce = false; lastDataFingerprint = null; lastSyncVersion = null;
@@ -2465,16 +2502,25 @@ function hasUnsavedWork() {
   if (Object.keys(pendingFiles).some(k => (pendingFiles[k] || []).length)) return true;
   return [...document.querySelectorAll('textarea, input[type="text"]:not([type="search"])')].some(el => el.offsetParent && String(el.value || '').trim() && !/search|filter|-q$/i.test(el.id || ''));
 }
+// A new version is on the server → this page reloads itself as soon as nothing is being typed (checked every few
+// seconds, and every time the app comes back to the screen) — nobody has to refresh, reinstall or clear anything.
 function checkAppVersion(serverVersion) {
   if (!PAGE_APP_VERSION || !serverVersion || serverVersion === PAGE_APP_VERSION) return;
-  if (!hasUnsavedWork() && !userIsActivelyTyping()) { location.reload(); return; }
+  if (!hasUnsavedWork() && !userIsActivelyTyping()) { appReloadFresh(); return; }
   if (newVersionShown) return;
   newVersionShown = true;
   const bar = document.createElement('div');
   bar.className = 'new-version-bar';
   bar.innerHTML = '<span>✨ A new version of the app is ready.</span><button type="button" class="btn btn-sm btn-primary">Reload now</button>';
-  bar.querySelector('button').onclick = () => location.reload();
+  bar.querySelector('button').onclick = () => appReloadFresh();
   document.body.appendChild(bar);
+}
+// Reload with a fresh copy of every file (a phone's web view may keep old files otherwise); never twice a minute.
+function appReloadFresh() {
+  try { const last = Number(sessionStorage.getItem('mihir_reload_at') || 0); if (Date.now() - last < 60000) return; sessionStorage.setItem('mihir_reload_at', String(Date.now())); } catch (e) { /* ignore */ }
+  const done = () => location.reload();
+  try { if (window.caches && caches.keys) { caches.keys().then(k => Promise.all(k.map(x => caches.delete(x)))).then(done, done); return; } } catch (e) { /* ignore */ }
+  done();
 }
 // While the tab is in the background (another tab open), still look for new notifications every 30 s — only the
 // notifications, nothing heavy — so the notification sound rings and the tab title shows the count.
@@ -2506,6 +2552,7 @@ async function syncTick(force) {
   try {
     const r = await api('/api/sync');
     if (r && r.a) checkAppVersion(r.a);
+    if (r && r.la && r.la !== latestAndroid) { latestAndroid = r.la; render(); }
     // Chat has its own version: new messages refresh only chat (rooms/unread + the open room),
     // and they keep arriving even while you're typing a reply.
     if (r && r.c && r.c !== chat.lastVersion) { chat.lastVersion = r.c; await refreshChat(); }
@@ -7375,6 +7422,8 @@ function renderInner() {
   else if (ui.adminTab === 'locations' && window.LocationUI && window.LocationUI.canManage()) body = window.LocationUI.renderManager();
   else if (ui.adminTab === 'mytracking' && window.LocationUI && window.LocationUI.isOn()) body = window.LocationUI.renderMine();
   else { body = renderTodayFeed(); showingToday = true; }
+  // right after login, starting work / checking in comes first: the recovery-PIN reminder goes below it
+  const pinAfter = showingToday && typeof attCoachPending === 'function' && attCoachPending() > 0;
   morphHTML(app, `
     <div class="app-shell${ui.sidebarCollapsed ? ' sidebar-collapsed' : ''}">
       ${renderSidebar()}
@@ -7382,9 +7431,11 @@ function renderInner() {
         ${renderTopbarSlim()}
         <main class="content">
           <div id="banner-slot">${bannerHTML()}</div>
+          ${appUpdateBarHTML()}
           <div id="notif-prompt-box">${dataLoadedOnce ? notifPromptHTML() : ''}</div>
-          ${dataLoadedOnce && session.hasRecoveryPin === false && !ui.pinLater ? recoveryPinCardHTML(true) : ''}
+          ${dataLoadedOnce && session.hasRecoveryPin === false && !ui.pinLater && !pinAfter ? recoveryPinCardHTML(true) : ''}
           ${body}
+          ${dataLoadedOnce && session.hasRecoveryPin === false && !ui.pinLater && pinAfter ? recoveryPinCardHTML(true) : ''}
         </main>
       </div>
     </div>`);
@@ -8057,6 +8108,7 @@ function userIsActivelyTyping() {
 // immediately via their own explicit refreshData() call right after that action succeeds —
 // this interval only covers picking up everyone else's changes.
 setInterval(() => syncTick(false), 10000);
+setTimeout(() => syncTick(false), 3000); // first check soon after opening (new version? old phone app?)
 // Quicker checks while the Chat Room is open, so conversations feel live.
 setInterval(() => { if (ui && ui.adminTab === 'chat') syncTick(false); }, 4000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) syncTick(true); });

@@ -370,6 +370,7 @@ app.use((req, res, next) => {
 });
 // Remember when each person last used the app (User Activity report).
 require('./activity').trackActivity(app, db);
+const { LATEST_ANDROID } = require('./activity');
 // "no-cache" = the browser may keep a copy but must check with the server (a cheap ETag check)
 // before using it. Without it, browsers guess how long to reuse app.js/styles.css, so after a
 // deploy one machine can keep running an old cached app.js against the new server and break
@@ -390,7 +391,9 @@ let indexHtmlCache = null;
 app.get(['/', '/index.html'], (req, res, next) => {
   try {
     if (!indexHtmlCache) indexHtmlCache = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'index.html'), 'utf8')
-      .replace('<head>', `<head>\n<meta name="app-version" content="${APP_VERSION}">`);
+      .replace('<head>', `<head>\n<meta name="app-version" content="${APP_VERSION}">`)
+      // each deploy gets new file addresses (?v=…), so no phone or web view can keep running yesterday's code
+      .replace(/(<script src="|<link rel="stylesheet" href=")(\/[a-z0-9_.-]+\.(?:js|css))"/gi, `$1$2?v=${APP_VERSION}"`);
     res.setHeader('Cache-Control', 'no-cache');
     res.type('html').send(indexHtmlCache);
   } catch (e) { next(); }
@@ -637,7 +640,24 @@ async function releaseDependentsOf(closedTask) {
     }
   }
 }
-function sign(payload, expiresIn) { return jwt.sign(payload, JWT_SECRET, { expiresIn: expiresIn || '12h', algorithm: 'HS256' }); }
+// Logins stay signed in while they are used ("Session expired" every morning was the top complaint from site staff):
+// a login token lasts SESSION_DAYS (Admin: ADMIN_SESSION_DAYS) and is renewed quietly while the app is used, so only
+// a phone left unused that long has to log in again. Each login is a row in "sessions": logging out, "Log out
+// everywhere", a password change or removing the account ends it at once on every device.
+const SESSION_DAYS = Math.max(1, Number(process.env.SESSION_DAYS || 30));
+const ADMIN_SESSION_DAYS = Math.max(1, Number(process.env.ADMIN_SESSION_DAYS || 7));
+const sessionDays = (role) => role === 'admin' ? ADMIN_SESSION_DAYS : SESSION_DAYS;
+function sign(payload, expiresIn) { return jwt.sign(payload, JWT_SECRET, { expiresIn: expiresIn || `${sessionDays(payload.role)}d`, algorithm: 'HS256' }); }
+// session rows, cached for a minute (one small query per person per minute, not per request)
+const sessionCache = new Map();
+async function sessionAlive(sid) {
+  const c = sessionCache.get(sid);
+  if (c && Date.now() - c.at < 60000) return c.row;
+  const row = await db.getSession(sid).catch(() => undefined);
+  sessionCache.set(sid, { at: Date.now(), row: row || null });
+  if (sessionCache.size > 5000) for (const k of [...sessionCache.keys()].slice(0, 1000)) sessionCache.delete(k);
+  return row || null;
+}
 
 const ALL_ROLES = ['admin', 'member', 'director'];
 // The firm's projects — a new task must pick one.
@@ -713,6 +733,19 @@ function auth(roles) {
     const user = await db.getUser(payload.username);
     if (!user) return res.status(401).json({ error: 'Session invalid — please log in again.' });
     if ((user.token_version || 0) !== (payload.tv || 0)) return res.status(401).json({ error: 'Session revoked — please log in again.' });
+    if (payload.sid) {
+      const sess = await sessionAlive(payload.sid);
+      if (sess && (Number(sess.revoked) || sess.username !== user.username)) return res.status(401).json({ error: 'You were logged out — please log in again.' });
+      if (sess) {
+        const idleMs = Date.now() - Date.parse(sess.last_seen || sess.created_at || 0);
+        if (idleMs > sessionDays(user.role) * 864e5) return res.status(401).json({ error: 'Not used for a long time — please log in again.' });
+        if (idleMs > 10 * 60000) { sess.last_seen = new Date().toISOString(); db.touchSession(payload.sid).catch(() => {}); }
+      }
+    }
+    // renew quietly: a token older than 12 hours gets a fresh one in the X-Session-Token header (the page keeps it)
+    if (payload.iat && Date.now() / 1000 - payload.iat > 12 * 3600) {
+      try { res.setHeader('X-Session-Token', sign({ username: user.username, role: user.role, name: user.name, tv: user.token_version || 0, sid: payload.sid })); } catch (e) { /* keep the old one */ }
+    }
     if (!roles.includes(user.role)) return res.status(403).json({ error: 'Not permitted for this role.' });
     req.user = { username: user.username, role: user.role, name: user.name, sid: payload.sid };
     if (req.method === 'GET' && CACHED_GET_PATHS.some(rx => rx.test(req.path))) return cacheMiddleware(req, res, next);
@@ -750,7 +783,7 @@ app.get('/api/device/notifications', async (req, res) => {
 // every device — website or phone app — picks up changes within seconds of each other.
 app.get('/api/sync', auth(ALL_ROLES), (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ v: `${BOOT_ID}.${db.getDataVersion()}`, c: `${BOOT_ID}.${db.getChatVersion()}`, a: APP_VERSION });
+  res.json({ v: `${BOOT_ID}.${db.getDataVersion()}`, c: `${BOOT_ID}.${db.getChatVersion()}`, a: APP_VERSION, la: LATEST_ANDROID });
 });
 
 /* ============ CHAT ROOM ============
@@ -1192,6 +1225,11 @@ app.post('/api/auth/forgot-password', loginRateLimiter, recoveryRateLimiter, asy
 });
 // The old email-code reset is switched off.
 app.post('/api/auth/reset-with-otp', (req, res) => res.status(410).json({ error: 'Email codes are no longer used — use "Forgot password?" with your recovery PIN.' }));
+// Log out: this login ends on the server too (a copied token stops working at once).
+app.post('/api/auth/logout', auth(ALL_ROLES), async (req, res) => {
+  if (req.user.sid) { await db.revokeSession(req.user.sid); sessionCache.delete(req.user.sid); }
+  res.json({ ok: true });
+});
 app.post('/api/auth/logout-everywhere', auth(ALL_ROLES), async (req, res) => {
   await db.bumpTokenVersion(req.user.username);
   const user = await db.getUserFresh(req.user.username);

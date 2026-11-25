@@ -5,6 +5,28 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.77] — 2026-11-25 — Stay logged in, updates by themselves, first-steps guide
+### Fixed
+- **"Session expired" every morning:** logins now last 30 days (Admin 7) and renew quietly while the app is used — only
+  a phone not used for that long has to log in again. Each login is checked against the server's session list:
+  **Log out** now ends it on the server too, "Log out everywhere" / a password change still end all of them.
+- **Old app shells couldn't check in (camera permission error):** on an older MIHIR app (or a phone where the in-page
+  camera was refused once) **Check in opens the phone's own camera straight away** — one tap, no error, no settings.
+- The "download the new app" link inside the app did nothing (the app has no downloader) — it now opens the phone's
+  browser, which downloads it.
+### Added
+- **Updates reach everyone by themselves:** a new version reloads open pages automatically as soon as nothing is
+  being typed (also when the app comes back on screen); every deploy gives the app's files new addresses (`?v=`), so
+  no phone or web view can keep yesterday's code. Nobody has to refresh, clear or reinstall.
+- **Old phone app:** a big green "Update app" bar on every page with 4 simple steps (English + मराठी) for people on an
+  older MIHIR Android app; User Activity → "📲 Old phone app" lists who still has one (the app reports its version).
+- **First steps after login:** on Today a big orange bubble with a bouncing arrow points at the button to tap —
+  Step 1 *Start work session*, Step 2 *Check in* and take the photo (English + मराठी); "Got it" hides it for the day.
+  Until done, attendance is shown above the recovery-PIN reminder.
+- Nightly backup workflow: a clear message when the `DATABASE_URL` secret is missing (why the nightly backup failed).
+### Environment
+- Optional `SESSION_DAYS` (default 30) and `ADMIN_SESSION_DAYS` (default 7). Column `users.app_client` (added on start).
+
 ## [v1.76] — 2026-11-24 — Export accounts to Excel
 ### Added
 - Accounts → Existing Accounts → **⬇ Export to Excel**: the accounts listed (everyone, or only what the search /

@@ -20,7 +20,12 @@ jobs:
       - name: Back up
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: node scripts/backup-database.js backups
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error title=Backup not set up::The DATABASE_URL secret is missing. GitHub → this repo → Settings → Secrets and variables → Actions → New repository secret → Name: DATABASE_URL, Value: the same DATABASE_URL as in Render → mihir-task-manager → Environment. Then Actions → Nightly database backup → Run workflow."
+            exit 1
+          fi
+          node scripts/backup-database.js backups
       - uses: actions/upload-artifact@v4
         with:
           name: mihir-db-backup-${{ github.run_id }}

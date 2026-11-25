@@ -222,6 +222,33 @@ function attTimeLogsHTML(d, t) {
 // The "today" card: used on My Attendance and — in a compact form — at the top of the front page.
 let attFrontRenderedAt = 0;
 function attWhich() { const t = attMe && attMe.todayRec; return t && t.in && !t.out ? 'out' : 'in'; }
+// ---- First steps after login: a big bouncing arrow on the button to tap (people who don't use phones much) ----
+// 1 = start the work session (location; only where tracking is on), 2 = check in with the live photo; 0 = nothing to do.
+// "Got it" hides it for today on this phone.
+function attCoachStep(front, L, t, open) {
+  if (!front || (ui.att || {}).cam) return 0;
+  try { if (safeStorage.getItem('att_coach_off') === attTodayKey()) return 0; } catch (e) { /* ignore */ }
+  if (L.available && !L.loading && !L.active) return 1;
+  if (!(t && t.in)) return 2;
+  return 0;
+}
+// Something to do first (start work / check in)? Then the Today page shows attendance before anything else.
+function attCoachPending() {
+  if (!attMe || !attMe.rules) return 0;
+  const L = window.LocationUI && LocationUI.attendanceStatus ? LocationUI.attendanceStatus() : { available: false };
+  return attCoachStep(true, L, attMe.todayRec, false);
+}
+function attTodayKey() { return new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10); }
+function attCoachHTML(step, en, mr) {
+  if (!ui.attCoachScrolled) { ui.attCoachScrolled = true; setTimeout(() => { const el = document.querySelector('.att-coach'); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 400); }
+  return `<div class="att-coach" role="note"><div class="att-coach-bubble"><div>👇 ${en}</div><div class="att-coach-mr">${mr}</div>
+    <button type="button" class="att-coach-x" data-att-coach-off>Got it</button></div><div class="att-coach-arrow">⬇</div></div>`;
+}
+document.addEventListener('click', (e) => {
+  if (!(e.target.closest && e.target.closest('[data-att-coach-off]'))) return;
+  try { safeStorage.setItem('att_coach_off', attTodayKey()); } catch (x) { /* ignore */ }
+  render();
+});
 function attTodayCardHTML(d, p, front) {
   const t = d.todayRec, R = d.rules || {};
   const open = !!(t && t.in && !t.out);
@@ -236,16 +263,19 @@ function attTodayCardHTML(d, p, front) {
       : `<div class="small">Break today: <b>${t.breakUsedMin}</b> of ${R.breakAllowanceMin} min used — take it any time of the day${t.breakLeftMin ? '' : ' (used up)'}.</div>
         ${t.breakLeftMin ? `<button type="button" class="btn btn-sm" data-att-act="break-start" ${p && p.busy ? 'disabled' : ''}>☕ Start break</button>` : ''}`}
     </div>` : '';
+  // Guide right after login (Today page): step 1 start the work session, step 2 check in with the photo.
+  const coach = attCoachStep(front, L, t, open);
   // Work session (location tracking) — needed for automatic check-in / out and accurate site tracking.
   let loc = '';
   if (L.available) {
     if (L.loading) loc = '<div class="small muted">Checking location tracking…</div>';
     else if (L.active) loc = `<div class="att-auto-on">🛰 <b>Work session is on</b>${L.lastFix ? ` · last position ${attEsc(new Date(L.lastFix).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }))}` : ''} — location is being recorded.</div>`;
     else loc = `<div class="att-auto-off"><span>⚠ <b>Work session is off</b> — your location is not being recorded and you will not be checked in or out automatically.</span>
-        <button type="button" class="btn btn-primary btn-sm" data-att-act="loc-on" ${L.busy ? 'disabled' : ''}>${L.consent ? '▶ Start work session' : '▶ Start work session…'}</button></div>`;
+        ${coach === 1 ? attCoachHTML(1, '<b>Step 1:</b> tap <b>Start work session</b>', 'पहिले हे बटण दाबा — Start work session') : ''}
+        <button type="button" class="btn btn-primary btn-sm ${coach === 1 ? 'att-coach-target' : ''}" data-att-act="loc-on" ${L.busy ? 'disabled' : ''}>${L.consent ? '▶ Start work session' : '▶ Start work session…'}</button></div>`;
   }
   const oldApp = window.AndroidBridge && typeof window.AndroidBridge.cameraReady !== 'function'
-    ? '<div class="small">📱 A new MIHIR app (1.7) fixes the camera: <a href="/app/android" download><b>download and install it</b></a> over this one — you stay logged in.</div>'
+    ? '' // the "Update app" bar at the top of every page covers this
     : !window.AndroidBridge && /android/i.test(navigator.userAgent) ? '<div class="small muted">📱 For automatic attendance and the camera install the app: <a href="/app/android" download><b>MIHIR Android app</b></a>.</div>' : '';
   return `<div class="card att-today ${front ? 'att-front' : ''}">
     ${attKekaHeadHTML(d, t, R, front)}
@@ -255,7 +285,10 @@ function attTodayCardHTML(d, p, front) {
     ${loc}
     ${oldApp}
     ${!(t && t.onBreak) ? `<div class="att-punch">
-      <button type="button" class="btn btn-primary att-punch-btn ${p && p.busy ? 'disabled' : ''}" data-att-act="punch" ${p && p.busy ? 'disabled' : ''}>${p && p.busy ? '⏳ ' + attEsc(p.msg || 'Working…') : open ? '🏁 Check out' : t && t.out ? '📷 Check in again' : '📷 Check in'}</button>
+      ${coach === 2 ? attCoachHTML(2, `<b>${L.available ? 'Step 2' : 'Step 1'}:</b> tap <b>Check in</b> and take your photo`, 'आता Check in दाबा आणि फोटो काढा') : ''}
+      ${!open && R.selfieRequired && attCamDirect() && !(p && p.busy)
+        ? `<label class="btn btn-primary att-punch-btn ${coach === 2 ? 'att-coach-target' : ''}" style="cursor:pointer;">${t && t.out ? '📷 Check in again' : '📷 Check in'}<input type="file" accept="image/*" capture="user" data-att-cam-file style="display:none;"></label>`
+        : `<button type="button" class="btn btn-primary att-punch-btn ${p && p.busy ? 'disabled' : ''} ${coach === 2 ? 'att-coach-target' : ''}" data-att-act="punch" ${p && p.busy ? 'disabled' : ''}>${p && p.busy ? '⏳ ' + attEsc(p.msg || 'Working…') : open ? '🏁 Check out' : t && t.out ? '📷 Check in again' : '📷 Check in'}</button>`}
       ${typeof ppReqModalHTML === 'function' ? '<button type="button" class="btn btn-sm" data-pp-act="req-open">📝 Raise Request</button>' : ''}
       <input type="text" id="att-note" maxlength="200" class="att-note" placeholder="Where / why? (optional) — e.g. visiting Amara site, collecting material" value="${attEsc((attState().note) || '')}">
       <div class="small muted">${!open && R.selfieRequired ? 'Check-in opens the camera for a live photo (not from the gallery; kept until 12 noon the next day). ' : ''}Your GPS position is noted — an accurate fix is not needed to check in or out.${open ? ' Check-out needs no photo.' : ''}${R.autoAttendance ? ` You are also checked in automatically when location sees you on a site, and checked out automatically once you have worked ${R.fullDayHours} h and left the site.` : ''}</div>
@@ -273,6 +306,12 @@ function attFrontCardHTML() {
   return attTodayCardHTML(attMe, attState().punch, true) + attCameraHTML() + (typeof ppReqModalHTML === 'function' ? ppReqModalHTML() : '');
 }
 // ---------- live selfie camera (no gallery / file picker)
+// Phones where the in-page camera cannot work (an older MIHIR app, or camera permission refused once): "Check in"
+// opens the phone's own camera straight away — one tap, no error message, no settings to change.
+function attCamDirect() {
+  if (window.AndroidBridge && typeof window.AndroidBridge.cameraReady !== 'function') return true;
+  try { return safeStorage.getItem('att_cam_direct') === '1'; } catch (e) { return false; }
+}
 let attCamStream = null;
 function attCameraHTML() {
   const c = (ui.att || {}).cam; if (!c) return '';
@@ -301,6 +340,7 @@ async function attStartCamera() {
     if (!(ui.att || {}).cam) { attStopCamera(); return; }
     attShowStream();
   } catch (e) {
+    try { safeStorage.setItem('att_cam_direct', '1'); } catch (x) { /* ignore */ }
     c.err = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError') ? 'Camera permission is off. Allow the camera for this app (phone Settings → Apps → MIHIR Tasks → Permissions → Camera; in Chrome: ⋮ → Settings → Site settings → Camera) — or use the button below.' : 'The camera could not be opened here — use the button below to take the photo with your phone camera.';
     render();
   } finally { attCamStarting = false; }
@@ -417,7 +457,7 @@ function attBindPunch() {
   document.querySelectorAll('[data-att-cam-file]').forEach(inp => inp.onchange = async () => {
     const f = inp.files && inp.files[0]; if (!f) return;
     const photo = await attSmallJpeg(f);
-    if (!photo) { s.cam.err = 'That photo could not be read — take it again.'; render(); return; }
+    if (!photo) { if (s.cam) s.cam.err = 'That photo could not be read — take it again.'; else s.punch = { err: 'That photo could not be read — tap Check in and take it again.' }; render(); return; }
     attStopCamera(); s.cam = null; doPunch(photo);
   });
   document.querySelectorAll('[data-att-act="loc-on"]').forEach(b => b.onclick = async () => {
