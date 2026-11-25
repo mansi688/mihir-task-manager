@@ -12,7 +12,7 @@
 A backup counts only after a successful test restore.
 
 ## Backups
-- **Nightly:** `.github/workflows/backup.yml` (02:00 IST) → artifact kept 30 days. Setup: repo secret `DATABASE_URL`.
+- **Nightly:** `.github/workflows/backup.yml` (02:00 IST) → artifact kept 30 days. No database password in GitHub: the workflow proves who it is with GitHub's signed OIDC token and the app sends the backup **encrypted with `BACKUP_KEY`** (Render → Environment; keep a copy of the key offline — without it the backups cannot be opened). Restore: `BACKUP_KEY=… DATABASE_URL=<empty db> node scripts/restore-database.js mihir-backup-….json.gz.enc`.
 - **Before every deploy / risky change:** `DATABASE_URL=… npm run backup`.
 - Files (recordings, voice notes): Supabase Storage — recordings are temporary by design (30 days); tasks/history do not depend on them.
 

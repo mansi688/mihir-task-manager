@@ -522,7 +522,8 @@ async function init() {
     status TEXT NOT NULL DEFAULT 'open', decided_by TEXT, decided_at TEXT)`);
   await run('CREATE INDEX IF NOT EXISTS idx_attendance_attempts_day ON attendance_attempts(day, username)');
   await ensureColumn('users', 'att_anywhere', 'BOOLEAN DEFAULT FALSE');
-  await ensureColumn('users', 'app_client', 'TEXT'); // 'android-8' (MIHIR app versionCode) or 'web'
+  await ensureColumn('users', 'app_client', 'TEXT');
+// 'android-8' (MIHIR app versionCode) or 'web'
   // People: birthday / joining date (entered by HR) and attendance requests ("Raise Request").
   await ensureColumn('users', 'dob', 'TEXT');
   await ensureColumn('users', 'join_date', 'TEXT');
@@ -533,6 +534,15 @@ async function init() {
   await ensureColumn('users', 'last_active_at', 'TEXT');
   // Small company-wide settings (e.g. the common recovery PIN hash).
   await run('CREATE TABLE IF NOT EXISTS company_settings(key TEXT PRIMARY KEY, value TEXT, updated_by TEXT, updated_at TEXT)');
+  // v1.78: site visits are no longer attached to tasks — remove the old links and their task-history lines once.
+  if (!(await get("SELECT 1 FROM company_settings WHERE key='cleanup_task_site_visits_v178'").catch(() => null))) {
+    await run('DELETE FROM visit_task_links').catch(() => null);
+    await run("DELETE FROM task_places").catch(() => null);
+    await run("DELETE FROM task_activity_events WHERE event_type IN ('site_visit', 'place_linked') AND source_type='location'").catch(() => null);
+    await run("DELETE FROM task_activity_events WHERE event_type = 'place_linked'").catch(() => null);
+    await run("DELETE FROM notifications WHERE type='location' AND message LIKE '📍 You''re at %open task%'").catch(() => null);
+    await run("INSERT INTO company_settings(key, value, updated_by, updated_at) VALUES('cleanup_task_site_visits_v178','done','system',?) ON CONFLICT (key) DO NOTHING", [new Date().toISOString()]).catch(() => null);
+  }
   await ensureColumn('users', 'device_poll_at', 'TEXT');
   // One time: Dnyaneshwar Kolekar is kept informed on every OPEN task that has a project (new ones get it on creation).
   try {

@@ -100,10 +100,10 @@ test('employee location tracking', async (t) => {
     await upload(baseUrl, uploadToken, { points: inside });
     const v = (await raw.query('SELECT * FROM geofence_visits')).rows;
     assert.equal(v.length, 1); assert.ok(v[0].confirmed_at); assert.equal(v[0].departed_at, null);
-    const link = (await raw.query('SELECT * FROM visit_task_links')).rows;
-    assert.deepEqual(link.map(l => [l.task_id, l.how]), [[taskId, 'project']]);
-    const note = (await G('/api/notifications', ravi)).data.items.find(n => n.type === 'location');
-    assert.match(note.message, /You're at Tower B site — 1 open task here/);
+    // site visits are not attached to tasks any more (check-in / check-out only)
+    assert.equal((await raw.query('SELECT COUNT(*)::int c FROM visit_task_links')).rows[0].c, 0);
+    assert.ok(!(await G('/api/notifications', ravi)).data.items.some(n => /open task.* here/.test(n.message)));
+    void taskId;
     // Uncertain GPS near the edge changes nothing; three clear outside fixes in a row, over at least 3 minutes = departure (two fixes, or a quick spike, could be jitter).
     tt += 9 * 60000;
     await upload(baseUrl, uploadToken, { points: [fix(at(170), tt, { acc: 40 })] });
@@ -142,20 +142,15 @@ test('employee location tracking', async (t) => {
     assert.equal((await G('/api/location/me/history', ravi)).status, 200, 'own history is always visible');
   });
 
-  await t.test('task integration: tie a task to a place; visits show on the task with history', async () => {
+  await t.test('site visits are not shown on tasks (removed): nothing to tie, nothing listed', async () => {
     const t2 = await P('/api/tasks', admin, { title: 'Collect cement from supplier', deadline: futureDate(), assignedToList: ['ravi'] });
     const sup = await P('/api/location/places', admin, { name: 'UltraTech depot', kind: 'supplier', lat: at(3000, 90).lat, lng: at(3000, 90).lng, radiusM: 100, minDwellSeconds: 0 });
-    assert.equal((await P(`/api/location/tasks/${t2.data.id}/places`, ravi, { placeId: sup.data.id })).status, 403, 'only creator/Directors/Admin');
-    assert.equal((await P(`/api/location/tasks/${t2.data.id}/places`, admin, { placeId: sup.data.id, purpose: 'Pick up 200 bags' })).status, 200);
+    assert.equal((await P(`/api/location/tasks/${t2.data.id}/places`, admin, { placeId: sup.data.id })).status, 410);
     const tt = Date.now() - 4 * 60000;
     await upload(baseUrl, uploadToken, { points: [fix(at(3000, 90), tt), fix(at(3010, 90), tt + 60000)] });
-    const view = await G(`/api/location/tasks/${t2.data.id}`, admin);
-    assert.equal(view.data.places[0].name, 'UltraTech depot');
-    assert.equal(view.data.visits.length, 1); assert.equal(view.data.visits[0].how, 'place');
+    assert.deepEqual((await G(`/api/location/tasks/${t2.data.id}`, admin)).data, { places: [], visits: [] });
     const hist = await G(`/api/tasks/${t2.data.id}/events?limit=100`, admin);
-    const items = hist.data.items || hist.data.events || hist.data;
-    assert.ok(JSON.stringify(items).includes('Arrived at UltraTech depot'), 'task history notes the arrival');
-    assert.equal((await G(`/api/location/tasks/${t2.data.id}`, omar)).status, 403, 'someone not on the task sees nothing');
+    assert.ok(!JSON.stringify(hist.data).includes('Arrived at'), 'no site-visit lines in the task history');
   });
 
   await t.test('alerts: arrival rule notifies its recipients; speeding needs two fast fixes; signal lost via monitor', async () => {

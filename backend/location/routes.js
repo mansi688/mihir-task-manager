@@ -556,70 +556,14 @@ function mountLocation(app, deps) {
     res.json({ ok: true, deleted: out });
   }));
 
-  // ---------- tasks ↔ places/visits ----------
-  async function taskOr404(req, res) {
-    const task = await db.getTask(req.params.taskId);
-    if (!task) { res.status(404).json({ error: 'Task not found.' }); return null; }
-    if (!(await canViewTask(req.user, task))) { res.status(403).json({ error: "You can't see this task." }); return null; }
-    return task;
-  }
-  router.get('/tasks/:taskId', enabled, userAuth, ah(async (req, res) => {
-    const task = await taskOr404(req, res); if (!task) return;
-    const places = (await q('SELECT tp.purpose, tp.added_by, tp.added_at, g.* FROM task_places tp JOIN geofences g ON g.id = tp.geofence_id WHERE tp.task_id = $1 ORDER BY g.name', [task.id])).rows;
-    const visits = (await q(`SELECT v.id, v.username, v.arrived_at, v.departed_at, v.duration_s, l.how, g.name AS place_name, g.kind AS place_kind
-      FROM visit_task_links l JOIN geofence_visits v ON v.id = l.visit_id JOIN geofences g ON g.id = v.geofence_id WHERE l.task_id = $1 ORDER BY v.arrived_at DESC LIMIT 200`, [task.id])).rows;
-    const users = await usersMap();
-    // Place + times only (no route) — proof of a site visit / delivery for people on the task.
-    await logAccess(req, visits.map(v => v.username), 'task_visits', `Visits on task ${task.id}`);
-    res.json({ places, visits: visits.map(v => ({ ...v, name: (users.get(v.username) || {}).name || v.username })) });
-  }));
-  router.post('/tasks/:taskId/places', enabled, userAuth, ah(async (req, res) => {
-    const task = await taskOr404(req, res); if (!task) return;
-    if (!(req.user.role === 'admin' || req.user.role === 'director' || task.created_by_username === req.user.username)) return res.status(403).json({ error: 'Only the task creator, Directors or Admin can tie a task to a place.' });
-    const g = (await q('SELECT * FROM geofences WHERE id = $1', [Number((req.body || {}).placeId) || 0])).rows[0];
-    if (!g) return res.status(404).json({ error: 'Place not found.' });
-    await q('INSERT INTO task_places (task_id, geofence_id, purpose, added_by) VALUES ($1,$2,$3,$4) ON CONFLICT (task_id, geofence_id) DO UPDATE SET purpose = EXCLUDED.purpose',
-      [task.id, g.id, str((req.body || {}).purpose, 200) || null, req.user.username]);
-    await db.addTaskEvent({ taskId: task.id, type: 'place_linked', details: `Tied to place "${g.name}"${(req.body || {}).purpose ? ` — ${str(req.body.purpose, 200)}` : ''}. Visits by people on this task will show here.`, actorUsername: req.user.username, actorName: req.user.name, source: 'web' });
-    res.json({ ok: true });
-  }));
-  router.delete('/tasks/:taskId/places/:placeId', enabled, userAuth, ah(async (req, res) => {
-    const task = await taskOr404(req, res); if (!task) return;
-    if (!(req.user.role === 'admin' || req.user.role === 'director' || task.created_by_username === req.user.username)) return res.status(403).json({ error: 'Not allowed.' });
-    await q('DELETE FROM task_places WHERE task_id = $1 AND geofence_id = $2', [task.id, Number(req.params.placeId) || 0]);
-    res.json({ ok: true });
-  }));
-  router.post('/visits/:id/tasks', enabled, userAuth, ah(async (req, res) => {
-    const v = (await q('SELECT v.*, g.name AS place_name FROM geofence_visits v JOIN geofences g ON g.id = v.geofence_id WHERE v.id = $1 AND v.confirmed_at IS NOT NULL', [Number(req.params.id) || 0])).rows[0];
-    if (!v) return res.status(404).json({ error: 'Visit not found.' });
-    if (v.username !== req.user.username && req.user.role !== 'admin') return res.status(403).json({ error: 'Only the person who made the visit can link it to a task.' });
-    const task = await db.getTask(str((req.body || {}).taskId));
-    if (!task || !(await canViewTask({ username: v.username, role: (await db.getUser(v.username) || {}).role }, task))) return res.status(404).json({ error: 'Task not found (or not one of yours).' });
-    const ins = await q("INSERT INTO visit_task_links (visit_id, task_id, how, linked_by) VALUES ($1,$2,'manual',$3) ON CONFLICT DO NOTHING RETURNING task_id", [v.id, task.id, req.user.username]);
-    if (ins.rows[0]) await db.addTaskEvent({ taskId: task.id, type: 'site_visit', details: `Checked in: visit to ${v.place_name} (${fmtTime(v.arrived_at)}${v.departed_at ? ` – ${fmtTime(v.departed_at)}` : ', still there'}).`, actorUsername: req.user.username, actorName: req.user.name, source: 'location' });
-    res.json({ ok: true });
-  }));
-
-  // Arrival at a place → link the visit to the person's open tasks there (tied to that place, or
-  // in that place's project), note it in each task's history, and tell the person.
-  service.hooks.onVisitConfirmed.push(async (session, g, visit) => {
-    const tasks = (await q(`SELECT DISTINCT t.id, t.title, (EXISTS (SELECT 1 FROM task_places tp WHERE tp.task_id = t.id AND tp.geofence_id = $2)) AS by_place
-      FROM tasks t JOIN task_assignees a ON a.task_id = t.id
-      WHERE a.username = $1 AND t.status = 'open' AND a.completed_at IS NULL
-        AND (EXISTS (SELECT 1 FROM task_places tp WHERE tp.task_id = t.id AND tp.geofence_id = $2) OR ($3::text IS NOT NULL AND t.project = $3))
-      LIMIT 50`, [session.username, g.id, g.project || null])).rows;
-    const user = await db.getUser(session.username);
-    for (const t of tasks) {
-      const ins = await q('INSERT INTO visit_task_links (visit_id, task_id, how) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING RETURNING task_id', [visit.id, t.id, t.by_place ? 'place' : 'project']);
-      if (ins.rows[0] && t.by_place) await db.addTaskEvent({ taskId: t.id, type: 'site_visit', details: `Arrived at ${g.name} (${fmtTime(visit.arrived_at)}).`, actorUsername: session.username, actorName: user ? user.name : session.username, actorTeam: user ? user.team : null, source: 'location' });
-    }
-    if (tasks.length) await db.createNotification({ username: session.username, type: 'location', message: `📍 You're at ${g.name} — ${tasks.length} open task${tasks.length > 1 ? 's' : ''} here: ${tasks.slice(0, 3).map(t => `"${t.title}"`).join(', ')}${tasks.length > 3 ? '…' : ''}`, task_id: tasks.length === 1 ? tasks[0].id : null });
-  });
-  service.hooks.onVisitEnded.push(async (session, g, visit) => {
-    const linked = (await q("SELECT task_id FROM visit_task_links WHERE visit_id = $1 AND how IN ('place','manual')", [visit.id])).rows;
-    const user = await db.getUser(session.username);
-    for (const l of linked) await db.addTaskEvent({ taskId: l.task_id, type: 'site_visit', details: `Left ${g.name} after ${Math.round((visit.duration_s || 0) / 60)} min.`, actorUsername: session.username, actorName: user ? user.name : session.username, actorTeam: user ? user.team : null, source: 'location' });
-  });
+  // ---------- tasks ↔ places/visits: REMOVED (v1.78) ----------
+  // Site visits are no longer attached to tasks (the management asked for check-in / check-out only; site time is in
+  // HR → Time log). The old addresses answer "gone" so an old open page does nothing.
+  const gone = (req, res) => res.status(410).json({ error: 'Site visits are no longer shown on tasks — see HR & Payroll → Time log.' });
+  router.get('/tasks/:taskId', enabled, userAuth, (req, res) => res.json({ places: [], visits: [] }));
+  router.post('/tasks/:taskId/places', enabled, userAuth, gone);
+  router.delete('/tasks/:taskId/places/:placeId', enabled, userAuth, gone);
+  router.post('/visits/:id/tasks', enabled, userAuth, gone);
   function fmtTime(d) { return new Date(new Date(d).getTime() + 5.5 * 3600000).toISOString().slice(11, 16) + ' IST'; }
 
   // ---------- indoor (Admin) ----------

@@ -5,6 +5,26 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.79] — 2026-11-25 — Nightly backup works without a password in GitHub
+### Fixed
+- The nightly GitHub backup failed every night ("Set DATABASE_URL first") because no database password was stored in
+  GitHub. Now none is needed: the workflow gets GitHub's own signed identity token, the app checks it is this
+  repository's backup workflow on main (any other repository, branch, workflow or forged token is refused), makes the
+  backup with its own connection and sends it **encrypted** (AES-256-GCM, `BACKUP_KEY`) — the repository is public,
+  so only encrypted files are stored as artifacts (30 days). One backup per 5 minutes at most; each one is in the
+  audit log with its size, row counts and SHA-256. `scripts/restore-database.js` decrypts with `BACKUP_KEY`.
+### Environment
+- `BACKUP_KEY` (set on Render). Optional `BACKUP_GITHUB_REPO` (default `mansi688/mihir-task-manager`).
+
+## [v1.78] — 2026-11-25 — Site visits removed from tasks
+### Removed
+- The **"📍 Places & site visits"** block on tasks ("Rohit Kamble at WBB · still there · project site"…) and everything
+  behind it: visits are no longer linked to tasks, tasks can no longer be tied to a place, no "You're at … — N open
+  tasks here" notifications, no "Arrived at / Left …" lines in task history. Site time is only check-in / check-out in
+  HR & Payroll → Time log. (It also showed every stay twice because the Amara and WBB circles overlap.)
+- Once, on deploy: the old visit ↔ task links, task ↔ place ties, their task-history lines and those notifications are
+  deleted. Visits themselves stay for attendance.
+
 ## [v1.77] — 2026-11-25 — Stay logged in, updates by themselves, first-steps guide
 ### Fixed
 - **"Session expired" every morning:** logins now last 30 days (Admin 7) and renew quietly while the app is used — only

@@ -15,7 +15,14 @@ const zlib = require('zlib');
   const file = process.argv[2];
   if (!file || !fs.existsSync(file)) { console.error('Usage: node scripts/restore-database.js <backup .json.gz>'); process.exit(1); }
   if (!process.env.DATABASE_URL) { console.error('Set DATABASE_URL to the EMPTY target database first.'); process.exit(1); }
-  const dump = JSON.parse(zlib.gunzipSync(fs.readFileSync(file)).toString('utf8'));
+  let raw = fs.readFileSync(file);
+  // Nightly GitHub backups are encrypted (…json.gz.enc): BACKUP_KEY = the value from Render → Environment.
+  const bk = require('../backend/backup');
+  if (bk.isEncrypted(raw)) {
+    if (!process.env.BACKUP_KEY) { console.error('This backup is encrypted — set BACKUP_KEY (Render → mihir-task-manager → Environment) first.'); process.exit(1); }
+    try { raw = bk.decrypt(raw, process.env.BACKUP_KEY); } catch (e) { console.error('Could not decrypt — wrong BACKUP_KEY?'); process.exit(1); }
+  }
+  const dump = JSON.parse(zlib.gunzipSync(raw).toString('utf8'));
   if (dump.format !== 'mihir-backup/1') { console.error('Not a MIHIR backup file.'); process.exit(1); }
   const db = require('../backend/db');
   const pool = db.pool;

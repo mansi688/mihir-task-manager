@@ -4475,6 +4475,8 @@ const { mountPayroll } = require('./payroll');
 const payroll = mountPayroll(app, { db, auth, ALL_ROLES, auditFromReq, str });
 const { mountPeople } = require('./people');
 const people = mountPeople(app, { db, auth, ALL_ROLES, auditFromReq, str });
+// Nightly encrypted off-site backup, called by the GitHub Action with GitHub's own signed token (backend/backup.js).
+require('./backup').mountBackup(app, { db, auditLog: (action, details) => db.pool.query('INSERT INTO audit_log(created_at, actor_username, actor_name, action, details) VALUES($1,$2,$2,$3,$4)', [new Date().toISOString(), 'github-backup', action, details]) });
 const { mountActivity } = require('./activity');
 mountActivity(app, { db, auth, ALL_ROLES });
 const { mountUpdates } = require('./updates');

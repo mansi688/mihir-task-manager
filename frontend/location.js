@@ -794,7 +794,10 @@
   }
 
   // ---------- task block (Places & visits on a task) ----------
+  // Site visits are no longer shown on tasks (check-in / check-out only — HR → Time log).
   function taskBlock(t) {
+    return '';
+    // eslint-disable-next-line no-unreachable
     if (!isOn() || !t || !t.id) return '';
     const c = S.tasks.get(t.id);
     if (!c) { S.tasks.set(t.id, { loading: true }); api(`/api/location/tasks/${encodeURIComponent(t.id)}`).then(d => { S.tasks.set(t.id, { data: d, at: Date.now() }); render(); }).catch(() => S.tasks.set(t.id, { data: null, at: Date.now() })); return ''; }

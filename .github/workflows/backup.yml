@@ -1,31 +1,47 @@
-# Nightly off-site database backup (free on GitHub Actions).
-# Setup once: GitHub repo → Settings → Secrets and variables → Actions → New secret
-#   DATABASE_URL = the Supabase connection string (Project Settings → Database → URI, "Session" pooler)
-# Each run uploads the backup as a workflow artifact kept for 30 days (Actions → this workflow → run →
-# Artifacts). Monthly: download one and test-restore it (docs/DISASTER_RECOVERY.md).
+# Nightly off-site database backup (free on GitHub Actions) — no database password in GitHub.
+# GitHub gives this run a short-lived signed identity token (OIDC); the app checks it really is THIS repository's
+# backup workflow on main, makes the backup with its own database connection and sends it back ENCRYPTED with
+# BACKUP_KEY (Render → Environment). The repository is public, so only encrypted files are stored here.
+# Each run keeps the file as a workflow artifact for 30 days (Actions → this workflow → run → Artifacts).
+# Restore: BACKUP_KEY=<from Render> DATABASE_URL=<empty db> node scripts/restore-database.js <file> (docs/DISASTER_RECOVERY.md).
 name: Nightly database backup
 on:
   schedule:
     - cron: '30 20 * * *'   # 02:00 IST every day
   workflow_dispatch: {}
+permissions:
+  contents: read
+  id-token: write
 jobs:
   backup:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      APP_URL: https://mihir-task-manager.onrender.com
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '22' }
-      - run: npm ci --omit=dev --ignore-scripts || npm install --omit=dev --ignore-scripts
-      - name: Back up
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - name: Wake the app (the free server sleeps)
         run: |
-          if [ -z "$DATABASE_URL" ]; then
-            echo "::error title=Backup not set up::The DATABASE_URL secret is missing. GitHub → this repo → Settings → Secrets and variables → Actions → New repository secret → Name: DATABASE_URL, Value: the same DATABASE_URL as in Render → mihir-task-manager → Environment. Then Actions → Nightly database backup → Run workflow."
+          for i in $(seq 1 18); do
+            if curl -fsS -m 20 "$APP_URL/api/health" > /dev/null 2>&1 || curl -fsS -m 20 "$APP_URL/" > /dev/null 2>&1; then echo "awake"; exit 0; fi
+            echo "waiting for the app to wake up ($i)…"; sleep 10
+          done
+          echo "::error::The app did not answer in 3 minutes."; exit 1
+      - name: Take the encrypted backup
+        run: |
+          set -e
+          TOKEN=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=mihir-task-manager-backup" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          mkdir -p backups
+          STAMP=$(date -u +%Y-%m-%dT%H-%M-%S)
+          FILE="backups/mihir-backup-$STAMP.json.gz.enc"
+          CODE=$(curl -sS -m 600 -X POST -H "Authorization: Bearer $TOKEN" -D headers.txt -o "$FILE" -w '%{http_code}' "$APP_URL/api/backup/nightly")
+          if [ "$CODE" != "200" ]; then
+            echo "::error title=Backup failed (HTTP $CODE)::$(head -c 400 "$FILE")"
             exit 1
           fi
-          node scripts/backup-database.js backups
+          SHA=$(grep -i '^x-backup-sha256:' headers.txt | awk '{print $2}' | tr -d '\r')
+          echo "$SHA  $(basename "$FILE")" > "$FILE.sha256"
+          sha256sum -c "$FILE.sha256"
+          echo "Backup: $(du -h "$FILE" | cut -f1) — $(grep -i '^x-backup-counts:' headers.txt | cut -d' ' -f2- | tr -d '\r')"
       - uses: actions/upload-artifact@v4
         with:
           name: mihir-db-backup-${{ github.run_id }}
