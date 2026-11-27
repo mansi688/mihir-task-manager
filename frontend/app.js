@@ -1469,8 +1469,27 @@ function appUpdateHref() {
   const u = new URL('/app/android', location.href);
   return window.AndroidBridge ? `intent://${u.host}${u.pathname}#Intent;scheme=${u.protocol.replace(':', '')};action=android.intent.action.VIEW;end` : u.href;
 }
+// App 1.9+ updates itself: the bar only shows what it is doing (and a button to do it now).
+const APP_UPD_TXT = {
+  checking: '⏳ Checking for the new app…', downloading: '⬇ Downloading the new app…', installing: '⚙️ Installing the new app…',
+  waiting_user: '👉 Tap <b>Update</b> on the Android screen (once). / Android स्क्रीनवर <b>Update</b> दाबा.',
+  allow_needed: '👉 Android asks once: turn on <b>Allow from this source</b>, come back and tap Update again. / एकदा <b>Allow from this source</b> चालू करा.',
+  installed: '✅ Updated — the app restarts.', up_to_date: '✅ The app is up to date.',
+};
+function appSelfUpdate() { return !!(window.AndroidBridge && typeof window.AndroidBridge.updateApp === 'function'); }
+function appUpdateStatusText() {
+  let st = ''; try { st = String(window.AndroidBridge.updateStatus() || ''); } catch (e) { return ''; }
+  if (st.startsWith('failed')) return '⚠ The update did not finish — tap Update app to try again.';
+  return APP_UPD_TXT[st] || '';
+}
+let appUpdPoll = null;
 function appUpdateBarHTML() {
   if (!window.AndroidBridge || !latestAndroid || appVersionCode() >= latestAndroid) return '';
+  if (appSelfUpdate()) {
+    if (!appUpdPoll) appUpdPoll = setInterval(() => { const el = document.getElementById('app-upd-status'); if (el) el.innerHTML = appUpdateStatusText(); }, 1500);
+    return `<div class="app-update-bar"><span>📲 <b>New MIHIR app</b> — it updates by itself. <span class="muted">नवीन अ‍ॅप आपोआप अपडेट होते.</span><br><span id="app-upd-status" class="small">${appUpdateStatusText()}</span></span>
+      <button type="button" class="btn app-update-go" data-app-selfupdate>Update app now</button></div>`;
+  }
   if (ui.appUpdateHelp) return `<div class="app-update-bar open"><div class="app-update-title">📲 Update the MIHIR app</div>
     <ol class="app-update-steps"><li><b>1.</b> Tap the green button below. <span class="muted">/ खालचे हिरवे बटण दाबा.</span></li>
       <li><b>2.</b> When it has downloaded, tap <b>Open</b>. <span class="muted">/ डाउनलोड झाल्यावर <b>Open</b> दाबा.</span></li>
@@ -1481,6 +1500,8 @@ function appUpdateBarHTML() {
     <button type="button" class="btn app-update-go" data-app-update="open">Update app</button></div>`;
 }
 document.addEventListener('click', (e) => {
+  const u = e.target.closest && e.target.closest('[data-app-selfupdate]');
+  if (u) { try { window.AndroidBridge.updateApp(); } catch (x) { /* old app */ } const el = document.getElementById('app-upd-status'); if (el) el.innerHTML = APP_UPD_TXT.checking; return; }
   const b = e.target.closest && e.target.closest('[data-app-update]'); if (!b) return;
   ui.appUpdateHelp = b.dataset.appUpdate === 'open'; render();
 });

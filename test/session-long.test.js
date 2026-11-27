@@ -43,7 +43,9 @@ test('long, quietly renewed, revocable sessions', async (t) => {
 
   // the app reports its version; the latest Android version is announced by /api/sync
   const s = await fetch(`${baseUrl}/api/sync`, { headers: { Authorization: `Bearer ${tok}`, 'X-Mihir-App': 'android-7' } }).then(x => x.json());
-  assert.ok(s.la >= 8);
+  assert.ok(s.la >= 10, 'the version inside the APK');
+  const v = await fetch(`${baseUrl}/app/android/version`).then(x => x.json());
+  assert.equal(v.versionCode, s.la); assert.match(v.sha256, /^[0-9a-f]{64}$/); assert.equal(v.path, '/app/android');
   await new Promise(res => setTimeout(res, 100));
   assert.equal((await raw.query("SELECT app_client FROM users WHERE username='site.w'")).rows[0].app_client, 'android-7');
 });

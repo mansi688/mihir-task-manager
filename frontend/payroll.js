@@ -287,7 +287,8 @@ function attTodayCardHTML(d, p, front) {
     ${!(t && t.onBreak) ? `<div class="att-punch">
       ${coach === 2 ? attCoachHTML(2, `<b>${L.available ? 'Step 2' : 'Step 1'}:</b> tap <b>Check in</b> and take your photo`, 'आता Check in दाबा आणि फोटो काढा') : ''}
       ${!open && R.selfieRequired && attCamDirect() && !(p && p.busy)
-        ? `<label class="btn btn-primary att-punch-btn ${coach === 2 ? 'att-coach-target' : ''}" style="cursor:pointer;">${t && t.out ? '📷 Check in again' : '📷 Check in'}<input type="file" accept="image/*" capture="user" data-att-cam-file style="display:none;"></label>`
+        ? `<label class="btn btn-primary att-punch-btn ${coach === 2 ? 'att-coach-target' : ''}" style="cursor:pointer;">${t && t.out ? '📷 Check in again' : '📷 Check in'}<input type="file" accept="image/*" capture="user" data-att-cam-file style="display:none;"></label>
+          ${attOldApp() ? `<button type="button" class="btn att-nocam-btn" data-att-nocam>📷✖ Camera not opening? Check in without photo<br><span class="small">कॅमेरा उघडत नाही? फोटोशिवाय Check in</span></button>` : ''}`
         : `<button type="button" class="btn btn-primary att-punch-btn ${p && p.busy ? 'disabled' : ''} ${coach === 2 ? 'att-coach-target' : ''}" data-att-act="punch" ${p && p.busy ? 'disabled' : ''}>${p && p.busy ? '⏳ ' + attEsc(p.msg || 'Working…') : open ? '🏁 Check out' : t && t.out ? '📷 Check in again' : '📷 Check in'}</button>`}
       ${typeof ppReqModalHTML === 'function' ? '<button type="button" class="btn btn-sm" data-pp-act="req-open">📝 Raise Request</button>' : ''}
       <input type="text" id="att-note" maxlength="200" class="att-note" placeholder="Where / why? (optional) — e.g. visiting Amara site, collecting material" value="${attEsc((attState().note) || '')}">
@@ -308,6 +309,8 @@ function attFrontCardHTML() {
 // ---------- live selfie camera (no gallery / file picker)
 // Phones where the in-page camera cannot work (an older MIHIR app, or camera permission refused once): "Check in"
 // opens the phone's own camera straight away — one tap, no error message, no settings to change.
+// MIHIR app before 1.7: its camera does not work inside the app at all (only a file picker opens)
+function attOldApp() { return !!(window.AndroidBridge && typeof window.AndroidBridge.cameraReady !== 'function'); }
 function attCamDirect() {
   if (window.AndroidBridge && typeof window.AndroidBridge.cameraReady !== 'function') return true;
   try { return safeStorage.getItem('att_cam_direct') === '1'; } catch (e) { return false; }
@@ -432,14 +435,15 @@ function attBindPunch() {
     if (typeof attSummary !== 'undefined') attSummary = { ...attSummary, [which === 'in' ? 'checkedIn' : 'checkedOut']: true };
     await attLoad(true);
   };
-  const doPunch = async (photo) => {
+  document.querySelectorAll('[data-att-nocam]').forEach(b => b.onclick = () => doPunch(null, { noCamera: true }));
+  const doPunch = async (photo, extra) => {
     const which = attWhich();
     s.punch = { busy: true, msg: 'Getting your location…' }; render();
     // Location is noted, never required: wait for a good fix only briefly.
     const geo = await attGeo((acc) => { if (s.punch && s.punch.busy) { s.punch.msg = `Getting your location… ±${acc} m`; const b = document.querySelector('[data-att-act="punch"]'); if (b) b.textContent = '⏳ ' + s.punch.msg; } });
     s.punch.msg = 'Saving…'; render();
     try {
-      const r = await api(`/api/attendance/check-${which}`, { method: 'POST', body: JSON.stringify({ ...(geo && !geo.error ? geo : {}), photo: which === 'in' ? photo : undefined, note: s.note || '' }) });
+      const r = await api(`/api/attendance/check-${which}`, { method: 'POST', body: JSON.stringify({ ...(geo && !geo.error ? geo : {}), photo: which === 'in' ? photo : undefined, note: s.note || '', ...(extra || {}) }) });
       await finish(which, geo, r);
     } catch (e) { s.punch = { err: e.message + (geo && geo.error ? ` (${geo.error})` : '') }; render(); }
   };

@@ -5,6 +5,35 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.81] — 2026-11-27 — The app updates itself (MIHIR app 1.9)
+### Added
+- **MIHIR app 1.9 keeps itself up to date.** When it opens, and every few hours in the background, it asks the site
+  for the newest version (`/app/android/version`, read from inside the APK file), downloads it, checks its SHA-256
+  and installs it with Android's installer:
+  - Android 12 and newer: after the first update the app installs later versions **silently** — nobody taps anything.
+  - Otherwise / the first time: Android shows its own "Update?" screen (or a notification "tap here, then Update") —
+    one tap. Android may ask once to "Allow from this source".
+  - Android only accepts an update signed with the same key. The work session (location) restarts by itself after
+    an update.
+- The green bar for app 1.9+ shows what the update is doing ("Downloading… / Tap Update…") with an "Update app now"
+  button. Apps older than 1.9 must install 1.9 once by hand (green bar → Download → Open → Update) — from then on
+  updates come by themselves.
+- The site reads the newest version from the APK file itself, so the number can never be wrong again.
+
+## [v1.80] — 2026-11-27 — Real app 1.8 (camera works) + check-in without photo on old apps
+### Fixed
+- **The downloadable Android app was still 1.6.** The 1.7 camera fix was only in the source code — the file people
+  downloaded from /app/android never had it, so "Update app" gave them the same old app and the camera never opened
+  (e.g. Siddharth Mane). Now **MIHIR app 1.8** (versionCode 9, same signing key — installs over the old one, people stay
+  logged in) is built and served: camera permission for the live check-in photo, Google location (from 1.6), and it
+  tells the website its exact version.
+- **People still on the old app can check in today:** under Check in they get an orange
+  "📷✖ Camera not opening? Check in without photo" button (English + मराठी). Only old apps get it (the server checks
+  the app version); the check-in is marked "📷 no photo (old app — camera does not open)" for HR. New apps and
+  browsers still need the live photo.
+### Added
+- `android/rebuild-apk-apktool.sh`: rebuilds the APK (code, manifest, resources) without the full Android SDK.
+
 ## [v1.79] — 2026-11-25 — Nightly backup works without a password in GitHub
 ### Fixed
 - The nightly GitHub backup failed every night ("Set DATABASE_URL first") because no database password was stored in

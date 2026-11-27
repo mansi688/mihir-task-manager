@@ -370,7 +370,7 @@ app.use((req, res, next) => {
 });
 // Remember when each person last used the app (User Activity report).
 require('./activity').trackActivity(app, db);
-const { LATEST_ANDROID } = require('./activity');
+const { APK } = require('./activity');
 // "no-cache" = the browser may keep a copy but must check with the server (a cheap ETag check)
 // before using it. Without it, browsers guess how long to reuse app.js/styles.css, so after a
 // deploy one machine can keep running an old cached app.js against the new server and break
@@ -399,6 +399,13 @@ app.get(['/', '/index.html'], (req, res, next) => {
   } catch (e) { next(); }
 });
 // The MIHIR Android app (opens this site; sends location in the background for automatic attendance).
+// What the newest app is — the app asks this to update itself (AppUpdater.java). Public: no personal data.
+app.get('/app/android/version', async (req, res) => {
+  await require('./activity').apkReady;
+  if (!APK.versionCode) return res.status(404).json({ error: 'The Android app is not available right now.' });
+  res.setHeader('Cache-Control', 'no-cache');
+  res.json({ versionCode: APK.versionCode, versionName: APK.versionName, sha256: APK.sha256, size: APK.size, path: '/app/android' });
+});
 app.get(['/app/android', '/download/android', '/MIHIR-Tasks.apk'], (req, res) => {
   const f = path.join(__dirname, '..', 'android', 'MIHIR-Tasks.apk');
   if (!fs.existsSync(f)) return res.status(404).send('The Android app is not available right now.');
@@ -783,7 +790,7 @@ app.get('/api/device/notifications', async (req, res) => {
 // every device — website or phone app — picks up changes within seconds of each other.
 app.get('/api/sync', auth(ALL_ROLES), (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ v: `${BOOT_ID}.${db.getDataVersion()}`, c: `${BOOT_ID}.${db.getChatVersion()}`, a: APP_VERSION, la: LATEST_ANDROID });
+  res.json({ v: `${BOOT_ID}.${db.getDataVersion()}`, c: `${BOOT_ID}.${db.getChatVersion()}`, a: APP_VERSION, la: APK.versionCode });
 });
 
 /* ============ CHAT ROOM ============

@@ -2016,3 +2016,4 @@ input.qs-combo-input[type=text]{width:100%;margin:0;padding-right:30px !importan
 .att-coach-target { box-shadow: 0 0 0 4px rgba(255,138,0,.55); animation: attCoachPulse 1.4s ease-in-out infinite; }
 @keyframes attCoachPulse { 0%, 100% { box-shadow: 0 0 0 3px rgba(255,138,0,.55); } 50% { box-shadow: 0 0 0 9px rgba(255,138,0,.15); } }
 @media (prefers-reduced-motion: reduce) { .att-coach-arrow, .att-coach-target { animation: none; } }
+.att-nocam-btn { display: block; margin-top: 8px; background: #fff3e0; border: 1px solid #f0a040; color: #7a4a00; text-align: left; line-height: 1.3; }

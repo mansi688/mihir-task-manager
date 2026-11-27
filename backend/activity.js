@@ -15,10 +15,40 @@ const NOT_WORK = ['login', 'logout', 'account_locked', 'password_changed', 'pass
   'recovery_pin_set', 'guide_completed', 'guide_skipped', 'guide_reset'];
 
 // Last time each person used the app — written at most every 5 minutes per person. Mounted before the routes.
-// The newest MIHIR Android app (versionCode in android/AndroidManifest.xml) — anyone below it has an old app.
-const LATEST_ANDROID = (() => {
-  try { return Number(/android:versionCode="(\d+)"/.exec(require('fs').readFileSync(require('path').join(__dirname, '..', 'android', 'AndroidManifest.xml'), 'utf8'))[1]); } catch (e) { return 0; }
-})();
+// The newest MIHIR Android app: the versionCode INSIDE android/MIHIR-Tasks.apk (read from the APK itself, so the
+// number can never differ from the file people download), its SHA-256 for the app's self-update check.
+const fs = require('fs'), path = require('path'), crypto = require('crypto');
+const APK_FILE = path.join(__dirname, '..', 'android', 'MIHIR-Tasks.apk');
+const APK = { versionCode: 0, versionName: '', sha256: '', size: 0 };
+// minimal Android binary-XML reader: the manifest's versionCode / versionName attributes
+function readApkVersion(manifest) {
+  const u16 = (o) => manifest.readUInt16LE(o), u32 = (o) => manifest.readUInt32LE(o);
+  const count = u32(16), flags = u32(24), strStart = u32(28), utf8 = !!(flags & 0x100);
+  const str = (i) => {
+    let o = 8 + strStart + u32(36 + 4 * i);
+    if (utf8) { let n = manifest[o++]; if (n & 0x80) o++; let m = manifest[o++]; if (m & 0x80) m = ((m & 0x7f) << 8) | manifest[o++]; return manifest.toString('utf8', o, o + m); }
+    const n = u16(o); return manifest.toString('utf16le', o + 2, o + 2 + 2 * n);
+  };
+  let vc = -1, vn = -1; for (let i = 0; i < count; i++) { const v = str(i); if (v === 'versionCode') vc = i; if (v === 'versionName') vn = i; }
+  const out = {};
+  for (let o = 0; o + 20 <= manifest.length; o += 4) {
+    const name = u32(o + 4), size = u16(o + 12), type = manifest[o + 15];
+    if (size !== 8) continue;
+    if (name === vc && type === 0x10 && out.versionCode == null) out.versionCode = u32(o + 16);
+    if (name === vn && type === 0x03 && out.versionName == null) { const raw = u32(o + 8); if (raw < count) out.versionName = str(raw); }
+  }
+  return out;
+}
+async function loadApkInfo() {
+  try {
+    const buf = fs.readFileSync(APK_FILE);
+    const zip = await require('jszip').loadAsync(buf);
+    const v = readApkVersion(Buffer.from(await zip.file('AndroidManifest.xml').async('uint8array')));
+    Object.assign(APK, { versionCode: v.versionCode || 0, versionName: v.versionName || '', sha256: crypto.createHash('sha256').update(buf).digest('hex'), size: buf.length });
+  } catch (e) { /* no APK in this build */ }
+  return APK;
+}
+const apkReady = loadApkInfo();
 function trackActivity(app, db) {
   const touched = new Map();
   app.use('/api', (req, res, next) => {
@@ -86,12 +116,12 @@ function mountActivity(app, { db, auth, ALL_ROLES }) {
         daysSinceLogin: daysSince(lastLogin), daysSinceActive: daysSince(lastActive), daysSinceWork: daysSince(lastWork),
         tasksCreated: (C.get(u.username) || {}).n || 0, updates: (R.get(u.username) || {}).n || 0, completed: (D.get(u.username) || {}).n || 0,
         openTasks: mine.length, idleTasks: idle.slice(0, 20), idleCount: idle.length,
-        app: u.app_client || null, oldApp: /^android-\d+$/.test(u.app_client || '') && Number(u.app_client.split('-')[1]) < LATEST_ANDROID,
+        app: u.app_client || null, oldApp: /^android-\d+$/.test(u.app_client || '') && Number(u.app_client.split('-')[1]) < APK.versionCode,
       };
     });
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ days, generatedAt: new Date(now).toISOString(), people, latestAndroid: LATEST_ANDROID });
+    res.json({ days, generatedAt: new Date(now).toISOString(), people, latestAndroid: APK.versionCode });
   });
 }
 
-module.exports = { LATEST_ANDROID, mountActivity, trackActivity };
+module.exports = { APK, apkReady, mountActivity, trackActivity };

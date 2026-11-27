@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.mihir.taskmanager"
-    android:versionCode="8"
-    android:versionName="1.7">
+    android:versionCode="10"
+    android:versionName="1.9">
 
     <uses-sdk android:minSdkVersion="23" android:targetSdkVersion="34" />
 
@@ -18,6 +18,10 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- The app updates itself (v1.9+): install its own newer version; on Android 12+ without asking once it is the
+         installer of record of itself. Android only accepts an update signed with the same key. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <!-- Lets the app ask (once, with Android's own dialog) to be exempt from battery optimisation,
          so the background notification check isn't killed on Xiaomi/Vivo/Oppo/Realme phones. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -60,6 +64,13 @@
             android:name=".LocationService"
             android:exported="false"
             android:foregroundServiceType="location" />
+        <receiver
+            android:name=".AppUpdater"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".NotifyJobService"
             android:permission="android.permission.BIND_JOB_SERVICE"

@@ -54,6 +54,8 @@ public class NotifyJobService extends JobService {
         new Thread(new Runnable() {
             @Override public void run() {
                 try { checkNow(NotifyJobService.this); } catch (Throwable t) { /* try again next time */ }
+                // keep the app itself up to date (at most every 3 hours; silent on Android 12+ once it updated itself)
+                try { AppUpdater.checkAndUpdate(NotifyJobService.this, false); } catch (Throwable t) { /* next time */ }
                 jobFinished(params, false);
             }
         }).start();
@@ -100,7 +102,8 @@ public class NotifyJobService extends JobService {
         }
     }
 
-    static void show(Context c, int id, String text) throws Exception {
+    static void show(Context c, int id, String text) throws Exception { showWithIntent(c, id, text, null); }
+    static void showWithIntent(Context c, int id, String text, PendingIntent tap) throws Exception {
         NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null) return;
         Notification.Builder b;
@@ -117,7 +120,7 @@ public class NotifyJobService extends JobService {
             b.setPriority(Notification.PRIORITY_HIGH);
         }
         Intent open = new Intent(c, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent pi = PendingIntent.getActivity(c, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent pi = tap != null ? tap : PendingIntent.getActivity(c, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         b.setSmallIcon(R.drawable.ic_stat_notify)
          .setColor(0xFF2D5FA8)
          .setContentTitle("MIHIR Tasks")

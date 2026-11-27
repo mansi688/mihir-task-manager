@@ -339,7 +339,7 @@ function mountPayroll(app, deps) {
     const S = await settings();
     const username = req.user.username;
     const geo = cleanGeo(b);
-    const note = str(b.note).trim().slice(0, 200) || null;
+    let note = str(b.note).trim().slice(0, 200) || null;
     const placeList = await places();
     // Check-in / out is allowed at ANY time and from ANY place (a visit to another site, the head office, a shop for
     // material): what is recorded is the time, where the phone was and the note. Being away from a site is flagged,
@@ -351,7 +351,12 @@ function mountPayroll(app, deps) {
       const photo = cleanPhoto(b.photo);
       if (photo === 'bad') return res.status(400).json({ error: 'The photo could not be read — take it again.' });
       if (photo === 'big') return res.status(400).json({ error: 'The photo is too large — take it again.' });
-      if (S.selfieRequired && !photo) return res.status(400).json({ error: 'Take a live photo to check in.', needPhoto: true });
+      // An old MIHIR app (before 1.7) cannot open the camera at all: the person may check in without the photo —
+      // marked "📷 no photo (old app)" for HR — until the app is updated. Everyone else needs the live photo.
+      const oldApp = /^android-[0-7]$/.test(String(req.headers['x-mihir-app'] || ''));
+      const noCam = !photo && b.noCamera === true && oldApp;
+      if (S.selfieRequired && !photo && !noCam) return res.status(400).json({ error: 'Take a live photo to check in.', needPhoto: true });
+      if (noCam) note = `📷 no photo (old app — camera does not open)${note ? ' · ' + note : ''}`.slice(0, 240);
       const open = await openRecord(username, S);
       if (open && open.stale) await closeStale(open, S);
       else if (open) return res.status(400).json({ error: `You are already checked in since ${istHM(open.check_in_at)}${open.day !== istDay() ? ' (yesterday)' : ''}. Check out first.` });

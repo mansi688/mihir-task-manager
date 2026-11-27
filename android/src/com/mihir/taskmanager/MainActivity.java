@@ -253,6 +253,15 @@ public class MainActivity extends Activity {
         @JavascriptInterface public boolean isApp() { return true; }
         // v1.7+: the app can open the camera for the live check-in photo (the website uses this to hide the "update the app" hint).
         @JavascriptInterface public boolean cameraReady() { return true; }
+        // v1.9+: the app updates itself. updateApp() = check / download / install now (the person tapped "Update");
+        // updateStatus() = idle | checking | downloading | installing | waiting_user | allow_needed | up_to_date | failed:…
+        @JavascriptInterface public void updateApp() { AppUpdater.checkAndUpdate(MainActivity.this, true); }
+        @JavascriptInterface public String updateStatus() { return AppUpdater.status; }
+        @JavascriptInterface public boolean canSelfUpdate() { return true; }
+        // v1.8+: the installed app's versionCode, so the website knows exactly who still has an older app.
+        @JavascriptInterface public int appVersionCode() {
+            try { return getPackageManager().getPackageInfo(getPackageName(), 0).versionCode; } catch (Exception e) { return 0; }
+        }
         // Called by the website after login: store the notifications-only device token and start
         // the background check. Asks for notification permission once on Android 13+.
         @JavascriptInterface public void setDeviceSession(String deviceToken, String username, String latestId) {
@@ -500,7 +509,10 @@ public class MainActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle out) { super.onSaveInstanceState(out); if (webView != null) webView.saveState(out); }
     @Override protected void onPause() { super.onPause(); inForeground = false; CookieManager.getInstance().flush(); if (webView != null) webView.onPause(); }
-    @Override protected void onResume() { super.onResume(); inForeground = true; if (webView != null) webView.onResume(); }
+    @Override protected void onResume() {
+        super.onResume(); inForeground = true; if (webView != null) webView.onResume();
+        AppUpdater.checkAndUpdate(this, false); // newer app on the site? update (at most every 3 hours)
+    }
 
     private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
 }
