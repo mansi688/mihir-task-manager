@@ -286,9 +286,14 @@ function attTodayCardHTML(d, p, front) {
     ${oldApp}
     ${!(t && t.onBreak) ? `<div class="att-punch">
       ${coach === 2 ? attCoachHTML(2, `<b>${L.available ? 'Step 2' : 'Step 1'}:</b> tap <b>Check in</b> and take your photo`, 'आता Check in दाबा आणि फोटो काढा') : ''}
-      ${!open && R.selfieRequired && attCamDirect() && !(p && p.busy)
+      ${!open && R.selfieRequired && attOldApp() && !(p && p.busy)
+        // Old app (before 1.7): its "camera" only opens the gallery — a gallery photo is not a live photo. So Check in
+        // goes through without one (marked for HR) and the green bar asks to update the app.
+        ? `<button type="button" class="btn btn-primary att-punch-btn ${coach === 2 ? 'att-coach-target' : ''}" data-att-nocam>${t && t.out ? '📷 Check in again' : '📷 Check in'}</button>
+          <div class="small att-oldapp-note">Your MIHIR app is old — its camera cannot open, so you are checked in without a photo. Tap the green <b>Update app</b> bar above once. / तुमचे अ‍ॅप जुने आहे — वरचे हिरवे <b>Update app</b> दाबा.</div>`
+        : !open && R.selfieRequired && attCamDirect() && !(p && p.busy)
         ? `<label class="btn btn-primary att-punch-btn ${coach === 2 ? 'att-coach-target' : ''}" style="cursor:pointer;">${t && t.out ? '📷 Check in again' : '📷 Check in'}<input type="file" accept="image/*" capture="user" data-att-cam-file style="display:none;"></label>
-          ${attOldApp() ? `<button type="button" class="btn att-nocam-btn" data-att-nocam>📷✖ Camera not opening? Check in without photo<br><span class="small">कॅमेरा उघडत नाही? फोटोशिवाय Check in</span></button>` : ''}`
+`
         : `<button type="button" class="btn btn-primary att-punch-btn ${p && p.busy ? 'disabled' : ''} ${coach === 2 ? 'att-coach-target' : ''}" data-att-act="punch" ${p && p.busy ? 'disabled' : ''}>${p && p.busy ? '⏳ ' + attEsc(p.msg || 'Working…') : open ? '🏁 Check out' : t && t.out ? '📷 Check in again' : '📷 Check in'}</button>`}
       ${typeof ppReqModalHTML === 'function' ? '<button type="button" class="btn btn-sm" data-pp-act="req-open">📝 Raise Request</button>' : ''}
       <input type="text" id="att-note" maxlength="200" class="att-note" placeholder="Where / why? (optional) — e.g. visiting Amara site, collecting material" value="${attEsc((attState().note) || '')}">
@@ -312,7 +317,6 @@ function attFrontCardHTML() {
 // MIHIR app before 1.7: its camera does not work inside the app at all (only a file picker opens)
 function attOldApp() { return !!(window.AndroidBridge && typeof window.AndroidBridge.cameraReady !== 'function'); }
 function attCamDirect() {
-  if (window.AndroidBridge && typeof window.AndroidBridge.cameraReady !== 'function') return true;
   try { return safeStorage.getItem('att_cam_direct') === '1'; } catch (e) { return false; }
 }
 let attCamStream = null;

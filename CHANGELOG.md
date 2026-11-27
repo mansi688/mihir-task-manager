@@ -5,6 +5,13 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.82] — 2026-11-27 — Old app: Check in never opens the gallery
+### Fixed
+- On the old MIHIR app (before 1.7) "Check in" opened the phone's **gallery** instead of the camera (that app cannot
+  open the camera), so people could pick any old photo. Now on the old app Check in goes straight through without a
+  photo (marked "📷 no photo (old app)" for HR) with a note in English + मराठी to tap the green **Update app** bar once.
+  App 1.8+ and browsers still take the live photo with the camera.
+
 ## [v1.81] — 2026-11-27 — The app updates itself (MIHIR app 1.9)
 ### Added
 - **MIHIR app 1.9 keeps itself up to date.** When it opens, and every few hours in the background, it asks the site
