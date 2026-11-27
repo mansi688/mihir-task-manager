@@ -5,6 +5,19 @@ All production changes, newest first. Heading format: `## [vX.Y] — YYYY-MM-DD 
 rollback notes. Deploy = push to GitHub `main` → Render auto-deploys. Rollback = Render → Events →
 previous deploy → Rollback (all migrations are additive).
 
+## [v1.83] — 2026-11-27 — "Keep informed" is not a follow-up; faster loading
+### Changed
+- **Keep informed ≠ follow-up.** People kept informed on a task (often senior management) see the task, its updates
+  and can reply — but **📣 Follow up no longer reminds them**; it goes only to the creator and the people tagged to do
+  the work. Their notification now says "… is keeping you informed on … — nothing to do", and the task shows
+  "Kept informed: 👀 name" (was "Follow-up:"). The "Keep someone informed" box explains this.
+### Faster
+- The app's files (app.js, styles…) are now kept on the phone for the whole version (`immutable`, new address on every
+  deploy) — opening the app no longer re-checks ~20 files with the server each time.
+- People overview: its 5 database lookups run together.
+- **Keep the app awake** (`.github/workflows/keep-awake.yml`): every 10 minutes from 06:30 to 22:30 IST GitHub opens
+  the site, so the free Render server never falls asleep in working hours (no more 30–60 s first load).
+
 ## [v1.82] — 2026-11-27 — Old app: Check in never opens the gallery
 ### Fixed
 - On the old MIHIR app (before 1.7) "Check in" opened the phone's **gallery** instead of the camera (that app cannot

@@ -24,6 +24,10 @@ test('security hardening', async (t) => {
     assert.doesNotMatch(html, /<script>(?!<\/script>)/, 'no inline scripts in the page');
     assert.doesNotMatch(html, /\son(click|load|error)=/i, 'no inline event handlers');
     assert.match(html, /<script src="\/boot.js\?v=[0-9a-f]+"><\/script>/, "file addresses carry the version");
+    // this version's files are kept by phones (immutable); any other address is checked every time
+    const v = /app\.js\?v=([0-9a-f]+)/.exec(html)[1];
+    assert.match((await fetch(`${baseUrl}/app.js?v=${v}`)).headers.get('cache-control'), /immutable/);
+    assert.equal((await fetch(`${baseUrl}/app.js?v=old`)).headers.get('cache-control'), 'no-cache');
     const apiRes = await fetch(`${baseUrl}/api/auth/me`, { headers: { Authorization: `Bearer ${admin}` } });
     assert.equal(apiRes.headers.get('cache-control'), 'no-store');
     assert.equal(apiRes.headers.get('x-powered-by'), null);

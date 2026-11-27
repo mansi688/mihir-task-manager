@@ -88,7 +88,14 @@ function mountPeople(app, deps) {
   // ---------- celebrations, who is out, holidays (front page + People page)
   async function overview(m) {
     const today = istDay();
-    const all = await people();
+    // all five lookups at once (one round trip of waiting instead of five)
+    const [all, leaves, holiday, holidays, wk] = await Promise.all([
+      people(),
+      rows(`SELECT username, from_day, to_day, half_day, kind FROM leave_requests WHERE status='approved' AND to_day >= $1 AND from_day <= $2 ORDER BY from_day`, [today, addDays(today, 14)]),
+      one('SELECT name FROM payroll_holidays WHERE day=$1', [today]),
+      rows('SELECT day, name FROM payroll_holidays WHERE day > $1 AND day <= $2 ORDER BY day LIMIT 8', [today, addDays(today, 90)]),
+      one('SELECT data FROM payroll_settings WHERE id=1').catch(() => null),
+    ]);
     const celebrations = [];
     for (const p of all) {
       if (p.dob) { const n = nextOccurrence(p.dob.slice(5), today); if (n && n.inDays <= 30) celebrations.push({ type: 'birthday', username: p.username, name: p.name, team: p.team || '', day: n.day, inDays: n.inDays }); }
@@ -100,13 +107,9 @@ function mountPeople(app, deps) {
     }
     celebrations.sort((a, b) => a.inDays - b.inDays || a.name.localeCompare(b.name));
     const names = Object.fromEntries(all.map(p => [p.username, p]));
-    const leaves = await rows(`SELECT username, from_day, to_day, half_day, kind FROM leave_requests WHERE status='approved' AND to_day >= $1 AND from_day <= $2 ORDER BY from_day`, [today, addDays(today, 14)]);
-    const holiday = await one('SELECT name FROM payroll_holidays WHERE day=$1', [today]);
-    const holidays = await rows('SELECT day, name FROM payroll_holidays WHERE day > $1 AND day <= $2 ORDER BY day LIMIT 8', [today, addDays(today, 90)]);
     const shape = (l) => ({ username: l.username, name: (names[l.username] || {}).name || l.username, team: (names[l.username] || {}).team || '', from: l.from_day, to: l.to_day, half: !!l.half_day, kind: l.kind });
     const outToday = leaves.filter(l => l.from_day <= today && l.to_day >= today).map(shape);
     const upcoming = leaves.filter(l => l.from_day > today).map(shape);
-    const wk = await one('SELECT data FROM payroll_settings WHERE id=1').catch(() => null);
     const weeklyOff = (wk && wk.data && wk.data.weeklyOff) || [0];
     const isWeeklyOff = weeklyOff.includes(new Date(`${today}T12:00:00Z`).getUTCDay());
     return { today, celebrations, outToday, upcomingLeave: upcoming, holidayToday: holiday ? holiday.name : null, weeklyOffToday: isWeeklyOff, holidays, totalPeople: all.length };

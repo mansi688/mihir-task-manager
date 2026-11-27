@@ -415,7 +415,11 @@ app.get(['/app/android', '/download/android', '/MIHIR-Tasks.apk'], (req, res) =>
 });
 app.use(express.static(path.join(__dirname, '..', 'frontend'), {
   setHeaders(res, filePath) {
-    if (/\.(html|js|css|json)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+    // The page asks for this version's files as /app.js?v=<version>: such a file can never change, so the phone keeps
+    // it for a year and opens the app without asking the server for every file again (a new version = new address).
+    const q = res.req && res.req.query;
+    if (/\.(js|css)$/i.test(filePath) && q && q.v && q.v === APP_VERSION) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    else if (/\.(html|js|css|json)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
     // Guide videos never change in place (a new video gets a new name), so phones download them once.
     else if (/\.mp4$/i.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=604800');
   },
@@ -2278,7 +2282,7 @@ async function insertTaskRecords(tx, actor, spec, { notify = true } = {}) {
   for (const uname of spec.followups || []) {
     await db.addFollowup(id, uname, actor.username, tx);
     if (notify && uname !== actor.username) {
-      await db.createNotification({ username: uname, type: 'followup_tagged', message: `${actor.name} asked you to follow up on "${title}".`, task_id: id }, tx);
+      await db.createNotification({ username: uname, type: 'followup_tagged', message: `${actor.name} is keeping you informed on "${title}" — just for your information, nothing to do.`, task_id: id }, tx);
     }
   }
   // Project heads — kept informed only when the creator ticked them for this task.
@@ -2640,14 +2644,14 @@ app.post('/api/tasks/import', auth(ALL_ROLES), async (req, res) => {
           const message = t.kind === 'released' ? `${req.user.name} tagged you on "${t.title}".`
             : t.kind === 'onHold' ? `${req.user.name} tagged you on "${t.title}" — you're on hold for now until the level before you finishes their part.`
             : t.kind === 'deadline' ? `${req.user.name} changed the deadline: "${t.title}.`
-            : `${req.user.name} asked you to follow up on "${t.title}".`;
+            : `${req.user.name} is keeping you informed on "${t.title}" — nothing to do.`;
           await db.createNotification({ username, type: t.kind === 'followup' ? 'followup_tagged' : t.kind === 'deadline' ? 'individual_deadline_set' : 'task_assigned', message, task_id: t.taskId });
         }
       } else {
         const parts = [];
         if (e.released.length) parts.push(`tagged you on ${e.released.length} new task(s)`);
         if (e.onHold.length) parts.push(`${e.onHold.length} more where you're on hold until an earlier level finishes`);
-        if (e.followup.length) parts.push(`${e.followup.length} to follow up on`);
+        if (e.followup.length) parts.push(`kept you informed on ${e.followup.length}`);
         if (e.deadline.length) parts.push(`changed the deadline on ${e.deadline.length} of your task(s)`);
         await db.createNotification({ username, type: 'task_assigned', message: `${req.user.name} uploaded a task schedule and ${parts.join(', ')}. Check your task list.`, task_id: null });
       }
@@ -3086,7 +3090,9 @@ app.post('/api/tasks/:id/nudge', auth(ALL_ROLES), async (req, res) => {
   }
   const assignees = await db.listAssignees(task.id);
   const openPart = new Set(assignees.filter(a => a.is_released && !(a.decision === 'approve' && a.completed_at)).map(a => a.username));
-  const involved = new Set([task.created_by_username, ...assignees.map(a => a.username), ...(await db.listFollowups(task.id)).map(f => f.username)].filter(Boolean));
+  // People who are only "kept informed" (often senior management) are never chased: a follow-up goes to the
+  // creator and the people tagged to do the work only.
+  const involved = new Set([task.created_by_username, ...assignees.map(a => a.username)].filter(Boolean));
   involved.delete(req.user.username);
   const users = new Map((await db.listUsers()).map(u => [u.username, u]));
   const recipients = [...involved].filter(u => users.has(u));
@@ -3131,16 +3137,16 @@ app.post('/api/tasks/:id/followup', auth(ALL_ROLES), async (req, res) => {
   const isFollowup = (await db.listFollowups(task.id)).some(f => f.username === req.user.username);
   const isCreator = task.created_by_username === req.user.username;
   if (!(isAssignee || isFollowup || isCreator || req.user.role === 'admin')) {
-    return res.status(403).json({ error: "You're not involved in this task yet, so you can't tag others for follow-up on it." });
+    return res.status(403).json({ error: "You're not involved in this task yet, so you can't keep others informed on it." });
   }
   const rawList = Array.isArray((req.body || {}).usernames) ? req.body.usernames : [];
   const usernames = Array.from(new Set(rawList.map(u => str(u).trim()).filter(Boolean)));
-  if (usernames.length === 0) return res.status(400).json({ error: 'Select at least one person to tag for follow-up.' });
+  if (usernames.length === 0) return res.status(400).json({ error: 'Select at least one person to keep informed.' });
   for (const u of usernames) { if (!await db.getUser(u)) return res.status(400).json({ error: `Unknown user: ${u}` }); }
   for (const u of usernames) {
     await db.addFollowup(task.id, u, req.user.username);
     if (u !== req.user.username) {
-      await db.createNotification({ username: u, type: 'followup_tagged', message: `${req.user.name} asked you to follow up on "${task.title}".`, task_id: task.id });
+      await db.createNotification({ username: u, type: 'followup_tagged', message: `${req.user.name} is keeping you informed on "${task.title}" — just for your information, nothing to do.`, task_id: task.id });
     }
   }
   await taskEvent(req, task.id, 'FOLLOW_UP', `Follow-up: ${(await Promise.all((usernames || []).map(displayName))).join(', ')}`, { meta: { usernames } });

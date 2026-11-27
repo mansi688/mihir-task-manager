@@ -882,7 +882,7 @@ const NOTIF_TYPE_CAT = {
 };
 const notifCat = n => NOTIF_TYPE_CAT[n.type] || 'other';
 const NOTIF_TYPE_ICON = { task_reminder_digest: 'clipboard', attendance: 'clock', security: 'alertTriangle', task_assigned: 'checkCircle', task_reply: 'chat', task_closed: 'checkCircle', task_reopened: 'alertTriangle', task_deleted: 'alertTriangle', task_rejected: 'alertTriangle', individual_deadline_set: 'clock', level_changed: 'users', mentioned_in_comment: 'chat', followup_tagged: 'eye', meeting_summary: 'clipboard', task_reminder: 'clock', task_reminder_recurring: 'clock', task_reminder_3day: 'clock', deadline_window: 'clock', deadline_soon: 'clock', deadline_due_today: 'clock', follow_up: 'eye', deadline_passed: 'alertTriangle', task_overdue_days: 'alertTriangle', task_warning: 'alertTriangle', task_warning_urgent: 'alertTriangle', task_warning_creator: 'users', task_flagged: 'alertTriangle', admin_late_flag: 'users', weekly_warning_digest: 'clipboard', task_submitted: 'clipboard', approval_requested: 'clipboard', approval_rejected: 'alertTriangle', approval_approved: 'checkCircle', closure_requested: 'clipboard', extension_requested: 'clock', leave_requested: 'clock', leave_decided: 'checkCircle', payroll_submitted: 'wallet', payroll_approved: 'wallet', payslip_ready: 'wallet', extension_decided: 'clock', closure_approved: 'checkCircle', closure_declined: 'alertTriangle', chat_mention: 'chat', announcement: 'megaphone', location: 'mapPin', location_alert: 'mapPin', site_visit: 'mapPin', place_linked: 'mapPin', delivery_scheduled: 'truck', delivery_update: 'truck', delivery_delivered: 'truck', delivery_unloaded: 'checkCircle', delivery_reminder: 'clock', delivery_followup: 'truck', delivery_document: 'clipboard', delivery_payment: 'clipboard', budget_verify: 'wallet', budget_allotted: 'wallet', budget_verified: 'wallet', budget_topup: 'wallet', est_submitted: 'clipboard', est_decided: 'checkCircle', est_remark: 'chat', est_jmr_open: 'checkCircle', est_recon_due: 'clipboard', est_completed: 'checkCircle', ap_bill_added: 'wallet', ap_reminder: 'clock', ap_update: 'wallet', ap_reply: 'chat', ap_followup: 'wallet', compliance_due: 'clock', compliance_done: 'checkCircle' };
-const NOTIF_TYPE_LABEL = { task_reminder_digest: 'Tasks waiting on you', attendance: 'Attendance', security: 'Security', task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Follow-up requested', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', extension_requested: 'More time requested', leave_requested: 'Leave requested', leave_decided: 'Leave decision', payroll_submitted: 'Payroll to approve', payroll_approved: 'Payroll approved', payslip_ready: 'Payslip ready', extension_decided: 'Deadline extension decision', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked', delivery_scheduled: 'Delivery coming', delivery_update: 'Delivery update', delivery_delivered: 'Delivered at site', delivery_unloaded: 'Unloaded at site', delivery_reminder: 'Delivery reminder', delivery_followup: 'Delivery follow-up', delivery_document: 'Delivery document', delivery_payment: 'Delivery payment', budget_verify: 'Payment to verify', budget_allotted: 'Money allotted', budget_verified: 'Payment checked', budget_topup: 'Top-up requested', est_submitted: 'Estimation to approve', est_decided: 'Estimation decision', est_remark: 'Estimation remark', est_jmr_open: 'Estimate approved — JMR open', est_recon_due: 'Reconciliation report due', est_completed: 'Estimate completed', ap_bill_added: 'New vendor bill', ap_reminder: 'Payment due', ap_update: 'Bill update from Accounts', ap_reply: 'Reply from Purchase', ap_followup: 'Payment follow-up', compliance_due: 'Compliance due date', compliance_done: 'Compliance done' };
+const NOTIF_TYPE_LABEL = { task_reminder_digest: 'Tasks waiting on you', attendance: 'Attendance', security: 'Security', task_assigned: 'New task for you', task_reply: 'Task update', task_closed: 'Task closed', task_reopened: 'Task re-opened', task_deleted: 'Task deleted', task_rejected: 'Work sent back', individual_deadline_set: 'Your deadline was set', level_changed: 'Level changed', mentioned_in_comment: 'Mentioned you', followup_tagged: 'Kept informed', meeting_summary: 'Meeting summary', task_reminder: 'Still open', task_reminder_recurring: 'Reminder', task_reminder_3day: '3-day reminder', deadline_window: 'Deadline coming', deadline_soon: 'Due soon', deadline_due_today: 'Due today', follow_up: 'Follow-up', deadline_passed: 'Overdue', task_overdue_days: 'Overdue', task_warning: 'Warning', task_warning_urgent: 'Urgent warning', task_warning_creator: 'Not completed', task_flagged: 'You are flagged', admin_late_flag: 'Person flagged', weekly_warning_digest: 'Weekly warning summary', task_submitted: 'Awaiting your approval', approval_requested: 'Approval requested', approval_rejected: 'Approval rejected', approval_approved: 'Fully approved', closure_requested: 'Closure requested', extension_requested: 'More time requested', leave_requested: 'Leave requested', leave_decided: 'Leave decision', payroll_submitted: 'Payroll to approve', payroll_approved: 'Payroll approved', payslip_ready: 'Payslip ready', extension_decided: 'Deadline extension decision', closure_approved: 'Closure approved', closure_declined: 'Closure declined', chat_mention: 'Mentioned in chat', announcement: 'Announcement', location: 'Location', location_alert: 'Location alert', site_visit: 'Site visit', place_linked: 'Place linked', delivery_scheduled: 'Delivery coming', delivery_update: 'Delivery update', delivery_delivered: 'Delivered at site', delivery_unloaded: 'Unloaded at site', delivery_reminder: 'Delivery reminder', delivery_followup: 'Delivery follow-up', delivery_document: 'Delivery document', delivery_payment: 'Delivery payment', budget_verify: 'Payment to verify', budget_allotted: 'Money allotted', budget_verified: 'Payment checked', budget_topup: 'Top-up requested', est_submitted: 'Estimation to approve', est_decided: 'Estimation decision', est_remark: 'Estimation remark', est_jmr_open: 'Estimate approved — JMR open', est_recon_due: 'Reconciliation report due', est_completed: 'Estimate completed', ap_bill_added: 'New vendor bill', ap_reminder: 'Payment due', ap_update: 'Bill update from Accounts', ap_reply: 'Reply from Purchase', ap_followup: 'Payment follow-up', compliance_due: 'Compliance due date', compliance_done: 'Compliance done' };
 // Where tapping a notification takes you.
 function notifTarget(n) {
   if (/^closure_/.test(n.type)) return 'data-notif-goto-tab="closure"';
@@ -2931,7 +2931,7 @@ function renderTaskItem(t) {
   // close a task belongs to its creator, exercised either by approving each person's part
   // (auto-closes once everyone is approved) or by force-closing outright at any time.
   const canForceClose = session.role === 'admin' || isCreator;
-  const followupBadge = f => `<span class="badge po_pending" title="Tagged for follow-up by ${esc(f.tagged_by || 'someone')} · ${fmtTime(f.created_at)}">👀 ${esc(f.username)}</span>`;
+  const followupBadge = f => `<span class="badge kept-informed" title="Kept informed by ${esc(f.tagged_by || 'someone')} · ${fmtTime(f.created_at)} — can see and reply, is never chased for updates">👀 ${esc(personName(f.username))}</span>`;
   const assigneeBadge = a => {
     let cls = 'created', label = esc(a.username), title = 'Awaiting submission';
     if (!a.is_released) { cls = 'flag'; label = esc(a.username) + ' 🔒 On Hold'; title = `On hold — Level ${a.stage}, waiting on the level before it`; }
@@ -3121,7 +3121,7 @@ function renderTaskItem(t) {
     </div>` : ''}
     ${followups.length > 0 ? `
     <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
-      <span class="small muted">Follow-up:</span>${followups.map(followupBadge).join('')}
+      <span class="small muted">Kept informed:</span>${followups.map(followupBadge).join('')}
     </div>` : ''}
     ${checklist.length > 0 ? `
     <div style="margin-top:10px;">
@@ -3253,7 +3253,7 @@ function renderTaskItem(t) {
     })()}
     ${t.status === 'open' && canCommentHere ? `
     <div class="row" style="margin-top:10px;">
-      <button class="btn btn-sm btn-primary" data-act="nudge-task" data-task-id="${t.id}" title="Notify everyone involved in this task to look into it (at most once every few hours per person)">📣 Follow up</button>
+      <button class="btn btn-sm btn-primary" data-act="nudge-task" data-task-id="${t.id}" title="Remind the creator and the people tagged to do the work (not the people only kept informed) — at most once every few hours per person">📣 Follow up</button>
       <button class="btn btn-sm" data-act="toggle-followup-form" data-task-id="${t.id}" title="Add people who should be kept informed — they are not assigned work">👀 Keep someone informed</button>
       <button class="btn btn-sm" data-act="toggle-subtask-form" data-task-id="${t.id}">➕ Add Subtask</button>
       ${typeof dlvCanManage === 'function' && dlvCanManage() ? `<button class="btn btn-sm" data-add-delivery="${t.id}" title="Work is done and only delivery to site is pending — move it to the Deliveries tab (only the title is copied)">🚚 Add to delivery</button>` : ''}
@@ -4019,7 +4019,7 @@ function importPanelHTML() {
   const extras = x => [
     x.project ? `Project: ${esc(x.project)}${x.phase ? ' · ' + esc(x.phase) : ''}` : (x.phase ? `Phase: ${esc(x.phase)}` : ''),
     x.checklist.length ? `${x.checklist.length} checklist item${x.checklist.length === 1 ? '' : 's'}` : '',
-    x.followups.length ? `Follow-up: ${x.followups.map(esc).join(', ')}` : '',
+    x.followups.length ? `Kept informed: ${x.followups.map(esc).join(', ')}` : '',
     x.dependsOn ? `Waits for: ${esc(x.dependsOn)}` : '',
     x.parent ? `Subtask of: ${esc(x.parent)}` : '',
     x.individualDeadlines.length ? `Own deadlines: ${x.individualDeadlines.map(esc).join('; ')}` : '',
@@ -7579,7 +7579,7 @@ function subtaskFormHTML(parentTaskId) {
 function followupFormHTML(taskId) {
   return `
     <div class="card" style="background:var(--panel-2);margin-top:8px;">
-      <label>Tag people to follow up on this task — they'll be notified of activity and can comment/attach, but won't get a close button.</label>
+      <label>Keep people informed on this task (e.g. senior management) — they can see it, get its updates and reply, but are never asked or reminded to do anything.</label>
       <div class="tagpicker" id="followup-tagpicker-${taskId}">
         <div data-tagpicker-chips style="margin-bottom:6px;"></div>
         <div style="position:relative;">
@@ -7587,7 +7587,7 @@ function followupFormHTML(taskId) {
           <div data-tagpicker-suggestions class="tag-suggestions-dropdown" style="display:none;"></div>
         </div>
       </div>
-      <button class="btn btn-primary btn-sm" data-act="submit-followup" data-task-id="${taskId}">Tag for Follow-up</button>
+      <button class="btn btn-primary btn-sm" data-act="submit-followup" data-task-id="${taskId}">Keep informed</button>
     </div>`;
 }
 function bindAddAssigneeForm() {
@@ -7620,7 +7620,7 @@ function bindFollowupForm() {
     try {
       await api(`/api/tasks/${id}/followup`, { method: 'POST', body: JSON.stringify({ usernames }) });
       ui.followupFormTaskId = null; ui.followupFormTags = [];
-      setBanner('Tagged for follow-up.', 'ok'); await refreshData();
+      setBanner('Added to Kept informed — they can see the task and are never chased for updates.', 'ok'); await refreshData();
     } catch (e) { setBanner(e.message); render(); }
   };
 }
